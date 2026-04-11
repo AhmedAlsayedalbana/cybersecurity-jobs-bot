@@ -1,0 +1,78 @@
+name: Cybersecurity Jobs Bot (Elite Pro)
+
+on:
+  schedule:
+    # Run every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore seen_jobs.json from data branch
+        run: |
+          git fetch origin data 2>/dev/null || true
+          git checkout origin/data -- seen_jobs.json 2>/dev/null || echo '[]' > seen_jobs.json
+          echo "seen_jobs.json size: $(wc -c < seen_jobs.json) bytes"
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_GROUP_ID:  ${{ secrets.TELEGRAM_GROUP_ID }}
+
+          # ── Topic Thread IDs ──
+          TOPIC_GENERAL:     ${{ secrets.TOPIC_GENERAL }}
+          TOPIC_EGYPT:       ${{ secrets.TOPIC_EGYPT }}
+          TOPIC_REMOTE:      ${{ secrets.TOPIC_REMOTE }}
+          TOPIC_PENTEST:     ${{ secrets.TOPIC_PENTEST }}
+          TOPIC_SOC:         ${{ secrets.TOPIC_SOC }}
+          TOPIC_APPSEC:      ${{ secrets.TOPIC_APPSEC }}
+          TOPIC_CLOUDSEC:    ${{ secrets.TOPIC_CLOUDSEC }}
+          TOPIC_GRC:         ${{ secrets.TOPIC_GRC }}
+          TOPIC_SECENG:      ${{ secrets.TOPIC_SECENG }}
+          TOPIC_GULF:        ${{ secrets.TOPIC_GULF }}
+          TOPIC_INTERNSHIPS: ${{ secrets.TOPIC_INTERNSHIPS }}
+
+          # ── API Keys ──
+          RAPIDAPI_KEY:      ${{ secrets.RAPIDAPI_KEY }}
+          ADZUNA_APP_ID:     ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY:    ${{ secrets.ADZUNA_APP_KEY }}
+          FINDWORK_API_KEY:  ${{ secrets.FINDWORK_API_KEY }}
+          JOOBLE_API_KEY:    ${{ secrets.JOOBLE_API_KEY }}
+          REED_API_KEY:      ${{ secrets.REED_API_KEY }}
+
+        run: python main.py
+
+      - name: Save seen_jobs.json to data branch
+        if: always()
+        run: |
+          cp seen_jobs.json /tmp/seen_jobs.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin data 2>/dev/null || true
+          git checkout data 2>/dev/null || git checkout --orphan data
+          cp /tmp/seen_jobs.json seen_jobs.json
+          git add seen_jobs.json
+          git diff --cached --quiet && echo "No changes to seen_jobs" || {
+            git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+            git push origin data
+          }
