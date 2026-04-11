@@ -36,7 +36,8 @@ CHANNELS = {
             "pentest", "pentesting", "ethical hacker", "ethical hacking",
             "red team", "red teamer", "red teaming", "offensive security",
             "bug bounty", "vulnerability researcher", "exploit developer",
-            "exploit development", "oscp", "ceh", "gpen",
+            "exploit development", "oscp", "ceh", "gpen", "offensive-security",
+            "malware analysis", "reverse engineering", "ctf",
         ],
     },
     "soc": {
@@ -49,7 +50,8 @@ CHANNELS = {
             "incident responder", "incident response", "ir analyst",
             "blue team", "cyber threat intelligence", "cti analyst",
             "dfir", "digital forensics", "malware analyst",
-            "siem analyst", "security monitoring",
+            "siem analyst", "security monitoring", "splunk", "qradar", "sentinel",
+            "edr", "xdr", "mdr", "threat detection",
         ],
     },
     "appsec": {
@@ -61,6 +63,7 @@ CHANNELS = {
             "software security engineer", "devsecops", "dev sec ops",
             "product security", "web application security", "api security",
             "mobile app security", "static analysis", "dynamic analysis",
+            "owasp", "burp suite", "checkmarx", "snyk",
         ],
     },
     "cloudsec": {
@@ -72,6 +75,7 @@ CHANNELS = {
             "infrastructure security", "network security engineer", "firewall engineer",
             "zero trust", "identity access management", "iam engineer",
             "kubernetes security", "container security", "cspm", "cnapp",
+            "wiz", "prisma cloud", "cloud native security",
         ],
     },
     "grc": {
@@ -84,7 +88,7 @@ CHANNELS = {
             "nist", "pci dss", "hipaa", "gdpr",
             "security auditor", "it auditor", "cyber auditor",
             "data protection officer", "privacy officer", "ciso",
-            "third party risk", "cyber risk",
+            "third party risk", "cyber risk", "security policy",
         ],
     },
     "seceng": {
@@ -95,7 +99,13 @@ CHANNELS = {
             "security architect", "detection engineer", "detection engineering",
             "security automation", "cryptographer", "cryptography engineer",
             "pki engineer", "iam developer", "security platform engineer",
+            "security tools developer", "python security",
         ],
+    },
+    "gulf": {
+        "thread_env": "TOPIC_GULF",
+        "name": "🌙 Gulf Jobs (KSA/UAE/Kuwait)",
+        "match": "GEO_GULF",
     },
     "internships": {
         "thread_env": "TOPIC_INTERNSHIPS",
@@ -103,7 +113,7 @@ CHANNELS = {
         "keywords": [
             "intern", "internship", "trainee", "junior", "entry level",
             "entry-level", "fresh graduate", "fresh grad", "graduate program",
-            "junior security", "soc intern", "security intern",
+            "junior security", "soc intern", "security intern", "0-1 years", "0-2 years",
         ],
     },
 }
@@ -205,33 +215,26 @@ INCLUDE_KEYWORDS = [
 ]
 
 # ─── Exclude Keywords (title-based) ──────────────────────────
+# Reduced strictness: removed broad terms like 'support', 'sales', 'hr' 
+# that might be part of a legitimate security title (e.g., "Security Support Engineer")
 EXCLUDE_KEYWORDS = [
     "mechanical engineer", "electrical engineer", "civil engineer",
-    "chemical engineer", "structural engineer", "hardware engineer", "pcb",
+    "chemical engineer", "structural engineer", "hardware engineer",
     "frontend developer", "frontend engineer", "backend developer",
     "backend engineer", "full stack developer", "fullstack developer",
     "mobile developer", "flutter developer", "android developer",
     "ios developer", "react developer", "angular developer",
     "vue developer", "wordpress developer", "shopify developer",
-    "data scientist", "machine learning engineer", "ml engineer",
-    "ai engineer", "deep learning engineer",
     "graphic designer", "ui designer", "ux designer", "ui/ux",
     "recruiter", "talent acquisition", "hr manager", "human resources",
-    "customer support", "customer service", "customer success",
     "financial analyst", "accountant", "bookkeeper",
     "office manager", "administrative assistant",
     "supply chain", "logistics coordinator",
-    "sales representative", "sales executive", "account executive",
     "marketing manager", "digital marketing", "social media manager",
     "content writer", "copywriter", "seo specialist",
     "real estate", "insurance agent",
     "nurse", "physician", "pharmacist", "dental", "clinical",
     "medical coder", "veterinary",
-    "sales", "hr", "human resources", "marketing", "account manager",
-    "customer service", "support", "frontend", "backend", "fullstack",
-    "full stack", "mobile developer", "graphic designer", "seo",
-    "recruiter", "accountant", "nurse", "pharmacist",
-    "devops", "data scientist", "data analyst", "machine learning", "ai engineer",
 ]
 
 # ─── Emoji Map ────────────────────────────────────────────────
@@ -294,6 +297,7 @@ SOURCE_DISPLAY = {
 
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
-MAX_JOBS_PER_RUN = 15   # hard anti-spam cap per run
+MAX_JOBS_PER_RUN = 20   # Increased from 15
+SCORE_THRESHOLD  = 4    # Reduced from 6 for better traffic
 REQUEST_TIMEOUT  = 15
 SEED_MODE_ENV    = "SEED_MODE"
