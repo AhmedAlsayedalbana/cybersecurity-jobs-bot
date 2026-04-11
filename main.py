@@ -145,13 +145,13 @@ def main():
             if needed > 0:
                 final_selection_with_scores += fallback_pool[:needed]
 
-            # 🎯 Dynamic Quality Control: Score >= 6
-            final_selection_with_scores = [item for item in final_selection_with_scores if item[1] >= 6]
+            # 🎯 Dynamic Quality Control: Score >= 3
+            final_selection_with_scores = [item for item in final_selection_with_scores if item[1] >= 2]
             
             # Final cap at 15
             final_selection = [j for j, s in final_selection_with_scores[:15]]
 
-            log.info(f"Elite Selection: {len(final_selection)} jobs selected (Dynamic Quality Control: score >= 6)")
+            log.info(f"Elite Selection: {len(final_selection)} jobs selected (Dynamic Quality Control: score >= 2)")
 
             # ── 6. Send ───────────────────────────────────────
             if final_selection:
