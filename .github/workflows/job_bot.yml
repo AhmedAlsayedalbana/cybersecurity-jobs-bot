@@ -1,10 +1,10 @@
-name: Cybersecurity Jobs Bot (Elite Pro)
+name: Cybersecurity Jobs Bot (Elite Pro - Safe Mode)
 
 on:
   schedule:
-    # Run every 30 د
+    # Run every 30 minutes (safe interval)
     - cron: '*/30 * * * *'
-  workflow_dispatch:  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,13 +13,16 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: jobs-bot
+      cancel-in-progress: true  # prevent overlapping runs
 
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
-            ref: main
-            fetch-depth: 0 # Fetch all history for all branches
+          ref: main
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -31,25 +34,22 @@ jobs:
 
       - name: Restore seen_jobs.json from data branch
         run: |
-          # Try to fetch and checkout seen_jobs.json from data branch
           git fetch origin data:data || true
           git checkout data -- seen_jobs.json 2>/dev/null || echo '[]' > seen_jobs.json
-          
-          # Validate JSON format to prevent corruption
+
+          # Validate JSON
           if ! python3 -c "import json; json.load(open('seen_jobs.json'))" 2>/dev/null; then
-            echo "⚠️ Corrupt seen_jobs.json detected, resetting to []"
+            echo "⚠️ Corrupt seen_jobs.json → reset"
             echo '[]' > seen_jobs.json
           fi
-          
-          echo "✅ seen_jobs.json restored. Size: $(wc -c < seen_jobs.json) bytes"
 
-      - name: Run bot
+          echo "✅ seen_jobs.json restored ($(wc -c < seen_jobs.json) bytes)"
+
+      - name: Run bot (Safe Mode)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_GROUP_ID:  ${{ secrets.TELEGRAM_GROUP_ID }}
 
-          # ── Topic Thread IDs ──
-          TOPIC_GENERAL:     ${{ secrets.TOPIC_GENERAL }}
           TOPIC_EGYPT:       ${{ secrets.TOPIC_EGYPT }}
           TOPIC_REMOTE:      ${{ secrets.TOPIC_REMOTE }}
           TOPIC_PENTEST:     ${{ secrets.TOPIC_PENTEST }}
@@ -61,7 +61,7 @@ jobs:
           TOPIC_GULF:        ${{ secrets.TOPIC_GULF }}
           TOPIC_INTERNSHIPS: ${{ secrets.TOPIC_INTERNSHIPS }}
 
-          # ── API Keys ──
+          # APIs
           RAPIDAPI_KEY:      ${{ secrets.RAPIDAPI_KEY }}
           ADZUNA_APP_ID:     ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY:    ${{ secrets.ADZUNA_APP_KEY }}
@@ -69,36 +69,39 @@ jobs:
           JOOBLE_API_KEY:    ${{ secrets.JOOBLE_API_KEY }}
           REED_API_KEY:      ${{ secrets.REED_API_KEY }}
 
-        run: python main.py
+          # 🛡️ SAFE MODE FLAGS
+          SAFE_MODE: "true"
+          MAX_REQUESTS_PER_SOURCE: "5"
+
+        run: |
+          echo "🚀 Starting bot in SAFE MODE..."
+          sleep $((RANDOM % 10 + 5))  # random delay to avoid patterns
+          python main.py
 
       - name: Save seen_jobs.json to data branch
         if: always()
         run: |
-          # 1. Backup the updated seen_jobs.json
           cp seen_jobs.json /tmp/seen_jobs.json
-          
-          # 2. Configure Git
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 3. Switch to data branch (create if not exists)
+
           git fetch origin data:data || true
+
           if git show-ref --verify --quiet refs/heads/data; then
             git checkout data
           else
             git checkout --orphan data
             git rm -rf .
           fi
-          
-          # 4. Update seen_jobs.json and commit
+
           cp /tmp/seen_jobs.json seen_jobs.json
           git add seen_jobs.json
-          
-          # Only commit and push if there are changes
+
           if ! git diff --cached --quiet; then
             git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
-            echo "✅ seen_jobs.json saved to data branch."
+            echo "✅ saved"
           else
-            echo "ℹ️ No changes to seen_jobs.json."
+            echo "ℹ️ no changes"
           fi
