@@ -1,10 +1,11 @@
+```yaml
 name: Cybersecurity Jobs Bot (Elite Pro)
 
 on:
   schedule:
-   # Run every 5 minutes
-    - cron: "*/5 * * * *"
-  workflow_dispatch:  # Allow manual trigger from GitHub UI
+    # يشتغل كل 6 ساعات (أفضل من 5 دقايق لتجنب الحظر)
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,31 +16,63 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # ───────────────────────────────
+      # 1. Checkout main
+      # ───────────────────────────────
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
           ref: main
 
+      # ───────────────────────────────
+      # 2. Setup Python
+      # ───────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
+      # ───────────────────────────────
+      # 3. Install dependencies
+      # ───────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ───────────────────────────────
+      # 4. Restore seen_jobs.json (FIXED)
+      # ───────────────────────────────
       - name: Restore seen_jobs.json from data branch
         run: |
-          git fetch origin data 2>/dev/null || true
-          git checkout origin/data -- seen_jobs.json 2>/dev/null || echo '[]' > seen_jobs.json
-          echo "seen_jobs.json size: $(wc -c < seen_jobs.json) bytes"
+          git fetch origin data || true
 
+          if git show-ref --verify --quiet refs/remotes/origin/data; then
+            echo "✅ data branch exists"
+            git checkout -b data origin/data
+          else
+            echo "⚠️ data branch not found — creating new one"
+            git checkout --orphan data
+            echo '{}' > seen_jobs.json
+            git add seen_jobs.json
+            git commit -m "init data branch"
+          fi
+
+          # ارجع للـ main واحتفظ بالملف
+          cp seen_jobs.json /tmp/seen_jobs.json || echo '{}' > /tmp/seen_jobs.json
+          git checkout main
+          cp /tmp/seen_jobs.json seen_jobs.json
+
+          echo "📦 seen_jobs.json size:"
+          wc -c seen_jobs.json
+
+      # ───────────────────────────────
+      # 5. Run bot
+      # ───────────────────────────────
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_GROUP_ID:  ${{ secrets.TELEGRAM_GROUP_ID }}
 
-          # ── Topic Thread IDs ──
+          # Topics
           TOPIC_GENERAL:     ${{ secrets.TOPIC_GENERAL }}
           TOPIC_EGYPT:       ${{ secrets.TOPIC_EGYPT }}
           TOPIC_REMOTE:      ${{ secrets.TOPIC_REMOTE }}
@@ -52,7 +85,7 @@ jobs:
           TOPIC_GULF:        ${{ secrets.TOPIC_GULF }}
           TOPIC_INTERNSHIPS: ${{ secrets.TOPIC_INTERNSHIPS }}
 
-          # ── API Keys ──
+          # APIs
           RAPIDAPI_KEY:      ${{ secrets.RAPIDAPI_KEY }}
           ADZUNA_APP_ID:     ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY:    ${{ secrets.ADZUNA_APP_KEY }}
@@ -62,17 +95,35 @@ jobs:
 
         run: python main.py
 
+      # ───────────────────────────────
+      # 6. Save seen_jobs.json (FIXED)
+      # ───────────────────────────────
       - name: Save seen_jobs.json to data branch
         if: always()
         run: |
+          echo "💾 Saving seen_jobs.json..."
+
           cp seen_jobs.json /tmp/seen_jobs.json
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin data 2>/dev/null || true
-          git checkout data 2>/dev/null || git checkout --orphan data
+
+          git fetch origin data || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/data; then
+            git checkout -b data origin/data
+          else
+            git checkout --orphan data
+          fi
+
           cp /tmp/seen_jobs.json seen_jobs.json
+
           git add seen_jobs.json
-          git diff --cached --quiet && echo "No changes to seen_jobs" || {
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes to commit"
+          else
             git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
-          }
+          fi
+```
