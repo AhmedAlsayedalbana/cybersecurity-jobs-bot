@@ -2,9 +2,9 @@ name: Cybersecurity Jobs Bot (Elite Pro)
 
 on:
   schedule:
-    # يشتغل كل 6 ساعات (أفضل من 5 دقايق لتجنب الحظر)
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+    # Run every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 permissions:
   contents: write
@@ -15,63 +15,40 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ───────────────────────────────
-      # 1. Checkout main
-      # ───────────────────────────────
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
-          ref: main
+            ref: main
+            fetch-depth: 0 # Fetch all history for all branches
 
-      # ───────────────────────────────
-      # 2. Setup Python
-      # ───────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      # ───────────────────────────────
-      # 3. Install dependencies
-      # ───────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ───────────────────────────────
-      # 4. Restore seen_jobs.json (FIXED)
-      # ───────────────────────────────
       - name: Restore seen_jobs.json from data branch
         run: |
-          git fetch origin data || true
-
-          if git show-ref --verify --quiet refs/remotes/origin/data; then
-            echo "✅ data branch exists"
-            git checkout -b data origin/data
-          else
-            echo "⚠️ data branch not found — creating new one"
-            git checkout --orphan data
-            echo '{}' > seen_jobs.json
-            git add seen_jobs.json
-            git commit -m "init data branch"
+          # Try to fetch and checkout seen_jobs.json from data branch
+          git fetch origin data:data || true
+          git checkout data -- seen_jobs.json 2>/dev/null || echo '[]' > seen_jobs.json
+          
+          # Validate JSON format to prevent corruption
+          if ! python3 -c "import json; json.load(open('seen_jobs.json'))" 2>/dev/null; then
+            echo "⚠️ Corrupt seen_jobs.json detected, resetting to []"
+            echo '[]' > seen_jobs.json
           fi
+          
+          echo "✅ seen_jobs.json restored. Size: $(wc -c < seen_jobs.json) bytes"
 
-          # ارجع للـ main واحتفظ بالملف
-          cp seen_jobs.json /tmp/seen_jobs.json || echo '{}' > /tmp/seen_jobs.json
-          git checkout main
-          cp /tmp/seen_jobs.json seen_jobs.json
-
-          echo "📦 seen_jobs.json size:"
-          wc -c seen_jobs.json
-
-      # ───────────────────────────────
-      # 5. Run bot
-      # ───────────────────────────────
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_GROUP_ID:  ${{ secrets.TELEGRAM_GROUP_ID }}
 
-          # Topics
+          # ── Topic Thread IDs ──
           TOPIC_GENERAL:     ${{ secrets.TOPIC_GENERAL }}
           TOPIC_EGYPT:       ${{ secrets.TOPIC_EGYPT }}
           TOPIC_REMOTE:      ${{ secrets.TOPIC_REMOTE }}
@@ -84,7 +61,7 @@ jobs:
           TOPIC_GULF:        ${{ secrets.TOPIC_GULF }}
           TOPIC_INTERNSHIPS: ${{ secrets.TOPIC_INTERNSHIPS }}
 
-          # APIs
+          # ── API Keys ──
           RAPIDAPI_KEY:      ${{ secrets.RAPIDAPI_KEY }}
           ADZUNA_APP_ID:     ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY:    ${{ secrets.ADZUNA_APP_KEY }}
@@ -94,34 +71,34 @@ jobs:
 
         run: python main.py
 
-      # ───────────────────────────────
-      # 6. Save seen_jobs.json (FIXED)
-      # ───────────────────────────────
       - name: Save seen_jobs.json to data branch
         if: always()
         run: |
-          echo "💾 Saving seen_jobs.json..."
-
+          # 1. Backup the updated seen_jobs.json
           cp seen_jobs.json /tmp/seen_jobs.json
-
+          
+          # 2. Configure Git
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin data || true
-
-          if git show-ref --verify --quiet refs/remotes/origin/data; then
-            git checkout -b data origin/data
+          
+          # 3. Switch to data branch (create if not exists)
+          git fetch origin data:data || true
+          if git show-ref --verify --quiet refs/heads/data; then
+            git checkout data
           else
             git checkout --orphan data
+            git rm -rf .
           fi
-
+          
+          # 4. Update seen_jobs.json and commit
           cp /tmp/seen_jobs.json seen_jobs.json
-
           git add seen_jobs.json
-
-          if git diff --cached --quiet; then
-            echo "ℹ️ No changes to commit"
-          else
+          
+          # Only commit and push if there are changes
+          if ! git diff --cached --quiet; then
             git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
+            echo "✅ seen_jobs.json saved to data branch."
+          else
+            echo "ℹ️ No changes to seen_jobs.json."
           fi
