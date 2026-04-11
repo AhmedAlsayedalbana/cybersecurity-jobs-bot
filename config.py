@@ -13,11 +13,7 @@ TELEGRAM_SEND_DELAY = 3  # seconds between messages
 
 # ─── Community Topics ────────────────────────────────────────
 CHANNELS = {
-    "general": {
-        "thread_env": "TOPIC_GENERAL",
-        "name": "🔐 All Cybersecurity Jobs",
-        "match": "ALL",
-    },
+    
     "egypt": {
         "thread_env": "TOPIC_EGYPT",
         "name": "🇪🇬 Egypt Jobs",
