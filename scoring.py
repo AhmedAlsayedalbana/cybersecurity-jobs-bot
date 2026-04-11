@@ -1,11 +1,12 @@
 """
-Job scoring and ranking system for Cybersecurity Jobs Bot (v6 - Elite Pro).
+Job scoring and ranking system for Cybersecurity Jobs Bot.
 New Logic:
-- Egypt Priority: +10 pts
-- Remote: +4 pts
-- SIEM/Splunk/AWS Security: +3 pts
-- Entry-level (Junior/Intern/Trainee): +2 to +3 pts
-- Penalty for noise (Support): -4 pts
+- Egypt Priority: +12 pts (Increased)
+- Remote: +6 pts (Increased)
+- Gulf: +4 pts (Increased)
+- SIEM/Splunk/AWS Security: +4 pts
+- Entry-level (Junior/Intern/Trainee): +5 pts (Increased)
+- Freshness: +5 pts
 """
 
 from models import Job, _flatten_tags
@@ -25,30 +26,29 @@ def score_job(job: Job) -> int:
     tags_text = _flatten_tags(job.tags).lower()
     combined_text = f"{title_text} {description_text} {tags_text}".lower()
     
-    # 1. Location Scoring
+    # 1. Location Scoring (Increased boosts)
     loc_type = classify_location(job)
     if loc_type == "egypt":
-        score += 10
+        score += 12
     elif loc_type == "gulf":
-        score += 1  # Gulf gets a small boost over global
+        score += 4
     
-    # 2. Remote Boost
+    # 2. Remote Boost (Increased)
     if "remote" in combined_text or job.is_remote:
-        score += 3
+        score += 6
 
     # 3. High-Value Tech/Skills Boost
-    if "siem" in combined_text:
-        score += 3
-    if "splunk" in combined_text:
-        score += 3
-    if "aws security" in combined_text or "cloud security" in combined_text:
-        score += 3
-    if "incident response" in combined_text:
-        score += 4
-    if "soc" in combined_text:
-        score += 4
-    if "pentest" in combined_text:
-        score += 3
+    tech_keywords = {
+        "siem": 4, "splunk": 4, "qradar": 4, "sentinel": 4,
+        "aws security": 4, "cloud security": 4, "azure security": 4,
+        "incident response": 3, "soc": 3, "pentest": 3, "penetration": 3,
+        "vulnerability": 3, "appsec": 3, "devsecops": 3, "grc": 2,
+        "compliance": 2, "iso 27001": 2, "nist": 2
+    }
+    
+    for kw, val in tech_keywords.items():
+        if kw in combined_text:
+            score += val
 
     # 4. Freshness Override (High Impact)
     if job.posted_date:
@@ -56,20 +56,26 @@ def score_job(job: Job) -> int:
         diff = now - job.posted_date
         if diff < timedelta(hours=24):
             score += 5
-        elif diff > timedelta(days=5):
-            score -= 5
+        elif diff > timedelta(days=7): # Relaxed from 5 to 7 days
+            score -= 3 # Reduced penalty from -5 to -3
 
-    # 5. Entry-level/Fresh Support & "Opportunity Boost"
-    if any(k in combined_text for k in ["junior", "intern", "trainee", "fresh grad"]):
-        score += 3
-    if any(k in combined_text for k in ["0-2 years", "0-1 years", "no experience", "entry level"]):
-        score += 4  # "Power Move" boost for early-career opportunities
+    # 5. Entry-level/Fresh Support & "Opportunity Boost" (Increased)
+    entry_keywords = ["junior", "intern", "trainee", "fresh grad", "graduate", "entry level", "entry-level"]
+    if any(k in combined_text for k in entry_keywords):
+        score += 5
+    
+    exp_keywords = ["0-2 years", "0-1 years", "no experience", "fresh graduate"]
+    if any(k in combined_text for k in exp_keywords):
+        score += 5
 
-    # 6. Penalties (Noise Reduction)
-    if "support" in title_text:
-        score -= 4
+    # 6. Penalties (Reduced strictness)
+    # Only penalize if it's CLEARLY not a security job but passed filters
+    if "support" in title_text and not any(k in title_text for k in ["security", "cyber", "soc"]):
+        score -= 3 # Reduced from -4
+    
     if len(job.title) < 5:
         score -= 5
+        
     if not job.url:
         score -= 10
 
