@@ -65,19 +65,19 @@ def main():
             stats["sources"][name] = "FAILED"
 
     stats["fetched"] = len(all_jobs)
-    log.info(f"📊 Total raw jobs fetched: {stats["fetched"]}")
+    log.info(f"📊 Total raw jobs fetched: {stats['fetched']}")
 
     # ── Everything below is protected by finally (always save seen IDs) ──
     try:
         # ── 3. Filter: cybersec keywords + geo ────────────────
         filtered = filter_jobs(all_jobs)
         stats["filtered"] = len(filtered)
-        log.info(f"🔍 After cybersec+geo filter: {stats["filtered"]} jobs")
+        log.info(f"🔍 After cybersec+geo filter: {stats['filtered']} jobs")
 
         # ── 4. Deduplicate ────────────────────────────────────
         new_jobs = deduplicate(filtered, seen)
         stats["new"] = len(new_jobs)
-        log.info(f"✨ New jobs (after dedup): {stats["new"]}")
+        log.info(f"✨ New jobs (after dedup): {stats['new']}")
 
         if is_seed:
             # Seed: mark everything seen without sending
@@ -208,10 +208,10 @@ def main():
         log.info("=" * 60)
         log.info("🏁 RUN SUMMARY")
         log.info(f"⏱️  Time: {elapsed:.1f}s")
-        log.info(f"📥 Fetched: {stats["fetched"]}")
-        log.info(f"🔍 Filtered: {stats["filtered"]}")
-        log.info(f"✨ New: {stats["new"]}")
-        log.info(f"📨 Sent: {stats["sent"]}")
+        log.info(f"📥 Fetched: {stats['fetched']}")
+        log.info(f"🔍 Filtered: {stats['filtered']}")
+        log.info(f"✨ New: {stats['new']}")
+        log.info(f"📨 Sent: {stats['sent']}")
         log.info(f"💾 Total Seen: {len(seen)}")
         log.info("=" * 60)
 
