@@ -1,8 +1,7 @@
-name: Cybersecurity Jobs Bot (Elite Pro - Safe Mode)
+name: Cybersecurity Jobs Bot (Elite Pro - Safe Mode v2)
 
 on:
   schedule:
-    # Run every 30 minutes (safe interval)
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -13,9 +12,10 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     concurrency:
       group: jobs-bot
-      cancel-in-progress: true  # prevent overlapping runs
+      cancel-in-progress: true
 
     steps:
       - name: Checkout main branch
@@ -32,6 +32,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 🔁 Restore state safely
       - name: Restore seen_jobs.json from data branch
         run: |
           git fetch origin data:data || true
@@ -39,12 +40,13 @@ jobs:
 
           # Validate JSON
           if ! python3 -c "import json; json.load(open('seen_jobs.json'))" 2>/dev/null; then
-            echo "⚠️ Corrupt seen_jobs.json → reset"
+            echo "⚠️ Corrupt file → resetting"
             echo '[]' > seen_jobs.json
           fi
 
-          echo "✅ seen_jobs.json restored ($(wc -c < seen_jobs.json) bytes)"
+          echo "✅ Restored ($(wc -c < seen_jobs.json) bytes)"
 
+      # 🚀 Run bot with better logging
       - name: Run bot (Safe Mode)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -69,15 +71,17 @@ jobs:
           JOOBLE_API_KEY:    ${{ secrets.JOOBLE_API_KEY }}
           REED_API_KEY:      ${{ secrets.REED_API_KEY }}
 
-          # 🛡️ SAFE MODE FLAGS
+          # SAFE MODE
           SAFE_MODE: "true"
           MAX_REQUESTS_PER_SOURCE: "5"
 
         run: |
-          echo "🚀 Starting bot in SAFE MODE..."
-          sleep $((RANDOM % 10 + 5))  # random delay to avoid patterns
-          python main.py
+          echo "🚀 Starting bot..."
+          sleep $((RANDOM % 10 + 5))
 
+          python main.py 2>&1 | tee bot.log || echo "❌ Bot failed"
+
+      # 💾 Save state with conflict protection
       - name: Save seen_jobs.json to data branch
         if: always()
         run: |
@@ -100,8 +104,20 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+
+            # 🔥 مهم: يمنع مشاكل الـ race condition
+            git pull --rebase origin data || true
+
             git push origin data
             echo "✅ saved"
           else
             echo "ℹ️ no changes"
           fi
+
+      # 📦 Upload logs (debug lifesaver)
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs
+          path: bot.log
