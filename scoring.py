@@ -30,11 +30,11 @@ def score_job(job: Job) -> int:
     if loc_type == "egypt":
         score += 10
     elif loc_type == "gulf":
-        score += 2  # Gulf gets a small boost over global
+        score += 1  # Gulf gets a small boost over global
     
     # 2. Remote Boost
     if "remote" in combined_text or job.is_remote:
-        score += 4
+        score += 3
 
     # 3. High-Value Tech/Skills Boost
     if "siem" in combined_text:
@@ -44,11 +44,11 @@ def score_job(job: Job) -> int:
     if "aws security" in combined_text or "cloud security" in combined_text:
         score += 3
     if "incident response" in combined_text:
-        score += 2
+        score += 4
     if "soc" in combined_text:
-        score += 2
+        score += 4
     if "pentest" in combined_text:
-        score += 2
+        score += 3
 
     # 4. Freshness Override (High Impact)
     if job.posted_date:
