@@ -97,11 +97,6 @@ CHANNELS = {
             "pki engineer", "iam developer", "security platform engineer",
         ],
     },
-    "gulf": {
-        "thread_env": "TOPIC_GULF",
-        "name": "🌙 Gulf Jobs (KSA/UAE/Kuwait)",
-        "match": "GEO_GULF",
-    },
     "internships": {
         "thread_env": "TOPIC_INTERNSHIPS",
         "name": "🎓 Internships & Entry Level",
