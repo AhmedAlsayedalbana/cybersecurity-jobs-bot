@@ -1,17 +1,13 @@
 """
 Source registry — maps source names to their fetch functions.
-Sources are ordered by reliability and relevance.
+Sources ordered by PRIORITY: Egypt/Gulf first → Cybersec-specific → Remote boards → API-based
 
 Active sources:
+  💼 LinkedIn: Egypt (all governorates) + Gulf (full) + Remote searches (ENABLED)
   🔒 Cybersecurity-specific: CyberSec Boards, Tech Boards
   🌍 Remote boards:          Remotive, Himalayas, Jobicy, RemoteOK,
                               Arbeitnow, WWR, Working Nomads
-  🔑 API-based (optional):   JSearch (RapidAPI), Adzuna, Jooble, Findwork, Reed
-  💼 LinkedIn scraping:      fetch_linkedin (may be rate-limited)
-
-Disabled:
-  ✗ USAJobs — US government only, not relevant for Egypt/Remote community
-  ✗ The Muse — needs API key, low cybersec coverage
+  🔑 API-based (optional):   Adzuna, Jooble, Findwork, Reed
 """
 
 from sources.cybersec_boards import fetch_cybersec_boards
@@ -31,11 +27,14 @@ from sources.reed import fetch_reed
 from sources.jsearch import fetch_jsearch
 
 # (display_name, fetch_function)
-# Order: cybersec-specific first → stable remote boards → API-based
+# Order: LinkedIn Egypt/Gulf first → cybersec-specific → stable remote → API-based
 ALL_FETCHERS = [
-    # ── Cybersecurity-specific boards (highest quality) ──
+    # ── LinkedIn — Egypt & Gulf targeted (TOP PRIORITY SOURCE) ──
+    ("LinkedIn",         fetch_linkedin),          # 🇪🇬🌙 Egypt all govs + Gulf + Remote
+
+    # ── Cybersecurity-specific boards ──
     ("CyberSec Boards",  fetch_cybersec_boards),   # InfoSec-Jobs, ISACA, ISC2, etc.
-    ("Tech Boards",      fetch_tech_boards),        # Dice, HackerOne, Bugcrowd, Greenhouse
+    ("Tech Boards",      fetch_tech_boards),        # Dice, HackerOne, Bugcrowd
 
     # ── Reliable remote job boards ──
     ("Remotive",         fetch_remotive),
@@ -46,16 +45,10 @@ ALL_FETCHERS = [
     ("WWR",              fetch_wwr),
     ("Working Nomads",   fetch_workingnomads),
 
-    # ── LinkedIn (Egypt + Remote searches) ──
-    # ("LinkedIn",         fetch_linkedin),  # Disabled to reduce noise
-
     # ── API-based (optional — need keys in secrets) ──
     ("Adzuna",           fetch_adzuna),
-    ("Findwork",         fetch_findwork),
     ("Jooble",           fetch_jooble),
+    ("Findwork",         fetch_findwork),
     ("Reed",             fetch_reed),
-    # ("JSearch",          fetch_jsearch),  # Disabled to reduce noise
-
-    # ── Freelance (Upwork, Mustaqil, etc.) ──
-    # ("Freelance",        fetch_freelance),  # Disabled (no fetcher implemented)
+    # ("JSearch",          fetch_jsearch),  # Optional — RapidAPI key needed
 ]
