@@ -29,7 +29,7 @@ log = logging.getLogger("main")
 def main():
     start_time = time.time()
     log.info("=" * 60)
-    log.info(f"🔐 Cybersecurity Jobs Bot — Run Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"🔐 Cybersecurity Jobs Bot — Run Started at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}")
     log.info("=" * 60)
 
     # Stats tracking
@@ -65,122 +65,114 @@ def main():
             stats["sources"][name] = "FAILED"
 
     stats["fetched"] = len(all_jobs)
-    log.info(f"📊 Total raw jobs fetched: {stats['fetched']}")
+    log.info(f"📊 Total raw jobs fetched: {stats["fetched"]}")
 
     # ── Everything below is protected by finally (always save seen IDs) ──
     try:
         # ── 3. Filter: cybersec keywords + geo ────────────────
         filtered = filter_jobs(all_jobs)
         stats["filtered"] = len(filtered)
-        log.info(f"🔍 After cybersec+geo filter: {stats['filtered']} jobs")
+        log.info(f"🔍 After cybersec+geo filter: {stats["filtered"]} jobs")
 
         # ── 4. Deduplicate ────────────────────────────────────
         new_jobs = deduplicate(filtered, seen)
         stats["new"] = len(new_jobs)
-        log.info(f"✨ New jobs (after dedup): {stats['new']}")
+        log.info(f"✨ New jobs (after dedup): {stats["new"]}")
 
         if is_seed:
             # Seed: mark everything seen without sending
             log.info(f"🌱 Marking {len(new_jobs)} jobs as seen...")
             seen = mark_as_seen(new_jobs, seen)
         else:
-            # ── 5. Selection Strategy ───────────────────
-            blue_jobs = []
-            red_jobs = []
-            general_jobs = []
+            # ── 5. Egypt/Gulf-First Priority Selection ──────────
+            from classifier import classify_location
+
+            # Separate into priority tiers
+            tier1 = []   # Egypt + (SOC or Pentest or Entry)
+            tier2 = []   # Egypt (any cyber)
+            tier3 = []   # Gulf + (SOC or Pentest or Entry)
+            tier4 = []   # Gulf (any cyber)
+            tier5 = []   # Remote worldwide
 
             for job in new_jobs:
                 score = score_job(job)
-                domain = classify_domain(job)
-                
-                if domain == "blue":
-                    blue_jobs.append((job, score))
-                elif domain == "red":
-                    red_jobs.append((job, score))
+                loc = classify_location(job)
+                title = job.title.lower()
+
+                is_soc     = any(k in title for k in ["soc", "security operations", "threat", "incident", "blue team", "dfir", "siem"])
+                is_pentest = any(k in title for k in ["pentest", "penetration", "red team", "ethical hack", "bug bounty", "offensive"])
+                is_entry   = any(k in title for k in ["junior", "intern", "trainee", "entry level", "entry-level", "fresh grad"])
+                is_target  = is_soc or is_pentest or is_entry
+
+                if loc == "egypt" and is_target:
+                    tier1.append((job, score))
+                elif loc == "egypt":
+                    tier2.append((job, score))
+                elif loc == "gulf" and is_target:
+                    tier3.append((job, score))
+                elif loc == "gulf":
+                    tier4.append((job, score))
                 else:
-                    general_jobs.append((job, score))
+                    tier5.append((job, score))
 
-            # Sort each group by location priority (Egypt > Gulf > Global) and then score
-            blue_jobs = sort_by_location_priority(blue_jobs)
-            red_jobs = sort_by_location_priority(red_jobs)
-            general_jobs = sort_by_location_priority(general_jobs)
+            # Sort each tier by score descending
+            for t in [tier1, tier2, tier3, tier4, tier5]:
+                t.sort(key=lambda x: -x[1])
 
-            # 🧠 Diversity Logic: Limit same roles and same companies
-            def filter_for_diversity(jobs_list, max_per_role=3):
-                seen_roles = {}
-                seen_companies = set()
-                diverse_list = []
-                remaining_list = []
-                
-                for job, score in jobs_list:
-                    # Company Diversity
-                    if job.company.lower() in seen_companies:
-                        remaining_list.append((job, score))
-                        continue
+            # 🎯 Target distribution (out of 30):
+            #   🇪🇬 Egypt target/entry  → up to 12
+            #   🇪🇬 Egypt general       → up to 6
+            #   🌙 Gulf target/entry    → up to 7
+            #   🌙 Gulf general         → up to 3
+            #   🌍 Remote/Global        → fill remaining
+            MAX = config.MAX_JOBS_PER_RUN
 
-                    # Role Diversity
-                    title = job.title.lower()
-                    role_key = "general"
-                    if "soc" in title: role_key = "soc"
-                    elif "pentest" in title or "penetration" in title: role_key = "pentest"
-                    elif "incident" in title: role_key = "ir"
-                    elif "threat" in title: role_key = "threat"
-                    elif "cloud" in title: role_key = "cloud"
-                    elif "grc" in title or "compliance" in title: role_key = "grc"
-                    
-                    if seen_roles.get(role_key, 0) < max_per_role:
-                        diverse_list.append((job, score))
-                        seen_roles[role_key] = seen_roles.get(role_key, 0) + 1
-                        seen_companies.add(job.company.lower())
-                    else:
-                        remaining_list.append((job, score))
-                return diverse_list, remaining_list
+            def pick(pool, limit):
+                return pool[:limit]
 
-            # Apply diversity filter
-            blue_diverse, blue_rem = filter_for_diversity(blue_jobs, max_per_role=3)
-            red_diverse, red_rem = filter_for_diversity(red_jobs, max_per_role=3)
-            gen_diverse, gen_rem = filter_for_diversity(general_jobs, max_per_role=3)
+            selected  = pick(tier1, 12)
+            selected += pick(tier2, 6)
+            selected += pick(tier3, 7)
+            selected += pick(tier4, 3)
 
-            # Final Selection (Target: 7 Blue, 7 Red, 6 General = 20)
-            selected_blue = blue_diverse[:7]
-            selected_red = red_diverse[:7]
-            selected_general = gen_diverse[:6]
-            
-            # Fallback Pool (if any category is short)
-            fallback_pool = sort_by_location_priority(
-                blue_diverse[7:] + blue_rem + 
-                red_diverse[7:] + red_rem + 
-                gen_diverse[6:] + gen_rem
-            )
-            
-            final_selection_with_scores = selected_blue + selected_red + selected_general
-            needed = config.MAX_JOBS_PER_RUN - len(final_selection_with_scores)
-            if needed > 0:
-                final_selection_with_scores += fallback_pool[:needed]
+            filled = len(selected)
+            if filled < MAX:
+                selected += pick(tier5, MAX - filled)
 
-            # 🎯 Dynamic Quality Control: Score >= config.SCORE_THRESHOLD (default 4)
-            filtered_selection = [item for item in final_selection_with_scores if item[1] >= config.SCORE_THRESHOLD]
+            # If still under MAX, fill from leftovers
+            if len(selected) < MAX:
+                used = set(id(j) for j, _ in selected)
+                leftovers = (
+                    tier1[12:] + tier2[6:] + tier3[7:] + tier4[3:]
+                )
+                leftovers.sort(key=lambda x: -x[1])
+                for item in leftovers:
+                    if len(selected) >= MAX:
+                        break
+                    if id(item[0]) not in used:
+                        selected.append(item)
+                        used.add(id(item[0]))
 
+            # Apply score threshold (with fallback)
+            filtered_selection = [(j, s) for j, s in selected if s >= config.SCORE_THRESHOLD]
             if not filtered_selection:
-                log.warning("⚠️ No jobs passed threshold — fallback activated. Sending top 10 jobs.")
-                # Fallback: take top 10 jobs regardless of score
-                filtered_selection = final_selection_with_scores[:10]
-            
-            # 🎓 Guaranteed Entry-Level Jobs
-            entry_jobs = [(j, s) for j, s in final_selection_with_scores if any(
+                log.warning("⚠️ No jobs passed threshold — fallback activated.")
+                filtered_selection = selected[:10]
+
+            # Guarantee entry-level slots (min 4)
+            entry_jobs = [(j, s) for j, s in selected if any(
                 k in j.title.lower() for k in ["junior", "intern", "trainee", "entry level", "entry-level", "fresh grad"]
             )]
-            guaranteed_entry = entry_jobs[:3] # Ensure up to 3 entry-level jobs
-
-            # Remove guaranteed entry jobs from filtered_selection to avoid duplicates
-            # and ensure they don't take up slots if better jobs are available
+            guaranteed_entry = entry_jobs[:4]
             others = [item for item in filtered_selection if item[0] not in [ge[0] for ge in guaranteed_entry]]
-
-            # Combine guaranteed entry jobs with others, then cap
             combined_selection = guaranteed_entry + others
-            final_selection = [j for j, _ in combined_selection][:config.MAX_JOBS_PER_RUN]
+            final_selection = [j for j, _ in combined_selection][:MAX]
 
-            log.info(f"🎯 Selection: {len(final_selection)} jobs selected (Threshold: score >= {config.SCORE_THRESHOLD} with fallback & {len(guaranteed_entry)} entry-level guaranteed)")
+            # Stats log
+            eg_count   = sum(1 for j in final_selection if classify_location(j) == "egypt")
+            gulf_count = sum(1 for j in final_selection if classify_location(j) == "gulf")
+            rem_count  = len(final_selection) - eg_count - gulf_count
+            log.info(f"🎯 Final: {len(final_selection)} jobs | 🇪🇬 Egypt:{eg_count} | 🌙 Gulf:{gulf_count} | 🌍 Other:{rem_count}")
 
             # ── 6. Send ───────────────────────────────────────
             if final_selection:
@@ -208,10 +200,10 @@ def main():
         log.info("=" * 60)
         log.info("🏁 RUN SUMMARY")
         log.info(f"⏱️  Time: {elapsed:.1f}s")
-        log.info(f"📥 Fetched: {stats['fetched']}")
-        log.info(f"🔍 Filtered: {stats['filtered']}")
-        log.info(f"✨ New: {stats['new']}")
-        log.info(f"📨 Sent: {stats['sent']}")
+        log.info(f"📥 Fetched: {stats["fetched"]}")
+        log.info(f"🔍 Filtered: {stats["filtered"]}")
+        log.info(f"✨ New: {stats["new"]}")
+        log.info(f"📨 Sent: {stats["sent"]}")
         log.info(f"💾 Total Seen: {len(seen)}")
         log.info("=" * 60)
 
