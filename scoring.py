@@ -26,16 +26,16 @@ def score_job(job: Job) -> int:
     tags_text = _flatten_tags(job.tags).lower()
     combined_text = f"{title_text} {description_text} {tags_text}".lower()
     
-    # 1. Location Scoring (Increased boosts)
+    # 1. Location Scoring — Egypt & Gulf are TOP PRIORITY
     loc_type = classify_location(job)
     if loc_type == "egypt":
-        score += 12
+        score += 15   # 🇪🇬 Highest priority
     elif loc_type == "gulf":
-        score += 4
-    
-    # 2. Remote Boost (Increased)
+        score += 10   # 🌙 Gulf second priority
+
+    # 2. Remote Boost — lower than Gulf now
     if "remote" in combined_text or job.is_remote:
-        score += 6
+        score += 4
 
     # 3. High-Value Tech/Skills Boost
     tech_keywords = {
@@ -59,14 +59,14 @@ def score_job(job: Job) -> int:
         elif diff > timedelta(days=7): # Relaxed from 5 to 7 days
             score -= 3 # Reduced penalty from -5 to -3
 
-    # 5. Entry-level/Fresh Support & "Opportunity Boost" (Increased)
+    # 5. Entry-level/Fresh Support — boosted for young professionals
     entry_keywords = ["junior", "intern", "trainee", "fresh grad", "graduate", "entry level", "entry-level"]
     if any(k in combined_text for k in entry_keywords):
-        score += 5
+        score += 8   # Raised from 5
     
-    exp_keywords = ["0-2 years", "0-1 years", "no experience", "fresh graduate"]
+    exp_keywords = ["0-2 years", "0-1 years", "no experience", "fresh graduate", "1-2 years"]
     if any(k in combined_text for k in exp_keywords):
-        score += 5
+        score += 6   # Raised from 5
 
     # 6. Penalties (Reduced strictness)
     # Only penalize if it's CLEARLY not a security job but passed filters
