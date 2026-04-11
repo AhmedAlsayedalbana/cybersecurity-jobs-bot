@@ -136,10 +136,190 @@ def _fetch_clearancejobs() -> list[Job]:
     return jobs
 
 
+
+
+# ── Wuzzuf (Egypt #1) ─────────────────────────────────────────
+WUZZUF_QUERIES = [
+    "cybersecurity", "information security", "SOC analyst",
+    "penetration testing", "security engineer", "network security",
+    "security analyst", "cloud security", "GRC", "security intern",
+    "junior security", "malware analyst", "threat intelligence",
+]
+
+def _fetch_wuzzuf() -> list[Job]:
+    jobs = []
+    seen = set()
+    for q in WUZZUF_QUERIES:
+        rss_url = "https://wuzzuf.net/rss/jobs?q=" + q.replace(" ", "+") + "&country=EG"
+        xml = get_text(rss_url, headers=_HEADERS)
+        if not xml:
+            continue
+        try:
+            root = ET.fromstring(xml)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                desc  = item.findtext("description", "") or ""
+                if not title or not link or link in seen:
+                    continue
+                seen.add(link)
+                company = item.findtext("author", "").strip() or "Unknown"
+                location = "Egypt"
+                m = re.search(r"(?:Location|City)[:\s]+([^\n<|,]+)", desc, re.IGNORECASE)
+                if m:
+                    location = m.group(1).strip() + ", Egypt"
+                jobs.append(Job(
+                    title=title, company=company, location=location,
+                    url=link, source="wuzzuf", tags=["wuzzuf", q], is_remote=False,
+                ))
+        except ET.ParseError as e:
+            log.warning("Wuzzuf RSS parse error: " + str(e))
+    log.info("Wuzzuf: " + str(len(jobs)) + " jobs")
+    return jobs
+
+
+# ── Forasna (Egypt #2) ────────────────────────────────────────
+FORASNA_QUERIES = [
+    "cybersecurity", "information+security", "SOC+analyst",
+    "security+engineer", "network+security", "security+analyst",
+]
+
+def _fetch_forasna() -> list[Job]:
+    jobs = []
+    seen = set()
+    for q in FORASNA_QUERIES:
+        rss_url = "https://www.forasna.com/jobs/rss?q=" + q + "&country=EG"
+        xml = get_text(rss_url, headers=_HEADERS)
+        if not xml:
+            continue
+        try:
+            root = ET.fromstring(xml)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                if not title or not link or link in seen:
+                    continue
+                seen.add(link)
+                jobs.append(Job(
+                    title=title,
+                    company=item.findtext("author", "").strip() or "Unknown",
+                    location="Egypt",
+                    url=link, source="forasna", tags=["forasna"], is_remote=False,
+                ))
+        except ET.ParseError as e:
+            log.warning("Forasna RSS parse error: " + str(e))
+    log.info("Forasna: " + str(len(jobs)) + " jobs")
+    return jobs
+
+
+# ── Bayt (Gulf #1) ────────────────────────────────────────────
+BAYT_SEARCHES = [
+    ("cybersecurity",        "saudi-arabia",        "Saudi Arabia"),
+    ("soc-analyst",          "saudi-arabia",        "Saudi Arabia"),
+    ("security-engineer",    "saudi-arabia",        "Saudi Arabia"),
+    ("penetration-tester",   "saudi-arabia",        "Saudi Arabia"),
+    ("information-security", "saudi-arabia",        "Saudi Arabia"),
+    ("cybersecurity",        "united-arab-emirates","UAE"),
+    ("soc-analyst",          "united-arab-emirates","UAE"),
+    ("security-engineer",    "united-arab-emirates","UAE"),
+    ("cybersecurity",        "qatar",               "Qatar"),
+    ("security-engineer",    "qatar",               "Qatar"),
+    ("cybersecurity",        "kuwait",              "Kuwait"),
+    ("cybersecurity",        "bahrain",             "Bahrain"),
+    ("cybersecurity",        "oman",                "Oman"),
+    ("cybersecurity",        "egypt",               "Egypt"),
+    ("soc-analyst",          "egypt",               "Egypt"),
+    ("security-engineer",    "egypt",               "Egypt"),
+]
+
+def _fetch_bayt() -> list[Job]:
+    jobs = []
+    seen = set()
+    for keyword, country, location_label in BAYT_SEARCHES:
+        rss_url = (
+            "https://www.bayt.com/en/" + country + "/jobs/"
+            + keyword + "-jobs/?rss=1"
+        )
+        xml = get_text(rss_url, headers=_HEADERS)
+        if not xml:
+            continue
+        try:
+            root = ET.fromstring(xml)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                if not title or not link or link in seen:
+                    continue
+                seen.add(link)
+                desc = item.findtext("description", "") or ""
+                company = item.findtext("author", "").strip() or "Unknown"
+                m = re.search(r"(?:Company|Employer)[:\s]+([^\n<|]+)", desc, re.IGNORECASE)
+                if m:
+                    company = m.group(1).strip()
+                jobs.append(Job(
+                    title=title, company=company, location=location_label,
+                    url=link, source="bayt", tags=["bayt", keyword], is_remote=False,
+                ))
+        except ET.ParseError as e:
+            log.warning("Bayt RSS parse error: " + str(e))
+    log.info("Bayt: " + str(len(jobs)) + " jobs")
+    return jobs
+
+
+# ── Naukrigulf (Gulf #2) ──────────────────────────────────────
+NAUKRIGULF_SEARCHES = [
+    ("cybersecurity",        "saudi-arabia", "Saudi Arabia"),
+    ("information-security", "saudi-arabia", "Saudi Arabia"),
+    ("soc-analyst",          "saudi-arabia", "Saudi Arabia"),
+    ("security-engineer",    "saudi-arabia", "Saudi Arabia"),
+    ("cybersecurity",        "uae",          "UAE"),
+    ("soc-analyst",          "uae",          "UAE"),
+    ("security-engineer",    "uae",          "UAE"),
+    ("cybersecurity",        "qatar",        "Qatar"),
+    ("cybersecurity",        "kuwait",       "Kuwait"),
+    ("cybersecurity",        "bahrain",      "Bahrain"),
+    ("cybersecurity",        "oman",         "Oman"),
+]
+
+def _fetch_naukrigulf() -> list[Job]:
+    jobs = []
+    seen = set()
+    for keyword, country, location_label in NAUKRIGULF_SEARCHES:
+        rss_url = (
+            "https://www.naukrigulf.com/rss/"
+            + keyword + "-jobs-in-" + country
+        )
+        xml = get_text(rss_url, headers=_HEADERS)
+        if not xml:
+            continue
+        try:
+            root = ET.fromstring(xml)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                if not title or not link or link in seen:
+                    continue
+                seen.add(link)
+                jobs.append(Job(
+                    title=title,
+                    company=item.findtext("author", "").strip() or "Unknown",
+                    location=location_label,
+                    url=link, source="naukrigulf", tags=["naukrigulf"], is_remote=False,
+                ))
+        except ET.ParseError as e:
+            log.warning("Naukrigulf RSS parse error: " + str(e))
+    log.info("Naukrigulf: " + str(len(jobs)) + " jobs")
+    return jobs
+
+
 def fetch_cybersec_boards() -> list[Job]:
     """Aggregate all cybersecurity-specific board results."""
     all_jobs = []
     for fn in [
+        _fetch_wuzzuf,
+        _fetch_bayt,
+        _fetch_naukrigulf,
+        _fetch_forasna,
         _fetch_infosec_jobs,
         _fetch_cybersecjobs,
         _fetch_securityjobs,
@@ -150,5 +330,5 @@ def fetch_cybersec_boards() -> list[Job]:
         try:
             all_jobs.extend(fn())
         except Exception as e:
-            log.warning(f"CyberSecBoard sub-fetcher {fn.__name__} failed: {e}")
+            log.warning("CyberSecBoard sub-fetcher " + fn.__name__ + " failed: " + str(e))
     return all_jobs
