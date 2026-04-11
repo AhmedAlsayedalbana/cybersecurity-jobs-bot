@@ -14,7 +14,6 @@ import config
 import logging
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def _flatten_tags(tags) -> str:
@@ -103,49 +102,64 @@ def _is_remote(job: "Job") -> bool:
 
 # ─── Keyword helpers ─────────────────────────────────────────
 
+# Expanded CORE_ROLES for better detection
 CORE_ROLES = [
     "soc analyst", "security engineer", "penetration tester", "pentester",
     "appsec", "cloud security", "incident response", "threat intelligence",
-    "security architect", "ciso", "grc", "compliance analyst", "security analyst"
+    "security architect", "ciso", "grc", "compliance analyst", "security analyst",
+    "vulnerability", "ethical hacker", "blue team", "red team", "devsecops",
+    "forensics", "malware", "cyber security", "cybersecurity", "infosec",
+    "information security", "detection engineer", "security operations"
 ]
 
-WEAK_TERMS = ["security", "cyber"]
+WEAK_TERMS = ["security", "cyber", "protection", "defense", "analyst"]
 
 def is_cybersec_job(job: "Job") -> bool:
     """
-    Return True only if job is clearly a Cybersecurity role.
-    Layered Filtering:
-      Layer 1: Must-have roles (CORE_ROLES)
-      Layer 2: Weak signals (WEAK_TERMS) + Strong technical context (SIEM, SOC, etc.)
+    Return True if job is a Cybersecurity role.
+    Reduced strictness to allow more traffic.
     """
     text = f"{job.title} {job.description} {_flatten_tags(job.tags)}".lower()
     title_lower = job.title.lower()
 
-    # Title-only exclusion check (prevent false positives on HR/sales roles)
-    if any(kw.lower() in title_lower for kw in config.EXCLUDE_KEYWORDS):
-        logger.info(f"Job excluded (Blacklisted keyword in title): {job.title}")
-        return False
+    # Title-only exclusion check
+    for kw in config.EXCLUDE_KEYWORDS:
+        if kw.lower() in title_lower:
+            # Check if it's a false positive (e.g., "Security Support" should pass)
+            # If title contains a core role, don't exclude it even if it has an exclude keyword
+            if any(role in title_lower for role in ["security", "cyber", "soc", "pentest"]):
+                continue
+            logger.info(f"Job excluded (Blacklisted keyword in title): {job.title}")
+            return False
 
-    # Layer 1: Core Roles
+    # Layer 1: Core Roles (Highest confidence)
     if any(role in text for role in CORE_ROLES):
         return True
 
-    # Layer 2: Weak signals with additional context
+    # Layer 2: Weak signals with technical context
     if any(term in text for term in WEAK_TERMS):
-        strong_context = ["siem", "soc", "edr", "xdr", "pentest", "vulnerability", "firewall", "ids/ips", "threat"]
+        strong_context = [
+            "siem", "soc", "edr", "xdr", "pentest", "vulnerability", "firewall", 
+            "ids/ips", "threat", "splunk", "qradar", "sentinel", "crowdstrike",
+            "defender", "wireshark", "metasploit", "burp", "owasp", "iso 27001",
+            "nist", "cis", "iam", "pki", "encryption", "hardening"
+        ]
         if any(ctx in text for ctx in strong_context):
             return True
-        logger.info(f"Job excluded (Weak signal without context): {job.title}")
-        return False
+        
+        # If it's in Egypt or Gulf, be even less strict
+        if _is_in_egypt(job.location) or _is_in_gulf(job.location):
+            if any(term in title_lower for term in ["security", "cyber"]):
+                return True
 
-    logger.info(f"Job excluded (No cyber keywords): {job.title}")
+    logger.info(f"Job excluded (No strong cyber context): {job.title}")
     return False
 
 
 def passes_geo_filter(job: "Job") -> bool:
     """
     Geo-filtering:
-    - Egypt → ALWAYS pass (top priority)
+    - Egypt → ALWAYS pass
     - Remote-only sources → auto-pass
     - Remote job → pass
     - Gulf → pass
@@ -173,10 +187,7 @@ def passes_geo_filter(job: "Job") -> bool:
 
 def filter_jobs(jobs: list["Job"]) -> list["Job"]:
     """
-    Apply all filters:
-    1. Must have title and URL
-    2. Must be a cybersecurity job
-    3. Must pass geo filter
+    Apply all filters.
     """
     filtered = []
     for job in jobs:
