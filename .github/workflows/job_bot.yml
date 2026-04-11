@@ -1,4 +1,3 @@
-```yaml
 name: Cybersecurity Jobs Bot (Elite Pro)
 
 on:
@@ -126,4 +125,3 @@ jobs:
             git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
           fi
-```
