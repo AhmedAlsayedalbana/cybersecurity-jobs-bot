@@ -142,14 +142,47 @@ REED_API_KEY     = os.getenv("REED_API_KEY", "")
 
 # ─── Geo Patterns ────────────────────────────────────────────
 EGYPT_PATTERNS = {
-    "egypt", "مصر", "cairo", "القاهرة", "alexandria", "الإسكندرية",
-    "giza", "الجيزة", "mansoura", "المنصورة", "tanta", "طنطا",
-    "port said", "بورسعيد", "suez", "السويس", "ismailia", "الإسماعيلية",
-    "new cairo", "6th of october", "smart village", "new capital",
-    "العاصمة الإدارية", "nasr city", "مدينة نصر",
+    # General
+    "egypt", "مصر", "egyptian",
+    # Cairo & districts
+    "cairo", "القاهرة", "new cairo", "nasr city", "مدينة نصر",
     "maadi", "المعادي", "heliopolis", "مصر الجديدة", "dokki", "الدقي",
     "mohandessin", "المهندسين", "zamalek", "الزمالك",
+    "6th of october", "6 october", "smart village", "العبور",
+    "new capital", "العاصمة الإدارية", "obour", "شبرا",
+    "ain shams", "عين شمس", "shoubra", "المرج", "el marg",
+    "15th of may", "15 مايو", "badr city", "مدينة بدر",
+    # Giza & surroundings
+    "giza", "الجيزة", "6th october", "sheikh zayed", "الشيخ زايد",
+    "october city", "hadayek october", "al haram", "الهرم",
+    "imbaba", "إمبابة", "bulaq", "بولاق",
+    # Alexandria
+    "alexandria", "الإسكندرية", "alex", "smouha", "سموحة",
+    "miami", "ميامي اسكندرية", "sidi bishr", "سيدي بشر",
+    "agami", "العجمي", "montazah", "المنتزه",
+    # Nile Delta
+    "mansoura", "المنصورة", "tanta", "طنطا",
+    "zagazig", "الزقازيق", "benha", "بنها",
+    "damanhour", "دمنهور", "menouf", "منوف",
+    "kafr el sheikh", "كفر الشيخ", "shibin", "شبين",
+    "mit ghamr", "meet ghamr", "dakahlia", "الدقهلية",
+    "sharqia", "الشرقية", "gharbiya", "الغربية",
+    "monufia", "المنوفية", "beheira", "البحيرة",
+    # Canal Zone
+    "port said", "بورسعيد", "suez", "السويس",
+    "ismailia", "الإسماعيلية", "ismailiya",
+    # Upper Egypt
+    "assiut", "أسيوط", "aswan", "أسوان", "luxor", "الأقصر",
+    "sohag", "سوهاج", "qena", "قنا", "minya", "المنيا",
+    "beni suef", "بني سويف", "fayoum", "الفيوم",
+    # Red Sea & Sinai
     "hurghada", "الغردقة", "sharm el sheikh", "شرم الشيخ",
+    "el gouna", "الجونة", "ain sokhna", "العين السخنة",
+    "dahab", "دهب", "marsa alam", "مرسى علم",
+    # New Cities
+    "new alamein", "العلمين الجديدة", "new assiut", "أسيوط الجديدة",
+    "new sohag", "new mansoura", "المنصورة الجديدة",
+    "10th of ramadan", "العاشر من رمضان",
 }
 
 GULF_PATTERNS = {
@@ -157,14 +190,27 @@ GULF_PATTERNS = {
     "saudi arabia", "saudi", "ksa", "السعودية", "المملكة العربية السعودية",
     "riyadh", "الرياض", "jeddah", "جدة", "dammam", "الدمام",
     "khobar", "الخبر", "dhahran", "الظهران", "neom", "نيوم",
-    "mecca", "مكة", "medina", "المدينة",
+    "mecca", "مكة", "medina", "المدينة", "jubail", "الجبيل",
+    "yanbu", "ينبع", "tabuk", "تبوك", "abha", "أبها",
+    "khamis mushait", "خميس مشيط", "taif", "الطائف",
+    "hail", "حائل", "najran", "نجران", "jizan", "جازان",
     # UAE
     "uae", "united arab emirates", "الإمارات", "dubai", "دبي",
     "abu dhabi", "أبوظبي", "sharjah", "الشارقة", "ajman", "عجمان",
-    # Kuwait / Qatar / Bahrain / Oman
-    "kuwait", "الكويت", "qatar", "قطر", "doha", "الدوحة",
+    "ras al khaimah", "رأس الخيمة", "fujairah", "الفجيرة",
+    "umm al quwain", "أم القيوين", "al ain", "العين",
+    # Kuwait
+    "kuwait", "الكويت", "kuwait city", "مدينة الكويت",
+    "hawalli", "حولي", "salmiya", "السالمية", "ahmadi", "الأحمدي",
+    # Qatar
+    "qatar", "قطر", "doha", "الدوحة", "al wakra", "الوكرة",
+    "lusail", "لوسيل", "al khor", "الخور",
+    # Bahrain
     "bahrain", "البحرين", "manama", "المنامة",
-    "oman", "عُمان", "muscat", "مسقط",
+    "muharraq", "المحرق", "riffa", "الرفاع",
+    # Oman
+    "oman", "عُمان", "muscat", "مسقط", "sohar", "صحار",
+    "salalah", "صلالة", "nizwa", "نزوى",
 }
 
 REMOTE_PATTERNS = {
@@ -297,7 +343,7 @@ SOURCE_DISPLAY = {
 
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
-MAX_JOBS_PER_RUN = 20   # Increased from 15
-SCORE_THRESHOLD  = 4    # Reduced from 6 for better traffic
+MAX_JOBS_PER_RUN = 30   # Raised from 20 — more jobs per run
+SCORE_THRESHOLD  = 3    # Lowered — capture more Egypt/Gulf jobs
 REQUEST_TIMEOUT  = 15
 SEED_MODE_ENV    = "SEED_MODE"
