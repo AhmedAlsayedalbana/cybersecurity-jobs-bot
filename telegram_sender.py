@@ -1,13 +1,11 @@
 """
 Telegram message formatting and multi-topic sending.
-Routes each job to the correct topic(s) in the supergroup.
-Optimized for "Elite Pro" engagement.
+Elite version (UI + Smart Formatting + Entry Focus).
 """
 
 import time
 import logging
 import requests
-from datetime import datetime, timedelta
 from models import Job, _flatten_tags
 from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, TELEGRAM_SEND_DELAY,
@@ -16,40 +14,39 @@ from config import (
 )
 
 log = logging.getLogger(__name__)
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+TELEGRAM_API = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN
 
 
-# ─── Topic Routing ────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 🔎 Routing
+# ─────────────────────────────────────────────────────────────
 
 def _is_egypt_job(job: Job) -> bool:
-    loc = job.location.lower()
+    loc = (job.location or "").lower()
     return any(p in loc for p in EGYPT_PATTERNS)
 
 
 def _is_gulf_job(job: Job) -> bool:
-    loc = job.location.lower()
+    loc = (job.location or "").lower()
     return any(p in loc for p in GULF_PATTERNS)
 
 
 def _is_remote_job(job: Job) -> bool:
     if job.is_remote:
         return True
-    combined = f"{job.title} {job.location} {job.job_type}".lower()
+    combined = (job.title + " " + job.location + " " + job.job_type).lower()
     return any(p in combined for p in REMOTE_PATTERNS)
 
 
-def route_job(job: Job) -> list[str]:
+def route_job(job: Job) -> list:
     channels = []
     tags_str = _flatten_tags(job.tags)
-    searchable = f"{job.title} {job.company} {tags_str}".lower()
+    searchable = (job.title + " " + job.company + " " + tags_str).lower()
 
     for key, ch in CHANNELS.items():
         match_type = ch.get("match", "")
 
-        if match_type == "ALL":
-            channels.append(key)
-
-        elif match_type == "GEO_EGYPT":
+        if match_type == "GEO_EGYPT":
             if _is_egypt_job(job):
                 channels.append(key)
 
@@ -62,85 +59,110 @@ def route_job(job: Job) -> list[str]:
                 channels.append(key)
 
         elif "keywords" in ch:
-            kws = ch["keywords"]
-            if any(kw.lower() in searchable for kw in kws):
+            if any(kw.lower() in searchable for kw in ch["keywords"]):
                 channels.append(key)
 
     return channels
 
 
-# ─── Message Formatting ───────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ✨ Message Formatting
+# ─────────────────────────────────────────────────────────────
 
-def _escape_html(text) -> str:
-    if text is None:
+def _escape(text) -> str:
+    if not text:
         return ""
-    if isinstance(text, list):
-        text = ", ".join(str(t) for t in text)
-    text = str(text)
-    return (
-        text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    )
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _location_badge(job: Job) -> str:
+def _detect_level(text: str) -> str:
+    if any(k in text for k in ["intern", "junior", "trainee", "entry"]):
+        return "🟢 Entry-Level"
+    if any(k in text for k in ["senior", "lead", "manager", "principal"]):
+        return "🔴 Senior"
+    return "🔥 Mid-Level"
+
+
+def _detect_domain(text: str) -> str:
+    if "soc" in text:
+        return "🖥️ SOC / Blue Team"
+    if "pentest" in text or "penetration" in text:
+        return "🕵️ Pentest / Red Team"
+    if "cloud" in text:
+        return "☁️ Cloud Security"
+    if "appsec" in text or "application security" in text:
+        return "🛡️ Application Security"
+    if "grc" in text or "compliance" in text:
+        return "📋 GRC / Compliance"
+    if "dfir" in text or "forensic" in text:
+        return "🔬 DFIR / Forensics"
+    return "🔐 Cybersecurity"
+
+
+def _location(job: Job) -> str:
     if _is_egypt_job(job):
-        return "Cairo, Egypt 🇪🇬"
+        return "🇪🇬 Egypt"
     if _is_gulf_job(job):
-        return "Gulf Region 🌙"
+        return "🌙 Gulf"
     if _is_remote_job(job):
-        return "Remote 🌍"
-    return _escape_html(job.location) if job.location else "Not specified"
+        return "🌍 Remote"
+    return _escape(job.location)
+
+
+def _extract_skills(text: str) -> str:
+    skill_map = {
+        "siem": "SIEM", "splunk": "Splunk", "qradar": "QRadar",
+        "sentinel": "Sentinel", "aws": "AWS", "azure": "Azure",
+        "incident": "Incident Response", "threat": "Threat Intel",
+        "pentest": "Pentest", "burp": "Burp Suite",
+        "nessus": "Nessus", "metasploit": "Metasploit",
+        "iso 27001": "ISO 27001", "nist": "NIST", "grc": "GRC",
+    }
+    found = [label for kw, label in skill_map.items() if kw in text]
+    return " | ".join(found[:3]) if found else "General Security"
 
 
 def format_job_message(job: Job) -> str:
     from scoring import score_job
     score = score_job(job)
 
-    title = _escape_html(job.title)
-    company = _escape_html(job.company) if job.company else "Unknown"
-    badge = _location_badge(job)
+    text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
 
-    first_line = f"🔥 <b>{title}</b>"
+    level    = _detect_level(text)
+    domain   = _detect_domain(text)
+    location = _location(job)
+    skills   = _extract_skills(text)
 
-    lines = [
-        first_line,
-        "",
-        f"🏢 {company}",
-        f"📍 {badge}",
-        f"⭐ {score}",
-        "",
-    ]
+    title   = _escape(job.title)
+    company = _escape(job.company) if job.company else "Unknown"
 
-    tech_focus = []
-    text = f"{job.title} {job.description} {_flatten_tags(job.tags)}".lower()
+    # Trim URL for display
+    display_url = job.url[:55] + "..." if len(job.url) > 55 else job.url
 
-    tech_map = {
-        "siem": "SIEM", "splunk": "Splunk", "qradar": "QRadar",
-        "aws security": "AWS Security", "azure security": "Azure Security",
-        "cloud security": "Cloud Security", "incident response": "Incident Response",
-        "pentest": "Pentest", "soc": "SOC", "grc": "GRC", "appsec": "AppSec"
-    }
+    message = (
+        level + " <b>" + title + "</b>\n"
+        "\n"
+        "🏢 " + company + "\n"
+        "📍 " + location + "\n"
+        "🎯 " + domain + "\n"
+        "⭐ Score: " + str(score) + "\n"
+        "\n"
+        "🧠 Skills: " + skills + "\n"
+        "\n"
+        '🔗 <b>Apply Now:</b>\n'
+        '<a href="' + job.url + '">' + _escape(display_url) + "</a>"
+    )
 
-    for kw, display in tech_map.items():
-        if kw in text:
-            tech_focus.append(display)
-
-    if tech_focus:
-        lines.append("🧠 " + " | ".join(tech_focus[:3]))
-        lines.append("")
-
-    lines.append(f'🔗 <b>Apply:</b>')
-    lines.append(f'<a href="{job.url}">{job.url[:40]}...</a>')
-
-    return "\n".join(lines)
+    return message.strip()
 
 
-# ─── Sending ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 📤 Sending
+# ─────────────────────────────────────────────────────────────
 
-def _send_to_topic(message: str, thread_id: int | None = None) -> bool:
+def _send_to_topic(message: str, thread_id=None) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_GROUP_ID:
+        log.warning("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_GROUP_ID")
         return False
 
     payload = {
@@ -150,12 +172,12 @@ def _send_to_topic(message: str, thread_id: int | None = None) -> bool:
         "disable_web_page_preview": True,
     }
 
-    if thread_id is not None:
+    if thread_id:
         payload["message_thread_id"] = thread_id
 
     try:
         resp = requests.post(
-            f"{TELEGRAM_API}/sendMessage",
+            "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage",
             json=payload,
             timeout=10,
         )
@@ -163,71 +185,43 @@ def _send_to_topic(message: str, thread_id: int | None = None) -> bool:
         if resp.status_code == 200:
             return True
 
-        if resp.status_code == 429:
-            retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
-            log.warning(f"Rate limited. Sleeping for {retry_after}s")
-            time.sleep(retry_after)
-            return _send_to_topic(message, thread_id)
-
-        log.error(f"Telegram error {resp.status_code} (thread={thread_id}): {resp.text[:200]}")
+        log.error("Telegram error " + str(resp.status_code) + ": " + resp.text[:200])
         return False
 
-    except requests.RequestException as e:
-        log.error(f"Telegram request failed (thread={thread_id}): {e}")
+    except Exception as e:
+        log.error("Telegram request failed: " + str(e))
         return False
 
 
 def send_job(job: Job) -> dict:
-    target_topics = route_job(job)
     results = {}
+    topics = route_job(job)
 
-    if not target_topics:
-        log.debug(f"No matching topics for: {job.title}")
+    if not topics:
         return results
 
     message = format_job_message(job)
 
-    for topic_key in target_topics:
+    for topic_key in topics:
         thread_id = get_topic_thread_id(topic_key)
 
-        if thread_id is None:
-            log.warning(f"⚠️ Missing thread_id for {topic_key}, skipping")
+        if not thread_id:
             continue
 
-        topic_name = CHANNELS[topic_key]["name"]
         success = _send_to_topic(message, thread_id)
         results[topic_key] = success
-
-        if success:
-            log.info(f"✓ Sent to {topic_name}: {job.title[:60]}")
-        else:
-            log.warning(f"✗ Failed {topic_name}: {job.title[:60]}")
 
         time.sleep(0.5)
 
     return results
 
 
-def send_jobs(jobs: list[Job]) -> int:
-    total_sent = 0
-    topic_stats: dict[str, int] = {}
+def send_jobs(jobs: list) -> int:
+    total = 0
 
-    for i, job in enumerate(jobs):
-        results = send_job(job)
+    for job in jobs:
+        res = send_job(job)
+        total += sum(1 for v in res.values() if v)
+        time.sleep(TELEGRAM_SEND_DELAY)
 
-        for t_key, success in results.items():
-            topic_stats.setdefault(t_key, 0)
-            if success:
-                topic_stats[t_key] += 1
-                total_sent += 1
-
-        if i < len(jobs) - 1:
-            time.sleep(TELEGRAM_SEND_DELAY)
-
-    if topic_stats:
-        log.info("📊 Send summary:")
-        for t_key, count in sorted(topic_stats.items()):
-            t_name = CHANNELS.get(t_key, {}).get("name", t_key)
-            log.info(f"{t_name}: {count} jobs")
-
-    return total_sent
+    return total
