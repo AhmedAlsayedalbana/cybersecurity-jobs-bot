@@ -29,7 +29,7 @@ log = logging.getLogger("main")
 def main():
     start_time = time.time()
     log.info("=" * 60)
-    log.info(f"🔐 Cybersecurity Jobs Bot — Run Started at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}")
+    log.info(f"🔐 Cybersecurity Jobs Bot — Run Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("=" * 60)
 
     # Stats tracking
