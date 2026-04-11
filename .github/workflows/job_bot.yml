@@ -2,8 +2,8 @@ name: Cybersecurity Jobs Bot (Elite Pro)
 
 on:
   schedule:
-    # Run every 15 د
-    - cron: '*/15 * * * *'
+    # Run every 30 د
+    - cron: '*/30 * * * *'
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 permissions:
