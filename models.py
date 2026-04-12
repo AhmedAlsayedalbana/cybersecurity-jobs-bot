@@ -104,29 +104,51 @@ def _is_remote(job: "Job") -> bool:
 
 # Expanded CORE_ROLES for better detection
 CORE_ROLES = [
-    "soc analyst", "security engineer", "penetration tester", "pentester",
-    "appsec", "cloud security", "incident response", "threat intelligence",
+    "soc analyst", "soc engineer", "security engineer", "security operations engineer",
+    "penetration tester", "pentester", "pentest",
+    "appsec", "application security", "cloud security",
+    "incident response", "incident responder",
+    "threat intelligence", "threat hunter", "threat hunting", "threat analyst",
+    "cyber threat intelligence", "cti analyst",
+    "dfir", "digital forensics",
     "security architect", "ciso", "grc", "compliance analyst", "security analyst",
     "vulnerability", "ethical hacker", "blue team", "red team", "devsecops",
     "forensics", "malware", "cyber security", "cybersecurity", "infosec",
-    "information security", "detection engineer", "security operations"
+    "information security", "detection engineer", "security operations",
+    "red teamer", "offensive security", "bug bounty", "exploit",
+    "iam engineer", "identity access", "pki engineer", "cryptograph",
+    "security consultant", "security specialist", "security officer",
+    "security administrator", "security manager", "security lead",
 ]
 
 WEAK_TERMS = ["security", "cyber", "protection", "defense", "analyst"]
 
+def _word_match(keyword: str, text: str) -> bool:
+    """
+    Match keyword safely:
+    - Multi-word phrases: simple substring (already specific enough)
+    - Single words: word-boundary match to prevent 'hr' matching inside 'threat'
+    """
+    import re
+    kw = keyword.lower().strip()
+    if " " in kw:
+        return kw in text
+    return bool(re.search(r"\b" + re.escape(kw) + r"\b", text))
+
+
 def is_cybersec_job(job: "Job") -> bool:
     """
     Return True if job is a Cybersecurity role.
-    Reduced strictness to allow more traffic.
+    Uses word-boundary matching on exclude keywords to prevent false positives
+    (e.g. 'hr' must not match inside 'threat').
     """
     text = f"{job.title} {job.description} {_flatten_tags(job.tags)}".lower()
     title_lower = job.title.lower()
 
-    # Title-only exclusion check
+    # Title-only exclusion — word-boundary aware
     for kw in config.EXCLUDE_KEYWORDS:
-        if kw.lower() in title_lower:
-            # Check if it's a false positive (e.g., "Security Support" should pass)
-            # If title contains a core role, don't exclude it even if it has an exclude keyword
+        if _word_match(kw, title_lower):
+            # Don't exclude if a core security term is also in the title
             if any(role in title_lower for role in ["security", "cyber", "soc", "pentest"]):
                 continue
             logger.info(f"Job excluded (Blacklisted keyword in title): {job.title}")
@@ -139,15 +161,15 @@ def is_cybersec_job(job: "Job") -> bool:
     # Layer 2: Weak signals with technical context
     if any(term in text for term in WEAK_TERMS):
         strong_context = [
-            "siem", "soc", "edr", "xdr", "pentest", "vulnerability", "firewall", 
+            "siem", "soc", "edr", "xdr", "pentest", "vulnerability", "firewall",
             "ids/ips", "threat", "splunk", "qradar", "sentinel", "crowdstrike",
             "defender", "wireshark", "metasploit", "burp", "owasp", "iso 27001",
             "nist", "cis", "iam", "pki", "encryption", "hardening"
         ]
         if any(ctx in text for ctx in strong_context):
             return True
-        
-        # If it's in Egypt or Gulf, be even less strict
+
+        # If it's in Egypt or Gulf, be less strict
         if _is_in_egypt(job.location) or _is_in_gulf(job.location):
             if any(term in title_lower for term in ["security", "cyber"]):
                 return True
