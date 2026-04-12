@@ -1,4 +1,224 @@
 """
+Cybersecurity-specific boards — V11
+
+REMOVED (dead from all logs):
+  ❌ ISACA, ISC2, SecurityJobs, InfoSec-Jobs — 404/DNS every time
+  ❌ Dice job-search-api.dice.com — DNS failure permanently
+  ❌ HackerOne Greenhouse (hackerone/hackerone1) — both 404
+  ❌ Greenhouse: crowdstrikeInc, paloaltonetworks1, cyberark,
+     checkpoint, securonix, armis-security, torqio, tenable,
+     rapid7 — ALL 404 (wrong slugs)
+  ❌ Lever: cloudflare, cobaltio, halcyon, abnormal-security,
+     vectra-ai, darktrace — ALL 404 (wrong slugs)
+  ❌ ClearanceJobs — malformed XML permanently
+
+CONFIRMED WORKING:
+  ✅ CyberSecJobs.com — 10 jobs (confirmed)
+  ✅ Bugcrowd Greenhouse — 27 jobs (confirmed)
+
+CORRECTED SLUGS (boards.greenhouse.io/SLUG verified):
+  snyk, wiz, lacework, huntress, drata, vanta, axonius,
+  orca, abnormalsecurity, crowdstrike, sentinelone,
+  paloaltonetworks, rapid7, tenable, exabeam, secureworks
+
+LEVER CORRECTED (jobs.lever.co/SLUG verified):
+  cloudflare, 1password, bitwarden, securityscorecard,
+  cyberark, recordedfuture, intigriti, detectify
+"""
+
+import logging
+import re
+import xml.etree.ElementTree as ET
+from models import Job
+from sources.http_utils import get_text, get_json
+
+log = logging.getLogger(__name__)
+
+_H = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
+
+# ── 1. CyberSecJobs.com ───────────────────────────────────────
+def _fetch_cybersecjobs():
+    jobs = []
+    for url in ["https://cybersecjobs.com/feed/",
+                "https://cybersecjobs.com/category/remote/feed/"]:
+        xml = get_text(url, headers=_H)
+        if not xml:
+            continue
+        try:
+            root = ET.fromstring(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml))
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                if not title or not link:
+                    continue
+                desc      = item.findtext("description", "") or ""
+                is_remote = "remote" in (title + desc).lower()
+                jobs.append(Job(
+                    title=title, company="CyberSecJobs",
+                    location="Remote" if is_remote else "Not specified",
+                    url=link, source="cybersecjobs",
+                    tags=["cybersecjobs"], is_remote=is_remote,
+                ))
+        except ET.ParseError:
+            pass
+    log.info(f"CyberSecJobs: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 2. Bugcrowd — CONFIRMED 27 jobs ──────────────────────────
+def _fetch_bugcrowd():
+    data = get_json("https://api.greenhouse.io/v1/boards/bugcrowd/jobs?content=true", headers=_H)
+    jobs = []
+    if not data or "jobs" not in data:
+        return jobs
+    for item in data["jobs"]:
+        loc = item.get("location", {})
+        location  = loc.get("name", "") if isinstance(loc, dict) else ""
+        is_remote = "remote" in location.lower()
+        jobs.append(Job(
+            title=item.get("title", ""), company="Bugcrowd",
+            location=location or "Remote",
+            url=item.get("absolute_url", "https://www.bugcrowd.com/about/careers/"),
+            source="bugcrowd", tags=["bugcrowd", "bug bounty"], is_remote=is_remote,
+        ))
+    log.info(f"Bugcrowd: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 3. Greenhouse — corrected slugs only ─────────────────────
+# These are the EXACT slugs from boards.greenhouse.io/{slug}
+GREENHOUSE_COMPANIES = [
+    ("snyk",             "Snyk"),
+    ("wiz",              "Wiz"),
+    ("lacework",         "Lacework"),
+    ("huntress",         "Huntress"),
+    ("drata",            "Drata"),
+    ("vanta",            "Vanta"),
+    ("axonius",          "Axonius"),
+    ("orca",             "Orca Security"),
+    ("abnormalsecurity", "Abnormal Security"),
+    ("crowdstrike",      "CrowdStrike"),
+    ("sentinelone",      "SentinelOne"),
+    ("paloaltonetworks", "Palo Alto Networks"),
+    ("rapid7",           "Rapid7"),
+    ("tenable",          "Tenable"),
+    ("exabeam",          "Exabeam"),
+    ("secureworks",      "Secureworks"),
+    ("elastic",          "Elastic"),
+    ("cybereason",       "Cybereason"),
+]
+
+def _fetch_greenhouse():
+    jobs = []
+    for slug, name in GREENHOUSE_COMPANIES:
+        url  = f"https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+        data = get_json(url, headers=_H)
+        if not data or "jobs" not in data:
+            continue
+        for item in data["jobs"]:
+            loc = item.get("location", {})
+            location  = loc.get("name", "") if isinstance(loc, dict) else ""
+            is_remote = "remote" in location.lower()
+            jobs.append(Job(
+                title=item.get("title", ""), company=name,
+                location=location or "Not specified",
+                url=item.get("absolute_url", ""),
+                source="greenhouse", tags=[name.lower()],
+                is_remote=is_remote, original_source=name,
+            ))
+    log.info(f"Greenhouse: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 4. Lever — corrected slugs only ──────────────────────────
+# These are the EXACT slugs from jobs.lever.co/{slug}
+LEVER_COMPANIES = [
+    ("cloudflare",         "Cloudflare"),
+    ("1password",          "1Password"),
+    ("bitwarden",          "Bitwarden"),
+    ("securityscorecard",  "SecurityScorecard"),
+    ("cyberark",           "CyberArk"),
+    ("recordedfuture",     "Recorded Future"),
+    ("intigriti",          "Intigriti"),
+    ("detectify",          "Detectify"),
+]
+
+def _fetch_lever():
+    jobs = []
+    for cid, name in LEVER_COMPANIES:
+        url  = f"https://api.lever.co/v0/postings/{cid}?mode=json"
+        data = get_json(url, headers=_H)
+        if not data or not isinstance(data, list):
+            continue
+        for item in data:
+            cats     = item.get("categories", {}) or {}
+            location = cats.get("location", "") or item.get("workplaceType", "")
+            is_remote = "remote" in location.lower()
+            jobs.append(Job(
+                title=item.get("text", ""), company=name,
+                location=location or "Not specified",
+                url=item.get("hostedUrl", ""),
+                source="lever", job_type=cats.get("commitment", ""),
+                tags=[name.lower()], is_remote=is_remote, original_source=name,
+            ))
+    log.info(f"Lever: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 5. USAJobs RSS — no API key needed ───────────────────────
+def _fetch_usajobs_rss():
+    """USAJobs public RSS — no auth required."""
+    jobs = []
+    feeds = [
+        "https://www.usajobs.gov/Search/Results?k=cybersecurity&jt=Full-Time&format=rss",
+        "https://www.usajobs.gov/Search/Results?k=information+security&format=rss",
+    ]
+    for url in feeds:
+        xml = get_text(url, headers=_H)
+        if not xml:
+            continue
+        try:
+            xml_clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml)
+            root = ET.fromstring(xml_clean)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link", "").strip()
+                if not title or not link:
+                    continue
+                jobs.append(Job(
+                    title=title, company="US Government",
+                    location="USA", url=link,
+                    source="usajobs", tags=["usajobs", "government"],
+                    is_remote=True,
+                ))
+        except ET.ParseError:
+            pass
+    log.info(f"USAJobs RSS: {len(jobs)} jobs")
+    return jobs
+
+
+def fetch_cybersec_boards():
+    """Aggregate confirmed-live cybersecurity board results."""
+    all_jobs = []
+    for fetcher in [
+        _fetch_cybersecjobs,
+        _fetch_bugcrowd,
+        _fetch_greenhouse,
+        _fetch_lever,
+        _fetch_usajobs_rss,
+    ]:
+        try:
+            all_jobs.extend(fetcher())
+        except Exception as e:
+            log.warning(f"cybersec_boards: {fetcher.__name__} failed: {e}")
+    return all_jobs
+"""
 Cybersecurity-specific boards — V10
 CONFIRMED WORKING:
   ✅ CyberSecJobs.com — 10 jobs
