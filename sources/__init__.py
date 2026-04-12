@@ -1,14 +1,23 @@
 """
-Source registry — ordered by priority:
-  1. Gov Egypt:     EG-CERT, ITI, ITIDA, DEPI, NTI, NTRA, MCIT + Egyptian companies
-  2. Gov Gulf:      NCA, CITC, SDAIA, Aramco, NEOM, G42, QCERT + Gulf companies + Tanqeeb/Akhtaboot
-  3. CyberSec:      Wuzzuf, Bayt, Naukrigulf, Forasna + InfoSec-Jobs, ISACA, ISC2
-  4. LinkedIn:      Egypt all govs + Gulf full + Remote
-  5. Google Jobs:   SerpAPI + Adzuna MENA
-  6. Tech Boards:   Dice, HackerOne, Bugcrowd, Greenhouse
-  7. Remote Boards: Remotive, Himalayas, Jobicy, RemoteOK, WWR, etc.
-  8. API-based:     Adzuna, Jooble, Findwork, Reed
-  9. Freelance:     Upwork, Freelancer, Khamsat, Mustaqil
+Source registry V9 — ordered by priority and reliability.
+
+CHANGES vs V8:
+  - gov_egypt:       FIXED ThreadPoolExecutor timeout crash
+  - gov_gulf:        FIXED ThreadPoolExecutor timeout crash; removed dead sources
+  - cybersec_boards: FIXED broken URLs (InfoSec-Jobs, ISACA, ISC2, SecurityJobs)
+                     MOVED Greenhouse + Lever here (was in tech_boards)
+                     ADDED Dice via official API (replaces dead Seibert proxy)
+  - tech_boards:     Simplified to Dice only (deduplication removed)
+  - freelance:       FIXED all dead RSS feeds (Upwork 410, Freelancer 404,
+                     Khamsat 404, Mustaqil 404) → replaced with working scrapers
+  - egypt_alt:       FIXED Forasna URL; ADDED CareerJet Egypt, Naukrigulf
+  - google_jobs:     Unchanged (SerpAPI — works when key set)
+
+REMOVED ENTIRELY (dead, waste time, 0 results every run):
+  ❌ Bayt RSS         (403 Forbidden — use JSON-LD scraping in gov_gulf instead)
+  ❌ Seibert Dice proxy (DNS failure — replaced with official Dice API)
+  ❌ ISC2 old URL     (fixed in cybersec_boards)
+  ❌ ISACA old URL    (fixed in cybersec_boards)
 """
 
 from sources.gov_egypt       import fetch_gov_egypt
@@ -33,117 +42,42 @@ from sources.freelance       import fetch_freelance
 from sources.jsearch         import fetch_jsearch
 
 ALL_FETCHERS = [
-    # 1. Egyptian Government & Official Institutions (TOP PRIORITY)
-    ("Gov Egypt",        fetch_gov_egypt),
+    # ── 1. Egypt — top priority ──────────────────────────────
+    ("Gov Egypt",       fetch_gov_egypt),      # Wuzzuf RSS + company pages + CBE + Indeed
+    ("Egypt Alt",       fetch_egypt_alt),       # CareerJet + Forasna + Naukrigulf + LinkedIn search
 
-    # 2. Gulf Government & Official Institutions
-    ("Gov Gulf",         fetch_gov_gulf),
+    # ── 2. Gulf ──────────────────────────────────────────────
+    ("Gov Gulf",        fetch_gov_gulf),        # STC, Omantel, TDRA, Etisalat, Bayt, Indeed Gulf
 
-    # 3. Arab Cybersec Boards (Wuzzuf, Bayt, Naukrigulf, Forasna + InfoSec-Jobs...)
-    ("CyberSec Boards",  fetch_cybersec_boards),
+    # ── 3. Cybersec-specific boards ──────────────────────────
+    ("CyberSec Boards", fetch_cybersec_boards), # CyberSecJobs, InfoSec-Jobs(fixed), ISACA(fixed),
+                                                # Dice, HackerOne, Bugcrowd, Greenhouse, Lever
 
-    # 3b. Egypt Alt Sources (Wuzzuf RSS, Indeed EG, CareerJet, Forasna, Tanqeeb)
-    #     Rate-limit-free alternatives to LinkedIn for Egyptian jobs
-    ("Egypt Alt",        fetch_egypt_alt),
+    # ── 4. LinkedIn ──────────────────────────────────────────
+    ("LinkedIn",        fetch_linkedin),        # Egypt + Gulf + Remote
 
-    # 4. LinkedIn (Egypt all govs + Gulf full + Company pages + Remote)
-    ("LinkedIn",         fetch_linkedin),
+    # ── 5. Google Jobs (SerpAPI — optional key) ──────────────
+    ("Google Jobs",     fetch_google_jobs),
 
-    # 5. Google Jobs (SerpAPI + Adzuna MENA)
-    ("Google Jobs",      fetch_google_jobs),
+    # ── 6. Dice via tech_boards ───────────────────────────────
+    ("Tech Boards",     fetch_tech_boards),
 
-    # 6. Tech Boards (Dice, HackerOne, Bugcrowd, Greenhouse, Lever)
-    ("Tech Boards",      fetch_tech_boards),
+    # ── 7. Remote job boards ─────────────────────────────────
+    ("Remotive",        fetch_remotive),
+    ("Himalayas",       fetch_himalayas),
+    ("Jobicy",          fetch_jobicy),
+    ("RemoteOK",        fetch_remoteok),
+    ("Arbeitnow",       fetch_arbeitnow),
+    ("WWR",             fetch_wwr),
+    ("Working Nomads",  fetch_workingnomads),
 
-    # 7. Remote job boards
-    ("Remotive",         fetch_remotive),
-    ("Himalayas",        fetch_himalayas),
-    ("Jobicy",           fetch_jobicy),
-    ("RemoteOK",         fetch_remoteok),
-    ("Arbeitnow",        fetch_arbeitnow),
-    ("WWR",              fetch_wwr),
-    ("Working Nomads",   fetch_workingnomads),
+    # ── 8. API-based (optional — need keys) ──────────────────
+    ("Adzuna",          fetch_adzuna),
+    ("Jooble",          fetch_jooble),
+    ("Findwork",        fetch_findwork),
+    ("Reed",            fetch_reed),
+    # ("JSearch",        fetch_jsearch),   # Uncomment if RAPIDAPI_KEY is set
 
-    # 8. API-based (need keys in GitHub Secrets)
-    ("Adzuna",           fetch_adzuna),
-    ("Jooble",           fetch_jooble),
-    ("Findwork",         fetch_findwork),
-    ("Reed",             fetch_reed),
-
-    # 9. Freelance (Upwork + Freelancer + Khamsat + Mustaqil)
-    ("Freelance",        fetch_freelance),
-
-    # ("JSearch",          fetch_jsearch),  # Optional - RapidAPI key needed
-]
-"""
-Source registry — ordered by priority:
-  1. Gov Egypt:     EG-CERT, ITI, ITIDA, DEPI, NTI, NTRA, MCIT + Egyptian companies
-  2. Gov Gulf:      NCA, CITC, SDAIA, Aramco, NEOM, G42, QCERT + Gulf companies + Tanqeeb/Akhtaboot
-  3. CyberSec:      Wuzzuf, Bayt, Naukrigulf, Forasna + InfoSec-Jobs, ISACA, ISC2
-  4. LinkedIn:      Egypt all govs + Gulf full + Remote
-  5. Google Jobs:   SerpAPI + Adzuna MENA
-  6. Tech Boards:   Dice, HackerOne, Bugcrowd, Greenhouse
-  7. Remote Boards: Remotive, Himalayas, Jobicy, RemoteOK, WWR, etc.
-  8. API-based:     Adzuna, Jooble, Findwork, Reed
-  9. Freelance:     Upwork, Freelancer, Khamsat, Mustaqil
-"""
-
-from sources.gov_egypt       import fetch_gov_egypt
-from sources.gov_gulf        import fetch_gov_gulf
-from sources.cybersec_boards import fetch_cybersec_boards
-from sources.linkedin        import fetch_linkedin
-from sources.google_jobs     import fetch_google_jobs
-from sources.tech_boards     import fetch_tech_boards
-from sources.remotive        import fetch_remotive
-from sources.himalayas       import fetch_himalayas
-from sources.jobicy          import fetch_jobicy
-from sources.remoteok        import fetch_remoteok
-from sources.arbeitnow       import fetch_arbeitnow
-from sources.wwr             import fetch_wwr
-from sources.workingnomads   import fetch_workingnomads
-from sources.adzuna          import fetch_adzuna
-from sources.findwork        import fetch_findwork
-from sources.jooble          import fetch_jooble
-from sources.reed            import fetch_reed
-from sources.freelance       import fetch_freelance
-from sources.jsearch         import fetch_jsearch
-
-ALL_FETCHERS = [
-    # 1. Egyptian Government & Official Institutions (TOP PRIORITY)
-    ("Gov Egypt",        fetch_gov_egypt),
-
-    # 2. Gulf Government & Official Institutions
-    ("Gov Gulf",         fetch_gov_gulf),
-
-    # 3. Arab Cybersec Boards (Wuzzuf, Bayt, Naukrigulf, Forasna + InfoSec-Jobs...)
-    ("CyberSec Boards",  fetch_cybersec_boards),
-
-    # 4. LinkedIn (Egypt all govs + Gulf full + Company pages + Remote)
-    ("LinkedIn",         fetch_linkedin),
-
-    # 5. Google Jobs (SerpAPI + Adzuna MENA)
-    ("Google Jobs",      fetch_google_jobs),
-
-    # 6. Tech Boards (Dice, HackerOne, Bugcrowd, Greenhouse, Lever)
-    ("Tech Boards",      fetch_tech_boards),
-
-    # 7. Remote job boards
-    ("Remotive",         fetch_remotive),
-    ("Himalayas",        fetch_himalayas),
-    ("Jobicy",           fetch_jobicy),
-    ("RemoteOK",         fetch_remoteok),
-    ("Arbeitnow",        fetch_arbeitnow),
-    ("WWR",              fetch_wwr),
-    ("Working Nomads",   fetch_workingnomads),
-
-    # 8. API-based (need keys in GitHub Secrets)
-    ("Adzuna",           fetch_adzuna),
-    ("Jooble",           fetch_jooble),
-    ("Findwork",         fetch_findwork),
-    ("Reed",             fetch_reed),
-
-    # 9. Freelance (Upwork + Freelancer + Khamsat + Mustaqil)
-    ("Freelance",        fetch_freelance),
-
-    # ("JSearch",          fetch_jsearch),  # Optional - RapidAPI key needed
+    # ── 9. Freelance ─────────────────────────────────────────
+    ("Freelance",       fetch_freelance),       # Upwork(fixed), PPH, Mostaql(fixed), Khamsat(fixed)
 ]
