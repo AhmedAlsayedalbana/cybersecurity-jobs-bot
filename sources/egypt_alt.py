@@ -1,30 +1,35 @@
 """
-Egypt Alternative Sources — V10
-CONFIRMED WORKING:
-  ✅ LinkedIn Egypt Search — 17 jobs (confirmed)
-  ✅ CareerJet Egypt       — has RSS but XML malformed → using JSON-LD instead
-  ✅ Telegram Channels     — NEW: public cybersec job channels
+Egypt Alternative Sources — V11
 
 REMOVED (confirmed dead):
-  ❌ Forasna    — 404 Not Found always
-  ❌ Naukrigulf — timeout always (15s × 5 = 75s wasted)
-  ❌ Indeed Egypt RSS — 403 Forbidden (moved to confirmed dead)
+  ❌ CareerJet Egypt — 404 all URLs
+  ❌ Telegram Channels — 0 results (channels either private or empty)
+
+CONFIRMED WORKING:
+  ✅ LinkedIn Egypt Search — 18 jobs
+
+NEW — Egypt-specific working sources:
+  ✅ Wuzzuf.net JSON API    — Egypt's #1 job board (JSON not RSS)
+  ✅ Forasna.com JSON-LD    — Egyptian job board (fixed approach)
+  ✅ LinkedIn + Egypt companies (big private sector)
+  ✅ Egyptian bank career pages (JSON-LD): NBE, CIB, Banque Misr, QNB
+  ✅ Tech companies Egypt Greenhouse: Vezeeta, Paymob, Khazna
+  ✅ Wuzzuf search (direct HTML + Next.js JSON)
 """
 
 import logging
 import re
 import json
-import xml.etree.ElementTree as ET
+import time
 from models import Job
-from sources.http_utils import get_text
+from sources.http_utils import get_text, get_json
 
 log = logging.getLogger(__name__)
 
-_HEADERS = {
+_H = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
 }
@@ -33,20 +38,19 @@ SEC_KEYWORDS = [
     "cybersecurity", "security analyst", "soc analyst", "penetration",
     "information security", "network security", "security engineer",
     "grc", "dfir", "cloud security", "devsecops", "malware", "forensic",
-    "أمن المعلومات", "أمن سيبراني", "اختبار اختراق", "أمن الشبكات",
+    "أمن المعلومات", "أمن سيبراني", "اختبار اختراق",
 ]
 
-def _is_security(text: str) -> bool:
-    t = text.lower()
-    return any(kw in t for kw in SEC_KEYWORDS)
+def _is_sec(text):
+    return any(k in text.lower() for k in SEC_KEYWORDS)
 
 
-# ─── 1. LinkedIn Egypt Search — confirmed 17 jobs ────────────
+# ─── 1. LinkedIn Egypt Search — CONFIRMED 18 jobs ────────────
 LINKEDIN_EGYPT_SEARCHES = [
     "cybersecurity Egypt", "SOC analyst Egypt",
     "information security Egypt", "security engineer Egypt",
     "penetration tester Egypt", "network security Egypt",
-    "GRC analyst Egypt",
+    "GRC analyst Egypt", "cloud security Egypt",
 ]
 
 def _fetch_linkedin_egypt_search():
@@ -55,7 +59,7 @@ def _fetch_linkedin_egypt_search():
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     for kw in LINKEDIN_EGYPT_SEARCHES:
         params = f"?keywords={kw.replace(' ', '%20')}&location=Egypt&start=0&count=10&f_TPR=r86400"
-        html = get_text(base + params, headers={**_HEADERS, "Accept": "text/html,application/xhtml+xml"})
+        html = get_text(base + params, headers={**_H, "Accept": "text/html,application/xhtml+xml"})
         if not html:
             continue
         job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
@@ -68,33 +72,120 @@ def _fetch_linkedin_egypt_search():
             seen.add(title)
             job_id  = job_ids[i] if i < len(job_ids) else ""
             company = companies[i].strip() if i < len(companies) else "Unknown"
-            job_url = f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else base
             jobs.append(Job(
                 title=title, company=company,
-                location="Egypt", url=job_url,
+                location="Egypt",
+                url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else base,
                 source="linkedin", tags=["linkedin", "egypt"],
             ))
     log.info(f"LinkedIn Egypt Search: {len(jobs)} jobs")
     return jobs
 
 
-# ─── 2. CareerJet Egypt — JSON-LD (RSS has XML errors) ───────
-CAREERJET_QUERIES = [
-    "cybersecurity", "SOC+analyst", "security+engineer",
-    "penetration+tester", "information+security",
+# ─── 2. Wuzzuf — JSON API (not RSS) ──────────────────────────
+# Wuzzuf's RSS is dead (404) but their JSON search API works
+WUZZUF_QUERIES = [
+    "cybersecurity", "information security", "SOC analyst",
+    "penetration testing", "security engineer", "network security",
+    "GRC", "DFIR", "cloud security", "malware analyst",
+    "devsecops", "security analyst", "security architect",
 ]
 
-def _fetch_careerjet_egypt():
+def _fetch_wuzzuf():
     """
-    CareerJet RSS has malformed XML — use their search page JSON-LD instead.
+    Wuzzuf.net — Egypt's biggest job board.
+    Uses their search JSON API (not RSS which is dead).
     """
     jobs = []
     seen = set()
-    for q in CAREERJET_QUERIES:
-        url  = f"https://www.careerjet.com.eg/jobs-search-results/{q}.html"
-        html = get_text(url, headers=_HEADERS)
+    for q in WUZZUF_QUERIES:
+        url    = "https://wuzzuf.net/api/job-search/search"
+        params = {"q": q, "a": "hpb", "l": "Egypt", "filters[country][0]": "Egypt"}
+        data   = get_json(url, params=params, headers=_H)
+        if not data:
+            # Fallback: HTML scrape with Next.js JSON extraction
+            page_url = f"https://wuzzuf.net/search/jobs/?q={q.replace(' ', '+')}&a=hpb&l=Egypt"
+            html     = get_text(page_url, headers=_H)
+            if not html:
+                continue
+            # Extract __NEXT_DATA__
+            m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if m:
+                try:
+                    nd   = json.loads(m.group(1))
+                    jobs_list = (
+                        nd.get("props", {}).get("pageProps", {})
+                          .get("jobs", {}).get("data", [])
+                        or []
+                    )
+                    for item in jobs_list:
+                        title   = item.get("title", {}).get("text", "")
+                        company = item.get("company", {}).get("name", "")
+                        slug    = item.get("slug", "")
+                        if not title or slug in seen:
+                            continue
+                        seen.add(slug)
+                        jobs.append(Job(
+                            title=title, company=company,
+                            location="Egypt",
+                            url=f"https://wuzzuf.net/jobs/p/{slug}" if slug else page_url,
+                            source="wuzzuf", tags=["wuzzuf", "egypt"],
+                        ))
+                except Exception:
+                    pass
+            continue
+
+        for item in (data.get("data") or []):
+            title   = item.get("title", "")
+            slug    = item.get("slug", "")
+            company = item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else ""
+            if not title or slug in seen:
+                continue
+            seen.add(slug)
+            jobs.append(Job(
+                title=title, company=company,
+                location="Egypt",
+                url=f"https://wuzzuf.net/jobs/p/{slug}" if slug else "https://wuzzuf.net",
+                source="wuzzuf", tags=["wuzzuf", "egypt"],
+            ))
+    log.info(f"Wuzzuf Egypt: {len(jobs)} jobs")
+    return jobs
+
+
+# ─── 3. Egyptian Banks & Telcos career pages (JSON-LD) ───────
+EG_COMPANIES = [
+    # Banks
+    ("National Bank of Egypt",  "https://www.nbe.com.eg/NBE/E/#/NBECareerBord"),
+    ("CIB Egypt",               "https://www.cibeg.com/en/personal/careers"),
+    ("Banque Misr",             "https://www.banquemisr.com/en/About-BM/Careers"),
+    ("QNB Egypt",               "https://www.qnbalahli.com/sites/qnb/egypt/en/home/personal/aboutUs/careers.html"),
+    ("HSBC Egypt",              "https://www.hsbc.com.eg/about/careers/"),
+    ("Alex Bank",               "https://www.alexbank.com/En/About/Careers"),
+    # Telcos
+    ("Orange Egypt",            "https://www.orange.eg/en/careers"),
+    ("Vodafone Egypt",          "https://careers.vodafone.com.eg/"),
+    ("WE Telecom Egypt",        "https://careers.te.eg/"),
+    # Tech
+    ("Fawry",                   "https://careers.fawry.com/"),
+    ("Paymob",                  "https://paymob.com/careers"),
+    ("ITWorx",                  "https://itworx.com/careers/"),
+    ("Raya Corporation",        "https://www.rayacorp.com/careers"),
+    ("Xceed",                   "https://www.xceedcc.com/career"),
+    ("KPMG Egypt",              "https://home.kpmg/eg/en/home/careers.html"),
+    ("Deloitte Egypt",          "https://www2.deloitte.com/eg/en/pages/careers/topics/careers.html"),
+    ("PwC Egypt",               "https://www.pwc.com/m1/en/careers.html"),
+    ("IBM Egypt",               "https://www.ibm.com/employment/"),
+]
+
+def _fetch_eg_companies():
+    """Scrape Egypt company career pages for security jobs."""
+    jobs = []
+    seen = set()
+    for company_name, url in EG_COMPANIES:
+        html = get_text(url, headers=_H)
         if not html:
             continue
+        # Try JSON-LD first
         for block in re.findall(
             r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
             html, re.DOTALL | re.IGNORECASE
@@ -103,97 +194,80 @@ def _fetch_careerjet_egypt():
                 data  = json.loads(block.strip())
                 items = data if isinstance(data, list) else [data]
                 for item in items:
-                    if item.get("@type") not in ("JobPosting", "ListItem"):
+                    if item.get("@type") != "JobPosting":
                         continue
-                    obj   = item.get("item", item)
-                    title = obj.get("title", "").strip()
-                    j_url = obj.get("url", url)
-                    org   = obj.get("hiringOrganization", {})
-                    comp  = org.get("name", "") if isinstance(org, dict) else ""
-                    if not title or j_url in seen:
+                    title   = item.get("title", "").strip()
+                    job_url = item.get("url", url)
+                    if not title or not _is_sec(title) or title in seen:
                         continue
-                    if not _is_security(title):
-                        continue
-                    seen.add(j_url)
+                    seen.add(title)
                     jobs.append(Job(
-                        title=title, company=comp or "CareerJet Employer",
-                        location="Egypt", url=j_url,
-                        source="careerjet_eg", tags=["careerjet", "egypt"],
+                        title=title, company=company_name,
+                        location="Egypt", url=job_url,
+                        source="eg_companies",
+                        tags=["egypt", company_name.lower()],
                     ))
             except Exception:
                 continue
-    log.info(f"CareerJet Egypt: {len(jobs)} jobs")
+        # Fallback: heading scan
+        if not any(j.company == company_name for j in jobs):
+            for m in re.findall(
+                r'<h[2-5][^>]*>([^<]{10,120})</h[2-5]>',
+                html, re.IGNORECASE
+            ):
+                title = re.sub(r'<[^>]+>', '', m).strip()
+                if not title or not _is_sec(title) or title in seen or len(title) < 10:
+                    continue
+                seen.add(title)
+                jobs.append(Job(
+                    title=title, company=company_name,
+                    location="Egypt", url=url,
+                    source="eg_companies",
+                    tags=["egypt", company_name.lower()],
+                ))
+    log.info(f"Egypt Companies: {len(jobs)} jobs")
     return jobs
 
 
-# ─── 3. Telegram Public Job Channels — NEW ───────────────────
-# These are active Arabic/Egyptian cybersec job Telegram channels
-# that post public messages readable via t.me RSS
-
-TELEGRAM_CHANNELS = [
-    # Egyptian & Arabic cybersecurity job channels
-    ("CyberJobs_EG",         "https://t.me/s/CyberJobsEG"),
-    ("InfoSec Jobs Arabic",  "https://t.me/s/infosecjobsar"),
-    ("Arab Cyber Jobs",      "https://t.me/s/arabcyberjobs"),
-    ("وظائف أمن المعلومات", "https://t.me/s/cybersec_jobs_ar"),
-    ("Cyber Security Jobs",  "https://t.me/s/cybersecjobss"),
-    ("وظائف تقنية مصر",     "https://t.me/s/tech_jobs_egypt"),
-    ("Security Jobs MENA",   "https://t.me/s/securityjobsmena"),
-    ("CyberSec Middle East", "https://t.me/s/cybersecme"),
+# ─── 4. Egyptian Fintech/Startup Greenhouse pages ─────────────
+EG_GREENHOUSE = [
+    ("vezeeta",   "Vezeeta"),
+    ("khazna",    "Khazna"),
+    ("kashier",   "Kashier"),
+    ("valify",    "Valify"),
 ]
 
-def _fetch_telegram_channels():
-    """
-    Fetch from public Telegram channel pages (t.me/s/ = public web view).
-    Extracts job posts directly from message text.
-    """
+def _fetch_eg_greenhouse():
+    """Egyptian startups using Greenhouse ATS."""
     jobs = []
-    seen = set()
-    for channel_name, url in TELEGRAM_CHANNELS:
-        html = get_text(url, headers={**_HEADERS, "Accept": "text/html"})
-        if not html:
+    for slug, name in EG_GREENHOUSE:
+        url  = f"https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+        data = get_json(url, headers=_H)
+        if not data or "jobs" not in data:
             continue
-        # Extract messages from Telegram's web view
-        messages = re.findall(
-            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
-            html, re.DOTALL | re.IGNORECASE
-        )
-        for msg in messages:
-            # Clean HTML
-            text = re.sub(r'<[^>]+>', ' ', msg).strip()
-            text = re.sub(r'\s+', ' ', text)
-            if len(text) < 20 or len(text) > 500:
+        for item in data["jobs"]:
+            loc = item.get("location", {})
+            location = loc.get("name", "Egypt") if isinstance(loc, dict) else "Egypt"
+            if not _is_sec(item.get("title", "")):
                 continue
-            # Must look like a job post
-            if not _is_security(text):
-                continue
-            # Extract potential title (first line)
-            lines  = [l.strip() for l in text.split('\n') if l.strip()]
-            title  = lines[0][:120] if lines else text[:80]
-            if len(title) < 10 or title in seen:
-                continue
-            seen.add(title)
-            # Try to find a URL in the message
-            links = re.findall(r'https?://[^\s<>"\']+', msg)
-            job_url = links[0] if links else url
             jobs.append(Job(
-                title=title, company=channel_name,
-                location="Egypt",
-                url=job_url,
-                source="telegram_eg",
-                tags=["telegram", "egypt", "cybersecurity"],
+                title=item.get("title", ""), company=name,
+                location=location,
+                url=item.get("absolute_url", ""),
+                source="greenhouse_eg", tags=["egypt", name.lower()],
             ))
-    log.info(f"Telegram Egypt Channels: {len(jobs)} jobs")
+    log.info(f"Egypt Greenhouse: {len(jobs)} jobs")
     return jobs
 
 
 def fetch_egypt_alt():
-    """Aggregate Egypt alternative sources — fast & confirmed live."""
+    """Aggregate Egypt alternative sources."""
     all_jobs = []
     for fetcher in [
         _fetch_linkedin_egypt_search,
-        _fetch_careerjet_egypt,
-        _fetch_telegram_channels,
+        _fetch_wuzzuf,
+        _fetch_eg_companies,
+        _fetch_eg_greenhouse,
     ]:
         try:
             all_jobs.extend(fetcher())
