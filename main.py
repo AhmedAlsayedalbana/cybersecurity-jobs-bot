@@ -1,7 +1,7 @@
 """
-Cybersecurity Jobs Telegram Bot — Main entry point.
-Pipeline: fetch → filter → dedup → classify+score → split → select → send.
-Logic: 30 jobs per run with Egypt/Gulf/Global priority tiers.
+Cybersecurity Jobs Bot — Main entry point.
+Pipeline: fetch → filter → dedup → score → tier-select → send.
+10 jobs per channel per run. Egypt & Gulf FIRST.
 """
 
 import os
@@ -15,9 +15,8 @@ from models import filter_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen
 from telegram_sender import send_jobs
 from scoring import score_job
-from classifier import classify_domain, classify_location
+from classifier import classify_location
 
-# ─── Professional Logging ────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -25,88 +24,73 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
+
 def main():
     start_time = time.time()
     log.info("=" * 60)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log.info("🔐 Cybersecurity Jobs Bot — Run Started at " + now_str)
+    log.info("🔐 Bot Started at " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     log.info("=" * 60)
 
-    stats = {
-        "fetched": 0,
-        "filtered": 0,
-        "new": 0,
-        "sent": 0,
-        "sources": {}
-    }
+    stats = {"fetched": 0, "filtered": 0, "new": 0, "sent": 0, "sources": {}}
 
-    # ── 1. Load seen IDs ──────────────────────────────────────
+    # 1. Load seen IDs
     seen = load_seen_ids(config.SEEN_JOBS_FILE)
     is_seed = (
         os.getenv(config.SEED_MODE_ENV, "").lower() in ("1", "true", "yes")
         or len(seen) == 0
     )
-
     if is_seed:
-        log.info("🌱 SEED MODE: registering all jobs as seen (no messages sent).")
+        log.info("🌱 SEED MODE — no messages sent.")
 
-    # ── 2. Fetch from all sources ─────────────────────────────
+    # 2. Fetch
     all_jobs = []
     for name, fetcher in ALL_FETCHERS:
         try:
-            log.info("📡 Fetching: " + name + " ...")
+            log.info("📡 Fetching: " + name)
             jobs = fetcher()
             all_jobs.extend(jobs)
             stats["sources"][name] = len(jobs)
-            log.info("   ✓ " + name + ": " + str(len(jobs)) + " raw jobs")
+            log.info("   ✓ " + name + ": " + str(len(jobs)))
         except Exception as e:
             log.error("   ✗ " + name + " failed: " + str(e))
             stats["sources"][name] = "FAILED"
 
     stats["fetched"] = len(all_jobs)
-    log.info("📊 Total raw jobs fetched: " + str(stats["fetched"]))
+    log.info("📊 Total fetched: " + str(stats["fetched"]))
 
     try:
-        # ── 3. Filter ────────────────────────────────────────
+        # 3. Filter
         filtered = filter_jobs(all_jobs)
         stats["filtered"] = len(filtered)
-        log.info("🔍 After cybersec+geo filter: " + str(stats["filtered"]) + " jobs")
+        log.info("🔍 After filter: " + str(stats["filtered"]))
 
-        # ── 4. Deduplicate ───────────────────────────────────
+        # 4. Dedup
         new_jobs = deduplicate(filtered, seen)
         stats["new"] = len(new_jobs)
-        log.info("✨ New jobs (after dedup): " + str(stats["new"]))
+        log.info("✨ New jobs: " + str(stats["new"]))
 
         if is_seed:
-            log.info("🌱 Marking " + str(len(new_jobs)) + " jobs as seen...")
+            log.info("🌱 Seed: marking " + str(len(new_jobs)) + " jobs seen")
             seen = mark_as_seen(new_jobs, seen)
         else:
-            # ── 5. Egypt/Gulf-First Priority Selection ───────
-
-            tier1 = []   # Egypt + (SOC or Pentest or Entry)
-            tier2 = []   # Egypt (any cyber)
-            tier3 = []   # Gulf + (SOC or Pentest or Entry)
-            tier4 = []   # Gulf (any cyber)
-            tier5 = []   # Remote / worldwide
+            # 5. Priority tiering — Egypt first, then Gulf, then Rest
+            tier1 = []  # Egypt + (SOC | Pentest | Entry | Gov)
+            tier2 = []  # Egypt (any cyber)
+            tier3 = []  # Gulf + (SOC | Pentest | Entry | Gov)
+            tier4 = []  # Gulf (any cyber)
+            tier5 = []  # Remote / Worldwide
 
             for job in new_jobs:
                 score = score_job(job)
                 loc   = classify_location(job)
                 title = job.title.lower()
+                tags  = " ".join(job.tags).lower() if job.tags else ""
 
-                is_soc     = any(k in title for k in [
-                    "soc", "security operations", "threat", "incident",
-                    "blue team", "dfir", "siem"
-                ])
-                is_pentest = any(k in title for k in [
-                    "pentest", "penetration", "red team",
-                    "ethical hack", "bug bounty", "offensive"
-                ])
-                is_entry   = any(k in title for k in [
-                    "junior", "intern", "trainee",
-                    "entry level", "entry-level", "fresh grad"
-                ])
-                is_target = is_soc or is_pentest or is_entry
+                is_soc     = any(k in title for k in ["soc", "security operations", "threat", "incident", "blue team", "dfir", "siem"])
+                is_pentest = any(k in title for k in ["pentest", "penetration", "red team", "ethical hack", "bug bounty", "offensive"])
+                is_entry   = any(k in title for k in ["junior", "intern", "trainee", "entry level", "entry-level", "fresh grad", "graduate"])
+                is_gov     = any(k in tags for k in ["government", "egcert", "iti", "itida", "depi", "nti", "nca", "aramco", "g42"])
+                is_target  = is_soc or is_pentest or is_entry or is_gov
 
                 if loc == "egypt" and is_target:
                     tier1.append((job, score))
@@ -122,80 +106,86 @@ def main():
             for t in [tier1, tier2, tier3, tier4, tier5]:
                 t.sort(key=lambda x: -x[1])
 
-            MAX = config.MAX_JOBS_PER_RUN
+            log.info(
+                "📊 Tiers — EG-Target:" + str(len(tier1)) +
+                " EG-Gen:" + str(len(tier2)) +
+                " Gulf-Target:" + str(len(tier3)) +
+                " Gulf-Gen:" + str(len(tier4)) +
+                " Other:" + str(len(tier5))
+            )
 
-            selected  = tier1[:12]
-            selected += tier2[:6]
-            selected += tier3[:7]
-            selected += tier4[:3]
+            # 6. Build final pool — large enough for all channels × 10
+            # Each channel needs up to 10 jobs, 10 channels = up to 100 pool
+            POOL_SIZE = config.MAX_JOBS_PER_RUN  # 100
 
-            if len(selected) < MAX:
-                selected += tier5[:MAX - len(selected)]
+            selected  = tier1[:30]
+            selected += tier2[:20]
+            selected += tier3[:25]
+            selected += tier4[:10]
 
-            if len(selected) < MAX:
+            if len(selected) < POOL_SIZE:
+                selected += tier5[:POOL_SIZE - len(selected)]
+
+            # Backfill from leftovers
+            if len(selected) < POOL_SIZE:
                 used = set(id(j) for j, _ in selected)
-                leftovers = tier1[12:] + tier2[6:] + tier3[7:] + tier4[3:]
+                leftovers = tier1[30:] + tier2[20:] + tier3[25:] + tier4[10:]
                 leftovers.sort(key=lambda x: -x[1])
                 for item in leftovers:
-                    if len(selected) >= MAX:
+                    if len(selected) >= POOL_SIZE:
                         break
                     if id(item[0]) not in used:
                         selected.append(item)
                         used.add(id(item[0]))
 
-            filtered_selection = [(j, s) for j, s in selected if s >= config.SCORE_THRESHOLD]
-            if not filtered_selection:
-                log.warning("⚠️ No jobs passed threshold — fallback activated.")
-                filtered_selection = selected[:10]
+            # Score threshold filter
+            final_pool = [j for j, s in selected if s >= config.SCORE_THRESHOLD]
+            if not final_pool:
+                log.warning("⚠️ No jobs passed threshold — using top 30 fallback")
+                final_pool = [j for j, _ in selected[:30]]
 
+            # Guaranteed entry-level (min 5 in pool)
             entry_kws = ["junior", "intern", "trainee", "entry level", "entry-level", "fresh grad"]
-            entry_jobs = [(j, s) for j, s in selected if any(k in j.title.lower() for k in entry_kws)]
-            guaranteed_entry = entry_jobs[:4]
+            entry_jobs = [j for j in final_pool if any(k in j.title.lower() for k in entry_kws)]
+            non_entry  = [j for j in final_pool if j not in entry_jobs]
+            final_pool = entry_jobs[:10] + non_entry
 
-            guaranteed_ids = set(id(ge[0]) for ge in guaranteed_entry)
-            others = [item for item in filtered_selection if id(item[0]) not in guaranteed_ids]
+            eg_count   = sum(1 for j in final_pool if classify_location(j) == "egypt")
+            gulf_count = sum(1 for j in final_pool if classify_location(j) == "gulf")
+            rem_count  = len(final_pool) - eg_count - gulf_count
 
-            combined_selection = guaranteed_entry + others
-            final_selection = [j for j, _ in combined_selection][:MAX]
-
-            eg_count   = sum(1 for j in final_selection if classify_location(j) == "egypt")
-            gulf_count = sum(1 for j in final_selection if classify_location(j) == "gulf")
-            rem_count  = len(final_selection) - eg_count - gulf_count
             log.info(
-                "🎯 Final: " + str(len(final_selection)) + " jobs"
-                " | 🇪🇬 Egypt:" + str(eg_count) +
-                " | 🌙 Gulf:" + str(gulf_count) +
-                " | 🌍 Other:" + str(rem_count)
+                "🎯 Pool: " + str(len(final_pool)) + " jobs" +
+                " | 🇪🇬 " + str(eg_count) +
+                " | 🌙 " + str(gulf_count) +
+                " | 🌍 " + str(rem_count)
             )
 
-            # ── 6. Send ──────────────────────────────────────
-            if final_selection:
-                log.info("📨 Sending " + str(len(final_selection)) + " jobs to Telegram...")
-                sent_count = send_jobs(final_selection)
+            # 7. Send — telegram_sender handles 10-per-channel logic
+            if final_pool:
+                log.info("📨 Sending to Telegram (10 per channel)...")
+                sent_count = send_jobs(final_pool)
                 stats["sent"] = sent_count
-                log.info("✅ Sent " + str(sent_count) + "/" + str(len(final_selection)) + " jobs successfully.")
+                log.info("✅ Total sent: " + str(sent_count))
             else:
-                log.info("ℹ️ No new qualifying jobs this run.")
+                log.info("ℹ️ No qualifying jobs this run.")
 
-            # ── 7. Mark SEEN ─────────────────────────────────
+            # 8. Mark seen
             seen = mark_as_seen(new_jobs, seen)
 
     except Exception as e:
-        log.exception("❌ Unexpected error during processing: " + str(e))
+        log.exception("❌ Error: " + str(e))
 
     finally:
-        # ── 8. ALWAYS save seen IDs — even on crash ──────────
         save_seen_ids(seen, config.SEEN_JOBS_FILE)
         elapsed = time.time() - start_time
-
         log.info("=" * 60)
-        log.info("🏁 RUN SUMMARY")
-        log.info("⏱️  Time: " + str(round(elapsed, 1)) + "s")
-        log.info("📥 Fetched:  " + str(stats["fetched"]))
+        log.info("🏁 DONE in " + str(round(elapsed, 1)) + "s")
+        log.info("📥 Fetched: " + str(stats["fetched"]))
         log.info("🔍 Filtered: " + str(stats["filtered"]))
-        log.info("✨ New:      " + str(stats["new"]))
-        log.info("📨 Sent:     " + str(stats["sent"]))
-        log.info("💾 Total Seen: " + str(len(seen)))
+        log.info("✨ New: " + str(stats["new"]))
+        log.info("📨 Sent: " + str(stats["sent"]))
+        log.info("💾 Seen total: " + str(len(seen)))
         log.info("=" * 60)
 
 
