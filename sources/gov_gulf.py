@@ -746,8 +746,9 @@ def _fetch_drjobpro():
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_gov_gulf():
-    """Fetch from all Gulf government, official, and aggregator sources."""
-    all_jobs = []
+    """Fetch from all Gulf government, official, and aggregator sources (parallel)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     fetchers = [
         # Saudi
         _fetch_nca_ksa,
@@ -781,9 +782,14 @@ def fetch_gov_gulf():
         _fetch_gulfjobsmarket,
         _fetch_drjobpro,
     ]
-    for fn in fetchers:
-        try:
-            all_jobs.extend(fn())
-        except Exception as e:
-            log.warning("gov_gulf sub-fetcher " + fn.__name__ + " failed: " + str(e))
+
+    all_jobs = []
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(fn): fn.__name__ for fn in fetchers}
+        for future in as_completed(futures, timeout=90):
+            name = futures[future]
+            try:
+                all_jobs.extend(future.result())
+            except Exception as e:
+                log.warning("gov_gulf sub-fetcher " + name + " failed: " + str(e))
     return all_jobs
