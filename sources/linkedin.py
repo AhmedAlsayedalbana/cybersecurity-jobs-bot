@@ -123,8 +123,8 @@ def fetch_linkedin() -> list[Job]:
     consecutive_failures = 0
 
     for search in SEARCHES:
-        # Stop early if LinkedIn is blocking us
-        if consecutive_failures >= 3:
+        # Stop early if LinkedIn is blocking us — was 3, lowered to 2
+        if consecutive_failures >= 2:
             log.warning("LinkedIn: too many consecutive failures — stopping early.")
             break
 
@@ -143,7 +143,10 @@ def fetch_linkedin() -> list[Job]:
         html = get_text(SEARCH_URL, params=params, headers=_headers())
         if not html:
             consecutive_failures += 1
-            time.sleep(2)
+            # Longer backoff on failures — let LinkedIn cool down
+            wait = 10 * consecutive_failures
+            log.info(f"LinkedIn: failure {consecutive_failures}, waiting {wait}s")
+            time.sleep(wait)
             continue
 
         consecutive_failures = 0
@@ -155,7 +158,7 @@ def fetch_linkedin() -> list[Job]:
         if not job_ids:
             job_ids = re.findall(r'/jobs/view/(\d+)/', html)
 
-        for job_id in job_ids[:5]:  # max 5 per search to avoid hammering
+        for job_id in job_ids[:3]:  # reduced from 5 → 3 to reduce hammering
             if job_id in seen_ids:
                 continue
             seen_ids.add(job_id)
@@ -170,9 +173,10 @@ def fetch_linkedin() -> list[Job]:
             job = _parse_detail(detail_html, job_id)
             if job:
                 jobs.append(job)
-            time.sleep(0.5)   # polite delay
+            time.sleep(1.5)   # increased from 0.5 → 1.5s — more polite
 
-        time.sleep(1)  # delay between searches
+        # Longer delay between searches to avoid 429s
+        time.sleep(3)
 
     log.info(f"LinkedIn: fetched {len(jobs)} jobs.")
     return jobs
