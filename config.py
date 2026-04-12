@@ -135,6 +135,7 @@ ADZUNA_APP_KEY   = os.getenv("ADZUNA_APP_KEY", "")
 FINDWORK_API_KEY = os.getenv("FINDWORK_API_KEY", "")
 JOOBLE_API_KEY   = os.getenv("JOOBLE_API_KEY", "")
 REED_API_KEY     = os.getenv("REED_API_KEY", "")
+SERPAPI_KEY      = os.getenv("SERPAPI_KEY", "")
 
 # ─── Geo Patterns ────────────────────────────────────────────
 EGYPT_PATTERNS = {
@@ -339,7 +340,39 @@ SOURCE_DISPLAY = {
 
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
-MAX_JOBS_PER_RUN = 30   # Raised from 20 — more jobs per run
-SCORE_THRESHOLD  = 3    # Lowered — capture more Egypt/Gulf jobs
+MAX_JOBS_PER_RUN = 100  # Total pool — channel limits applied separately   # Raised from 20 — more jobs per run
+SCORE_THRESHOLD  = 3
+MAX_JOBS_PER_CHANNEL = 10  # Max jobs sent per channel per run    # Lowered — capture more Egypt/Gulf jobs
 REQUEST_TIMEOUT  = 15
 SEED_MODE_ENV    = "SEED_MODE"
+
+# ─── New Sources ──────────────────────────────────────────────
+SOURCE_DISPLAY.update({
+    "egcert":         "EG-CERT",
+    "itida":          "ITIDA",
+    "iti":            "ITI Egypt",
+    "depi":           "DEPI",
+    "nti":            "NTI",
+    "ntra":           "NTRA",
+    "mcit":           "MCIT",
+    "tiec":           "TIEC",
+    "cbe":            "Central Bank Egypt",
+    "wuzzuf":         "Wuzzuf",
+    "forasna":        "Forasna",
+    "bayt":           "Bayt.com",
+    "naukrigulf":     "NaukriGulf",
+    "nca_ksa":        "NCA Saudi Arabia",
+    "citc_ksa":       "CITC KSA",
+    "sdaia":          "SDAIA",
+    "aramco":         "Saudi Aramco",
+    "neom":           "NEOM",
+    "g42":            "G42 UAE",
+    "qcert":          "QCERT Qatar",
+    "tanqeeb":        "Tanqeeb",
+    "akhtaboot":      "Akhtaboot",
+    "drjobpro":       "Dr.Job Pro",
+    "google_jobs":    "Google Jobs",
+    "adzuna_mena":    "Adzuna MENA",
+    "linkedin_egypt_companies": "LinkedIn (EG Companies)",
+    "linkedin_gulf_companies":  "LinkedIn (Gulf Companies)",
+})
