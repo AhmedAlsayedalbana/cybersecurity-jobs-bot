@@ -515,89 +515,155 @@ def _fetch_gulf_linkedin_companies():
 # ═══════════════════════════════════════════════════════════════
 
 def _fetch_tanqeeb():
-    """Tanqeeb — Gulf-focused job platform with open API."""
+    """
+    Tanqeeb — Gulf-focused job platform.
+    Their API endpoint changed — use website search with JSON-LD extraction.
+    """
+    import json
     jobs = []
-    queries = [
-        "cybersecurity", "information security", "SOC analyst",
-        "penetration tester", "security engineer", "network security",
-    ]
-    countries = ["SA", "AE", "QA", "KW", "BH", "OM", "EG"]
+    seen = set()
 
-    for q in queries:
-        for country in countries:
-            url = "https://api.tanqeeb.com/api/v1/jobs/search"
-            params = {"q": q, "country": country, "per_page": 15}
-            data = get_json(url, params=params, headers=HEADERS)
-            if not data:
+    searches = [
+        ("cybersecurity",     "saudi-arabia", "Saudi Arabia"),
+        ("cybersecurity",     "united-arab-emirates", "UAE"),
+        ("security-engineer", "saudi-arabia", "Saudi Arabia"),
+        ("soc-analyst",       "united-arab-emirates", "UAE"),
+        ("cybersecurity",     "qatar",        "Qatar"),
+        ("cybersecurity",     "kuwait",       "Kuwait"),
+        ("information-security", "egypt",     "Egypt"),
+    ]
+
+    for keyword, country, location_label in searches:
+        url = f"https://www.tanqeeb.com/{keyword}-jobs-in-{country}"
+        html = get_text(url, headers=HEADERS, timeout=10)
+        if not html:
+            continue
+
+        # Extract JSON-LD job postings
+        for block in re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE
+        ):
+            try:
+                data = json.loads(block.strip())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") != "JobPosting":
+                        continue
+                    title = item.get("title", "").strip()
+                    link = item.get("url", url)
+                    org = item.get("hiringOrganization", {})
+                    company = org.get("name", "").strip() if isinstance(org, dict) else ""
+                    if not title or link in seen:
+                        continue
+                    seen.add(link)
+                    jobs.append(Job(
+                        title=title, company=company or "Tanqeeb Employer",
+                        location=location_label, url=link,
+                        source="tanqeeb", tags=["tanqeeb", keyword],
+                        is_remote=False,
+                    ))
+            except (json.JSONDecodeError, KeyError):
                 continue
-            items = data if isinstance(data, list) else data.get("data", data.get("jobs", []))
-            for item in items:
-                title    = item.get("title", item.get("job_title", ""))
-                company  = item.get("company_name", item.get("company", "Unknown"))
-                location = item.get("location", item.get("city", country))
-                url_job  = item.get("url", item.get("apply_url", "https://tanqeeb.com"))
-                if not title:
-                    continue
-                jobs.append(Job(
-                    title=title, company=str(company),
-                    location=str(location),
-                    url=str(url_job),
-                    source="tanqeeb", tags=["tanqeeb", q],
-                    is_remote=False,
-                ))
 
     log.info("Tanqeeb: " + str(len(jobs)) + " jobs")
     return jobs
 
 
 def _fetch_akhtaboot():
-    """Akhtaboot — Jordan & Gulf job board with RSS."""
+    """
+    Akhtaboot — Jordan & Gulf job board.
+    RSS URL pattern changed — use /en/jobs/search RSS.
+    """
+    import json
     jobs = []
+    seen = set()
+
     searches = [
-        ("cybersecurity", "jordan"), ("cybersecurity", "saudi-arabia"),
-        ("cybersecurity", "uae"), ("information-security", "uae"),
-        ("soc-analyst", "saudi-arabia"), ("security-engineer", "uae"),
-        ("cybersecurity", "qatar"), ("cybersecurity", "kuwait"),
+        ("cybersecurity",     "jordan",        "Jordan"),
+        ("cybersecurity",     "saudi-arabia",  "Saudi Arabia"),
+        ("cybersecurity",     "uae",           "UAE"),
+        ("information-security", "uae",        "UAE"),
+        ("soc-analyst",       "saudi-arabia",  "Saudi Arabia"),
+        ("security-engineer", "uae",           "UAE"),
     ]
-    for keyword, country in searches:
-        rss_url = "https://www.akhtaboot.com/rss/" + keyword + "-jobs-in-" + country
-        xml = get_text(rss_url, headers=HEADERS)
-        if not xml:
+
+    for keyword, country, location_label in searches:
+        # Akhtaboot search pages embed JSON-LD
+        url = f"https://www.akhtaboot.com/en/jobs/{keyword}/{country}"
+        html = get_text(url, headers=HEADERS, timeout=10)
+        if not html:
+            # Also try their RSS with the correct path
+            rss = f"https://www.akhtaboot.com/rss/{keyword}-jobs/{country}"
+            xml = get_text(rss, headers=HEADERS, timeout=8)
+            if xml and xml.strip().startswith("<"):
+                try:
+                    root = ET.fromstring(xml)
+                    for item in root.findall(".//item"):
+                        title = item.findtext("title", "").strip()
+                        link  = item.findtext("link",  "").strip()
+                        if not title or not link or link in seen:
+                            continue
+                        seen.add(link)
+                        jobs.append(Job(
+                            title=title,
+                            company=item.findtext("author", "").strip() or "Unknown",
+                            location=location_label,
+                            url=link, source="akhtaboot", tags=["akhtaboot"],
+                            is_remote=False,
+                        ))
+                except ET.ParseError:
+                    pass
             continue
-        try:
-            root = ET.fromstring(xml)
-            for item in root.findall(".//item"):
-                title = item.findtext("title", "").strip()
-                link  = item.findtext("link",  "").strip()
-                if not title or not link:
-                    continue
-                jobs.append(Job(
-                    title=title,
-                    company=item.findtext("author", "").strip() or "Unknown",
-                    location=country.replace("-", " ").title(),
-                    url=link, source="akhtaboot", tags=["akhtaboot"],
-                    is_remote=False,
-                ))
-        except ET.ParseError:
-            pass
+
+        # Extract JSON-LD from page
+        for block in re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE
+        ):
+            try:
+                data = json.loads(block.strip())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") != "JobPosting":
+                        continue
+                    title = item.get("title", "").strip()
+                    link = item.get("url", url)
+                    org = item.get("hiringOrganization", {})
+                    company = org.get("name", "").strip() if isinstance(org, dict) else ""
+                    if not title or link in seen:
+                        continue
+                    seen.add(link)
+                    jobs.append(Job(
+                        title=title, company=company or "Akhtaboot Employer",
+                        location=location_label, url=link,
+                        source="akhtaboot", tags=["akhtaboot"],
+                        is_remote=False,
+                    ))
+            except (json.JSONDecodeError, KeyError):
+                continue
 
     log.info("Akhtaboot: " + str(len(jobs)) + " jobs")
     return jobs
 
 
 def _fetch_gulfjobsmarket():
-    """GulfJobsMarket — RSS feeds per country."""
+    """
+    GulfJobsMarket — RSS feeds.
+    Site times out often — use short timeout and skip silently.
+    RSS URL pattern corrected.
+    """
     jobs = []
     feeds = [
-        ("https://www.gulfjobsmarket.com/rss/cybersecurity-jobs-saudi-arabia", "Saudi Arabia"),
-        ("https://www.gulfjobsmarket.com/rss/cybersecurity-jobs-uae", "UAE"),
-        ("https://www.gulfjobsmarket.com/rss/cybersecurity-jobs-qatar", "Qatar"),
-        ("https://www.gulfjobsmarket.com/rss/information-security-jobs-uae", "UAE"),
-        ("https://www.gulfjobsmarket.com/rss/security-engineer-jobs-saudi", "Saudi Arabia"),
+        ("https://www.gulfjobsmarket.com/cybersecurity-jobs-in-saudi-arabia/feed/", "Saudi Arabia"),
+        ("https://www.gulfjobsmarket.com/cybersecurity-jobs-in-uae/feed/", "UAE"),
+        ("https://www.gulfjobsmarket.com/information-security-jobs-in-uae/feed/", "UAE"),
+        ("https://www.gulfjobsmarket.com/security-engineer-jobs-in-saudi-arabia/feed/", "Saudi Arabia"),
+        ("https://www.gulfjobsmarket.com/cybersecurity-jobs-in-qatar/feed/", "Qatar"),
     ]
     for rss_url, location in feeds:
-        xml = get_text(rss_url, headers=HEADERS)
-        if not xml:
+        xml = get_text(rss_url, headers=HEADERS, timeout=8)  # fail fast
+        if not xml or not xml.strip().startswith("<"):
             continue
         try:
             root = ET.fromstring(xml)
@@ -621,34 +687,55 @@ def _fetch_gulfjobsmarket():
 
 
 def _fetch_drjobpro():
-    """Dr.Job Pro — Arab job board covering Egypt + Gulf."""
+    """
+    Dr.Job Pro — Arab job board covering Egypt + Gulf.
+    RSS path /jobs/{kw}/{country}/rss gives 404.
+    Use their search page with JSON-LD extraction instead.
+    """
+    import json
     jobs = []
+    seen = set()
+
     searches = [
-        ("cybersecurity", "egypt"), ("information-security", "egypt"),
-        ("soc-analyst", "saudi-arabia"), ("cybersecurity", "saudi-arabia"),
-        ("cybersecurity", "uae"), ("security-engineer", "uae"),
+        ("cybersecurity",        "egypt",        "Egypt"),
+        ("information-security", "egypt",        "Egypt"),
+        ("cybersecurity",        "saudi-arabia", "Saudi Arabia"),
+        ("soc-analyst",          "saudi-arabia", "Saudi Arabia"),
+        ("cybersecurity",        "uae",          "UAE"),
+        ("security-engineer",    "uae",          "UAE"),
     ]
-    for keyword, country in searches:
-        rss_url = "https://drjobpro.com/jobs/" + keyword + "/" + country + "/rss"
-        xml = get_text(rss_url, headers=HEADERS)
-        if not xml:
+
+    for keyword, country, location_label in searches:
+        url = f"https://www.drjobpro.com/{keyword}-jobs-in-{country}"
+        html = get_text(url, headers=HEADERS, timeout=10)
+        if not html:
             continue
-        try:
-            root = ET.fromstring(xml)
-            for item in root.findall(".//item"):
-                title = item.findtext("title", "").strip()
-                link  = item.findtext("link",  "").strip()
-                if not title or not link:
-                    continue
-                jobs.append(Job(
-                    title=title,
-                    company=item.findtext("author", "").strip() or "Unknown",
-                    location=country.replace("-", " ").title(),
-                    url=link, source="drjobpro", tags=["drjobpro"],
-                    is_remote=False,
-                ))
-        except ET.ParseError:
-            pass
+
+        for block in re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE
+        ):
+            try:
+                data = json.loads(block.strip())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") != "JobPosting":
+                        continue
+                    title = item.get("title", "").strip()
+                    link = item.get("url", url)
+                    org = item.get("hiringOrganization", {})
+                    company = org.get("name", "").strip() if isinstance(org, dict) else ""
+                    if not title or link in seen:
+                        continue
+                    seen.add(link)
+                    jobs.append(Job(
+                        title=title, company=company or "DrJobPro Employer",
+                        location=location_label, url=link,
+                        source="drjobpro", tags=["drjobpro"],
+                        is_remote=False,
+                    ))
+            except (json.JSONDecodeError, KeyError):
+                continue
 
     log.info("DrJobPro: " + str(len(jobs)) + " jobs")
     return jobs
