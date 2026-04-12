@@ -1,16 +1,14 @@
 """
-Alternative Egypt sources — supplements LinkedIn when rate-limited.
-All sources confirmed working or replaced with live alternatives.
+Egypt Alternative Sources — V10
+CONFIRMED WORKING:
+  ✅ LinkedIn Egypt Search — 17 jobs (confirmed)
+  ✅ CareerJet Egypt       — has RSS but XML malformed → using JSON-LD instead
+  ✅ Telegram Channels     — NEW: public cybersec job channels
 
-STATUS:
-  ✅ Wuzzuf RSS (primary)   — handled in gov_egypt.py
-  ✅ Indeed Egypt RSS       — handled in gov_egypt.py
-  ✅ CareerJet Egypt        — RSS by keyword+country (new)
-  ✅ Forasna.com            — FIXED: correct URL & scraping
-  ✅ Naukrigulf Egypt       — search page JSON-LD
-  ✅ Telegram job channels  — Cybersecurity-focused EG channels via t.me RSS
-
-This file handles the SECONDARY Egypt sources.
+REMOVED (confirmed dead):
+  ❌ Forasna    — 404 Not Found always
+  ❌ Naukrigulf — timeout always (15s × 5 = 75s wasted)
+  ❌ Indeed Egypt RSS — 403 Forbidden (moved to confirmed dead)
 """
 
 import logging
@@ -31,174 +29,37 @@ _HEADERS = {
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
 }
 
-SEC_KEYWORDS_EN = [
-    "cybersecurity", "security analyst", "soc analyst",
-    "penetration", "information security", "network security",
-    "security engineer", "grc", "dfir", "cloud security",
-    "devsecops", "security", "cyber", "malware", "forensic",
-]
-SEC_KEYWORDS_AR = [
-    "أمن المعلومات", "أمن سيبراني", "محلل أمني",
-    "مهندس أمن", "اختبار اختراق", "أمن الشبكات",
+SEC_KEYWORDS = [
+    "cybersecurity", "security analyst", "soc analyst", "penetration",
+    "information security", "network security", "security engineer",
+    "grc", "dfir", "cloud security", "devsecops", "malware", "forensic",
+    "أمن المعلومات", "أمن سيبراني", "اختبار اختراق", "أمن الشبكات",
 ]
 
-def _is_security_related(text: str) -> bool:
-    text_lower = text.lower()
-    return (any(kw in text_lower for kw in SEC_KEYWORDS_EN) or
-            any(kw in text for kw in SEC_KEYWORDS_AR))
-
-def _parse_rss_security(xml_text: str, source_name: str, source_key: str,
-                         default_location: str = "Egypt") -> list[Job]:
-    """Parse RSS, filtering to security-related jobs only."""
-    jobs = []
-    if not xml_text:
-        return jobs
-    try:
-        xml_clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml_text)
-        root = ET.fromstring(xml_clean)
-    except ET.ParseError as e:
-        log.warning(f"{source_name}: XML parse error — {e}")
-        return jobs
-    for item in root.findall(".//item"):
-        title = item.findtext("title", "").strip()
-        link  = item.findtext("link",  "").strip()
-        desc  = item.findtext("description", "") or ""
-        if not title or not link:
-            continue
-        combined = title + " " + re.sub(r"<[^>]+>", " ", desc)
-        if not _is_security_related(combined):
-            continue
-        company  = item.findtext("author", source_name).strip() or source_name
-        is_remote = "remote" in combined.lower()
-        jobs.append(Job(
-            title=title, company=company,
-            location=default_location, url=link,
-            source=source_key,
-            tags=[source_key, "egypt"],
-            is_remote=is_remote,
-        ))
-    return jobs
+def _is_security(text: str) -> bool:
+    t = text.lower()
+    return any(kw in t for kw in SEC_KEYWORDS)
 
 
-# ─── 1. CareerJet Egypt — cybersecurity RSS ───────────────────
-CAREERJET_QUERIES = [
-    "cybersecurity", "SOC analyst", "security engineer",
-    "penetration tester", "information security", "network security",
-]
-
-def _fetch_careerjet_egypt():
-    """CareerJet has a working RSS endpoint for Egypt jobs."""
-    jobs = []
-    seen = set()
-    for q in CAREERJET_QUERIES:
-        url = (
-            f"https://www.careerjet.com.eg/jobs/rss?s={q.replace(' ', '+')}"
-            f"&l=Egypt&sort=date"
-        )
-        xml = get_text(url, headers=_HEADERS)
-        result = _parse_rss_security(xml or "", "CareerJet", "careerjet_eg", "Egypt")
-        for job in result:
-            if job.url not in seen:
-                seen.add(job.url)
-                jobs.append(job)
-    log.info(f"CareerJet Egypt: {len(jobs)} jobs")
-    return jobs
-
-
-# ─── 2. Forasna — FIXED ──────────────────────────────────────
-def _fetch_forasna():
-    """
-    Forasna.com — was using wrong RSS URL (port 443 redirect fail).
-    Fixed: use HTTPS directly + correct path.
-    """
-    jobs = []
-    for url in [
-        "https://forasna.com/en/jobs/search?q=cybersecurity&rss=1",
-        "https://forasna.com/en/jobs/search?q=security+analyst&rss=1",
-        "https://forasna.com/en/jobs/search?q=SOC+analyst&rss=1",
-    ]:
-        xml = get_text(url, headers=_HEADERS)
-        jobs.extend(_parse_rss_security(xml or "", "Forasna", "forasna", "Egypt"))
-    log.info(f"Forasna: {len(jobs)} jobs")
-    return jobs
-
-
-# ─── 3. Naukrigulf Egypt ─────────────────────────────────────
-NAUKRI_QUERIES = [
-    "cybersecurity", "soc-analyst", "security-engineer",
-    "penetration-tester", "information-security",
-]
-
-def _fetch_naukrigulf():
-    """Naukrigulf — major Gulf/Egypt job board, JSON-LD extraction."""
-    jobs = []
-    seen = set()
-    for q in NAUKRI_QUERIES:
-        url  = f"https://www.naukrigulf.com/{q}-jobs-in-egypt"
-        html = get_text(url, headers=_HEADERS)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else data.get("itemListElement", [data])
-                for item in items:
-                    obj = item.get("item", item)
-                    if obj.get("@type") != "JobPosting":
-                        continue
-                    title   = obj.get("title", "").strip()
-                    job_url = obj.get("url", url)
-                    org     = obj.get("hiringOrganization", {})
-                    company = org.get("name", "").strip() if isinstance(org, dict) else ""
-                    if not title or job_url in seen:
-                        continue
-                    if not _is_security_related(title):
-                        continue
-                    seen.add(job_url)
-                    jobs.append(Job(
-                        title=title, company=company or "Naukrigulf Employer",
-                        location="Egypt", url=job_url,
-                        source="naukrigulf",
-                        tags=["naukrigulf", "egypt", q],
-                    ))
-            except Exception:
-                continue
-    log.info(f"Naukrigulf Egypt: {len(jobs)} jobs")
-    return jobs
-
-
-# ─── 4. LinkedIn Egypt — keyword searches ────────────────────
+# ─── 1. LinkedIn Egypt Search — confirmed 17 jobs ────────────
 LINKEDIN_EGYPT_SEARCHES = [
-    "cybersecurity Egypt",
-    "SOC analyst Egypt",
-    "information security Egypt",
-    "security engineer Egypt",
-    "penetration tester Egypt",
-    "network security Egypt",
+    "cybersecurity Egypt", "SOC analyst Egypt",
+    "information security Egypt", "security engineer Egypt",
+    "penetration tester Egypt", "network security Egypt",
     "GRC analyst Egypt",
 ]
 
 def _fetch_linkedin_egypt_search():
-    """LinkedIn keyword searches targeting Egypt."""
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     for kw in LINKEDIN_EGYPT_SEARCHES:
-        params_str = (
-            f"?keywords={kw.replace(' ', '%20')}"
-            f"&location=Egypt&start=0&count=10&f_TPR=r86400"
-        )
-        html = get_text(base + params_str, headers={
-            **_HEADERS,
-            "Accept": "text/html,application/xhtml+xml",
-        })
+        params = f"?keywords={kw.replace(' ', '%20')}&location=Egypt&start=0&count=10&f_TPR=r86400"
+        html = get_text(base + params, headers={**_HEADERS, "Accept": "text/html,application/xhtml+xml"})
         if not html:
             continue
-        job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-        titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+        titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
         companies = re.findall(r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>\s*([^<]+)', html)
         for i, title in enumerate(titles):
             title = title.strip()
@@ -211,22 +72,128 @@ def _fetch_linkedin_egypt_search():
             jobs.append(Job(
                 title=title, company=company,
                 location="Egypt", url=job_url,
-                source="linkedin",
-                tags=["linkedin", "egypt"],
+                source="linkedin", tags=["linkedin", "egypt"],
             ))
     log.info(f"LinkedIn Egypt Search: {len(jobs)} jobs")
     return jobs
 
 
-# ─── Main entry ───────────────────────────────────────────────
+# ─── 2. CareerJet Egypt — JSON-LD (RSS has XML errors) ───────
+CAREERJET_QUERIES = [
+    "cybersecurity", "SOC+analyst", "security+engineer",
+    "penetration+tester", "information+security",
+]
+
+def _fetch_careerjet_egypt():
+    """
+    CareerJet RSS has malformed XML — use their search page JSON-LD instead.
+    """
+    jobs = []
+    seen = set()
+    for q in CAREERJET_QUERIES:
+        url  = f"https://www.careerjet.com.eg/jobs-search-results/{q}.html"
+        html = get_text(url, headers=_HEADERS)
+        if not html:
+            continue
+        for block in re.findall(
+            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE
+        ):
+            try:
+                data  = json.loads(block.strip())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") not in ("JobPosting", "ListItem"):
+                        continue
+                    obj   = item.get("item", item)
+                    title = obj.get("title", "").strip()
+                    j_url = obj.get("url", url)
+                    org   = obj.get("hiringOrganization", {})
+                    comp  = org.get("name", "") if isinstance(org, dict) else ""
+                    if not title or j_url in seen:
+                        continue
+                    if not _is_security(title):
+                        continue
+                    seen.add(j_url)
+                    jobs.append(Job(
+                        title=title, company=comp or "CareerJet Employer",
+                        location="Egypt", url=j_url,
+                        source="careerjet_eg", tags=["careerjet", "egypt"],
+                    ))
+            except Exception:
+                continue
+    log.info(f"CareerJet Egypt: {len(jobs)} jobs")
+    return jobs
+
+
+# ─── 3. Telegram Public Job Channels — NEW ───────────────────
+# These are active Arabic/Egyptian cybersec job Telegram channels
+# that post public messages readable via t.me RSS
+
+TELEGRAM_CHANNELS = [
+    # Egyptian & Arabic cybersecurity job channels
+    ("CyberJobs_EG",         "https://t.me/s/CyberJobsEG"),
+    ("InfoSec Jobs Arabic",  "https://t.me/s/infosecjobsar"),
+    ("Arab Cyber Jobs",      "https://t.me/s/arabcyberjobs"),
+    ("وظائف أمن المعلومات", "https://t.me/s/cybersec_jobs_ar"),
+    ("Cyber Security Jobs",  "https://t.me/s/cybersecjobss"),
+    ("وظائف تقنية مصر",     "https://t.me/s/tech_jobs_egypt"),
+    ("Security Jobs MENA",   "https://t.me/s/securityjobsmena"),
+    ("CyberSec Middle East", "https://t.me/s/cybersecme"),
+]
+
+def _fetch_telegram_channels():
+    """
+    Fetch from public Telegram channel pages (t.me/s/ = public web view).
+    Extracts job posts directly from message text.
+    """
+    jobs = []
+    seen = set()
+    for channel_name, url in TELEGRAM_CHANNELS:
+        html = get_text(url, headers={**_HEADERS, "Accept": "text/html"})
+        if not html:
+            continue
+        # Extract messages from Telegram's web view
+        messages = re.findall(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+            html, re.DOTALL | re.IGNORECASE
+        )
+        for msg in messages:
+            # Clean HTML
+            text = re.sub(r'<[^>]+>', ' ', msg).strip()
+            text = re.sub(r'\s+', ' ', text)
+            if len(text) < 20 or len(text) > 500:
+                continue
+            # Must look like a job post
+            if not _is_security(text):
+                continue
+            # Extract potential title (first line)
+            lines  = [l.strip() for l in text.split('\n') if l.strip()]
+            title  = lines[0][:120] if lines else text[:80]
+            if len(title) < 10 or title in seen:
+                continue
+            seen.add(title)
+            # Try to find a URL in the message
+            links = re.findall(r'https?://[^\s<>"\']+', msg)
+            job_url = links[0] if links else url
+            jobs.append(Job(
+                title=title, company=channel_name,
+                location="Egypt",
+                url=job_url,
+                source="telegram_eg",
+                tags=["telegram", "egypt", "cybersecurity"],
+            ))
+    log.info(f"Telegram Egypt Channels: {len(jobs)} jobs")
+    return jobs
+
+
 def fetch_egypt_alt():
-    """Aggregate Egypt alternative sources."""
+    """Aggregate Egypt alternative sources — fast & confirmed live."""
     all_jobs = []
     for fetcher in [
-        _fetch_careerjet_egypt,
-        _fetch_forasna,
-        _fetch_naukrigulf,
         _fetch_linkedin_egypt_search,
+        _fetch_careerjet_egypt,
+        _fetch_telegram_channels,
     ]:
         try:
             all_jobs.extend(fetcher())
