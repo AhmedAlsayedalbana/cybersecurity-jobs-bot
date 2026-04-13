@@ -1,4 +1,106 @@
 """
+Source registry — v12 updated
+
+PRIORITY ORDER:
+  1. Egypt (🇪🇬) — All governorates, public + private sector + #Hiring posts
+  2. Gulf (🌙) — KSA, UAE, Kuwait, Qatar, Bahrain, Oman + #Hiring posts
+  3. Cybersec boards (global)
+  4. LinkedIn (global jobs + #Hiring posts)
+  5. Google Jobs (SerpAPI)
+  6. Tech boards
+  7. Remote job boards
+  8. API-based (optional — need keys)
+  9. Freelance (Arab + global)
+
+REMOVED DEAD SOURCES:
+  ❌ Bayt Egypt / Gulf       — 403 Forbidden
+  ❌ Naukrigulf Egypt / Gulf  — timeout (10s)
+  ❌ Forasna                  — 404 Not Found
+  ❌ Tanqeeb                  — 403 Forbidden
+  ❌ GulfTalent               — 403 Forbidden
+  ❌ Saudi Greenhouse slugs   — 404 Not Found
+  ❌ CyberSec Greenhouse slugs— 404 Not Found
+  ❌ Lever slugs              — 404 Not Found
+  ❌ The Muse                 — 0 results
+  ❌ Indeed RSS               — 403 Forbidden
+
+ACTIVE SOURCES:
+  ✅ LinkedIn (jobs + #Hiring)
+  ✅ Gov Egypt (company pages + LinkedIn)
+  ✅ Egypt Alt (Wuzzuf + LinkedIn search/governorates)
+  ✅ Gov Gulf (STC, TDRA, Etisalat + LinkedIn Gulf)
+  ✅ Gulf Boards (Monster Gulf RSS)
+  ✅ CyberSec Boards (CyberSecJobs, Bugcrowd, HackerOne, BuiltIn)
+  ✅ Tech Boards (Big Tech Greenhouse)
+  ✅ Remote boards (Remotive, Himalayas, Jobicy, RemoteOK, Arbeitnow, WWR, WorkingNomads)
+  ✅ Freelance (Mostaql, Khamsat, Truelancer, WorkInSecurity)
+"""
+
+from sources.gov_egypt       import fetch_gov_egypt
+from sources.egypt_alt       import fetch_egypt_alt
+from sources.gov_gulf        import fetch_gov_gulf
+from sources.gulf_boards     import fetch_gulf_boards
+from sources.cybersec_boards import fetch_cybersec_boards
+from sources.linkedin        import fetch_linkedin
+from sources.linkedin_hiring import fetch_linkedin_hiring
+from sources.google_jobs     import fetch_google_jobs
+from sources.tech_boards     import fetch_tech_boards
+from sources.remotive        import fetch_remotive
+from sources.himalayas       import fetch_himalayas
+from sources.jobicy          import fetch_jobicy
+from sources.remoteok        import fetch_remoteok
+from sources.arbeitnow       import fetch_arbeitnow
+from sources.wwr             import fetch_wwr
+from sources.workingnomads   import fetch_workingnomads
+from sources.adzuna          import fetch_adzuna
+from sources.findwork        import fetch_findwork
+from sources.jooble          import fetch_jooble
+from sources.reed            import fetch_reed
+from sources.freelance       import fetch_freelance
+from sources.jsearch         import fetch_jsearch
+
+ALL_FETCHERS = [
+    # ── 1. Egypt — top priority 🇪🇬 ──────────────────────────
+    ("Gov Egypt",        fetch_gov_egypt),       # LinkedIn Egypt companies + gov pages
+    ("Egypt Alt",        fetch_egypt_alt),        # Wuzzuf + LinkedIn search/governorates
+
+    # ── 2. Gulf 🌙 ────────────────────────────────────────────
+    ("Gov Gulf",         fetch_gov_gulf),         # STC, TDRA, Etisalat + LinkedIn Gulf
+    ("Gulf Boards",      fetch_gulf_boards),      # Monster Gulf RSS
+
+    # ── 3. Cybersec-specific boards ──────────────────────────
+    ("CyberSec Boards",  fetch_cybersec_boards),  # CyberSecJobs + Bugcrowd + HackerOne + BuiltIn
+
+    # ── 4. LinkedIn (global) ──────────────────────────────────
+    ("LinkedIn",         fetch_linkedin),
+    ("LinkedIn #Hiring", fetch_linkedin_hiring),  # #Hiring posts — human-sourced leads
+
+    # ── 5. Google Jobs (SerpAPI) ─────────────────────────────
+    ("Google Jobs",      fetch_google_jobs),
+
+    # ── 6. Tech boards ───────────────────────────────────────
+    ("Tech Boards",      fetch_tech_boards),      # Big Tech Greenhouse (security roles)
+
+    # ── 7. Remote job boards ─────────────────────────────────
+    ("Remotive",         fetch_remotive),
+    ("Himalayas",        fetch_himalayas),
+    ("Jobicy",           fetch_jobicy),
+    ("RemoteOK",         fetch_remoteok),
+    ("Arbeitnow",        fetch_arbeitnow),
+    ("WWR",              fetch_wwr),
+    ("Working Nomads",   fetch_workingnomads),
+
+    # ── 8. API-based (optional — need keys) ──────────────────
+    ("Adzuna",           fetch_adzuna),
+    ("Jooble",           fetch_jooble),
+    ("Findwork",         fetch_findwork),
+    ("Reed",             fetch_reed),
+    # ("JSearch",        fetch_jsearch),  # Uncomment if RAPIDAPI_KEY is set
+
+    # ── 9. Freelance 🔧 ──────────────────────────────────────
+    ("Freelance",        fetch_freelance),        # Mostaql + Khamsat + Truelancer + WorkInSecurity
+]
+"""
 Source registry V12 — Zero-Warning Edition
 
 PRIORITY ORDER:
