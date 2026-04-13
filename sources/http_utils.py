@@ -77,6 +77,10 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
                 )
                 time.sleep(wait)
                 continue
+            # Don't retry on other 4xx errors
+            if 400 <= resp.status_code < 500:
+                log.warning(f"HTTP {resp.status_code} for {url} — skipping")
+                return None
             resp.raise_for_status()
             return resp
         except requests.RequestException as e:
