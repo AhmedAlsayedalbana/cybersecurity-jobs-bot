@@ -158,7 +158,7 @@ def _headers() -> dict:
     }
 
 
-def _parse_detail(html: str, job_id: str) -> Job | None:
+def _parse_detail(html: str, job_id: str, search_location: str = "") -> Job | None:
     """Parse a LinkedIn job detail page into a Job, tagged as #Hiring."""
     def extract(pattern, default=""):
         m = re.search(pattern, html, re.DOTALL)
@@ -188,14 +188,16 @@ def _parse_detail(html: str, job_id: str) -> Job | None:
     location = clean(extract(
         r'<span[^>]*class="[^"]*topcard__flavor--bullet[^"]*"[^>]*>(.*?)</span>'
     ))
+    # Fall back to the search location if page didn't return one
+    if not location and search_location:
+        location = search_location
+
     is_remote = bool(re.search(r'remote', html, re.IGNORECASE))
     if "remote" in location.lower():
         is_remote = True
 
-    # Canonical title matching
     canonical = match_canonical_title(raw_title)
 
-    # Try to pull a short description snippet
     desc_raw = extract(
         r'<div[^>]*class="[^"]*show-more-less-html[^"]*"[^>]*>(.*?)</div>'
     )
@@ -269,7 +271,7 @@ def fetch_linkedin_hiring() -> list[Job]:
             if not detail_html:
                 continue
 
-            job = _parse_detail(detail_html, job_id)
+            job = _parse_detail(detail_html, job_id, search_location=search.get("location", ""))
             if job:
                 jobs.append(job)
             time.sleep(1.5)
