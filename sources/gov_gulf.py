@@ -250,93 +250,6 @@ def _fetch_linkedin_gulf_search():
     return jobs
 
 
-# ─── 6. Bayt.com Gulf ────────────────────────────────────────
-BAYT_GULF_COUNTRIES = ["uae", "saudi-arabia", "kuwait", "qatar"]
-
-def _fetch_bayt_gulf():
-    jobs = []
-    seen = set()
-    queries = ["cybersecurity", "information security", "security analyst"]
-    for country in BAYT_GULF_COUNTRIES[:2]:  # top 2
-        for q in queries[:2]:
-            url  = f"https://www.bayt.com/en/{country}/jobs/{urllib.parse.quote(q)}-jobs/"
-            html = get_text(url, headers=HEADERS)
-            if not html:
-                continue
-            for block in re.findall(
-                r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-                html, re.DOTALL | re.IGNORECASE
-            ):
-                try:
-                    data  = _json.loads(block.strip())
-                    items = data if isinstance(data, list) else [data]
-                    for item in items:
-                        if item.get("@type") != "JobPosting":
-                            continue
-                        title = item.get("title", "").strip()
-                        if not title or title in seen:
-                            continue
-                        seen.add(title)
-                        hiring  = item.get("hiringOrganization", {})
-                        company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                        loc_obj = item.get("jobLocation", {})
-                        location = country.replace("-", " ").title()
-                        if isinstance(loc_obj, dict):
-                            addr = loc_obj.get("address", {})
-                            if isinstance(addr, dict):
-                                location = addr.get("addressCountry", location)
-                        jobs.append(Job(
-                            title=title, company=company, location=location,
-                            url=item.get("url", url),
-                            source="bayt", tags=["bayt", "gulf"],
-                        ))
-                except Exception:
-                    continue
-            time.sleep(0.4)
-    log.info(f"Bayt Gulf: {len(jobs)} jobs")
-    return jobs
-
-
-# ─── 7. Naukrigulf Gulf ──────────────────────────────────────
-def _fetch_naukrigulf_gulf():
-    jobs = []
-    seen = set()
-    queries = ["cybersecurity", "information security", "security engineer"]
-    gulf_regions = ["uae", "saudi-arabia"]
-    for region in gulf_regions:
-        for q in queries[:2]:
-            url  = f"https://www.naukrigulf.com/{urllib.parse.quote(q.replace(' ','-'))}-jobs-in-{region}"
-            html = get_text(url, headers=HEADERS)
-            if not html:
-                continue
-            for block in re.findall(
-                r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-                html, re.DOTALL | re.IGNORECASE
-            ):
-                try:
-                    data  = _json.loads(block.strip())
-                    items = data if isinstance(data, list) else [data]
-                    for item in items:
-                        if item.get("@type") != "JobPosting":
-                            continue
-                        title = item.get("title", "").strip()
-                        if not title or title in seen:
-                            continue
-                        seen.add(title)
-                        hiring  = item.get("hiringOrganization", {})
-                        company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                        jobs.append(Job(
-                            title=title, company=company,
-                            location=region.replace("-", " ").title(),
-                            url=item.get("url", url),
-                            source="naukrigulf", tags=["naukrigulf", "gulf"],
-                        ))
-                except Exception:
-                    continue
-            time.sleep(0.4)
-    log.info(f"Naukrigulf Gulf: {len(jobs)} jobs")
-    return jobs
-
 
 def fetch_gov_gulf():
     """Fetch from confirmed-live Gulf sources."""
@@ -347,8 +260,6 @@ def fetch_gov_gulf():
         _fetch_etisalat_uae,
         _fetch_gulf_linkedin_companies,
         _fetch_linkedin_gulf_search,
-        _fetch_bayt_gulf,
-        _fetch_naukrigulf_gulf,
     ]:
         try:
             all_jobs.extend(fetcher())
