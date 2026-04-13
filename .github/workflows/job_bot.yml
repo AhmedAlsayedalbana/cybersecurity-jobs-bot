@@ -11,7 +11,7 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -69,16 +69,24 @@ jobs:
       - name: Save seen_jobs.json
         if: always()
         run: |
+          # Save BEFORE any git operations to avoid checkout conflicts
           cp seen_jobs.json /tmp/seen_jobs.json
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stash any local changes so checkout doesn't fail
+          git stash --include-untracked || true
+
           git fetch origin data:data || true
+
           if git show-ref --verify --quiet refs/heads/data; then
             git checkout data
           else
             git checkout --orphan data
-            git rm -rf .
+            git rm -rf . || true
           fi
+
           cp /tmp/seen_jobs.json seen_jobs.json
           git add seen_jobs.json
           if ! git diff --cached --quiet; then
