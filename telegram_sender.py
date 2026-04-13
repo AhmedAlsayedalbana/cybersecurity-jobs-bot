@@ -215,31 +215,58 @@ def format_job_message(job):
     is_hiring_post = job.source == "linkedin_hiring"
     is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
-    tags = []
-    if fresh == "[NEW]":
-        tags.append("🆕 New")
-    if is_internship:
-        tags.append("Internship")
-    if is_hiring_post:
-        tags.append("#Hiring")
+    d_emoji = _domain_emoji(domain)
 
+    # ── Optional badges (inline, only if present) ─────────────
+    badges = []
+    if fresh == "[NEW]":
+        badges.append("🆕")
+    if is_internship:
+        badges.append("🎓 Internship")
+    if is_hiring_post:
+        badges.append("#Hiring")
+    badge_prefix = " ".join(badges) + " " if badges else ""
+
+    # ── Score as short text ────────────────────────────────────
+    score_text = _score_label(score)
+
+    # ── Salary line (only if available) ───────────────────────
+    salary_line = f" · 💰 {_escape(str(job.salary))}" if job.salary else ""
+
+    # ── Job type (only if available) ──────────────────────────
+    type_line = f" · {_escape(job.job_type)}" if job.job_type else ""
+
+    # ── Source label ──────────────────────────────────────────
+    if is_hiring_post:
+        source_label = "LinkedIn #Hiring"
+    else:
+        source_label = source
+
+    # ── Build compact message ─────────────────────────────────
     lines = []
-    if tags:
-        lines.append(f"<i>{'  ·  '.join(tags)}</i>")
-    lines.append(f"<b>{title}</b>")
-    lines.append(f"{company}  ·  {location}")
-    lines.append("")
-    lines.append(f"<b>Domain:</b> {domain}  ·  <b>Level:</b> {level}")
-    lines.append(f"<b>Skills:</b> {skills}")
-    if job.salary:
-        lines.append(f"<b>Salary:</b> {_escape(str(job.salary))}")
-    lines.append("")
-    if source:
-        lines.append(f"<i>via {source}</i>")
-    lines.append(f'<a href="{job.url}">Apply →</a>')
+
+    # Line 1: emoji + title
+    lines.append(f"{d_emoji} <b>{badge_prefix}{title}</b>")
+
+    # Line 2: company + location
+    lines.append(f"🏢 {company}  ·  {location}")
+
+    # Line 3: domain + level + type + salary (all on one line)
+    meta = f"{domain}  ·  {level}{type_line}{salary_line}"
+    lines.append(f"<i>{meta}</i>")
+
+    # Line 4: skills as score tags
+    lines.append(f"<code>{skills}</code>  —  {score_text}")
+
+    # Line 5: source + apply
+    lines.append(f'<a href="{job.url}">🔗 Apply</a>  ·  <i>{source_label}</i>')
 
     return "\n".join(lines).strip()
 
+
+# ─────────────────────────────────────────────────────────────
+# 📤 Sending — 10 jobs per channel, no cross-channel duplicates
+# ─────────────────────────────────────────────────────────────
 
 def _send_to_topic(message, thread_id=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_GROUP_ID:
