@@ -162,9 +162,9 @@ def _fetch_big_tech_greenhouse():
 
 
 def fetch_tech_boards():
-    """Aggregate tech board results — zero-warning edition."""
+    """Aggregate tech board results."""
     jobs = []
-    for fetcher in [_fetch_the_muse, _fetch_indeed_rss, _fetch_big_tech_greenhouse]:
+    for fetcher in [_fetch_big_tech_greenhouse]:
         try:
             jobs.extend(fetcher())
         except Exception as e:
