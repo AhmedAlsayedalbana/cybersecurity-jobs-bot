@@ -215,80 +215,31 @@ def format_job_message(job):
     is_hiring_post = job.source == "linkedin_hiring"
     is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
-    d_emoji = _domain_emoji(domain)
-    l_emoji = _level_emoji(level)
-
-    # ── Top Badge Row ──────────────────────────────────────────
-    badges = []
+    tags = []
     if fresh == "[NEW]":
-        badges.append("🆕 NEW")
-    elif fresh == "[Today]":
-        badges.append("📅 Today")
+        tags.append("🆕 New")
     if is_internship:
-        badges.append("🎓 Internship")
+        tags.append("Internship")
     if is_hiring_post:
-        badges.append("📢 #Hiring")
+        tags.append("#Hiring")
 
-    badge_row = "  ·  ".join(badges) if badges else ""
-
-    # ── Build Message ──────────────────────────────────────────
     lines = []
-
-    # Header
-    if badge_row:
-        lines.append(f"<code>{'─' * 32}</code>")
-        lines.append(f"<b>{badge_row}</b>")
-    else:
-        lines.append(f"<code>{'─' * 32}</code>")
-
-    lines.append(f"{d_emoji}  <b>{title}</b>")
+    if tags:
+        lines.append(f"<i>{'  ·  '.join(tags)}</i>")
+    lines.append(f"<b>{title}</b>")
+    lines.append(f"{company}  ·  {location}")
     lines.append("")
-
-    # Company & Location block
-    lines.append(f"🏢  <b>{company}</b>")
-    lines.append(f"📍  {location}")
-    lines.append("")
-
-    # Role Details block
-    lines.append(f"<b>Role Details</b>")
-    lines.append(f"{l_emoji}  <b>Level</b>    {level}")
-    lines.append(f"{d_emoji}  <b>Domain</b>   {domain}")
-    if job.job_type:
-        lines.append(f"📄  <b>Type</b>     {_escape(job.job_type)}")
+    lines.append(f"<b>Domain:</b> {domain}  ·  <b>Level:</b> {level}")
+    lines.append(f"<b>Skills:</b> {skills}")
     if job.salary:
-        lines.append(f"💰  <b>Salary</b>   {_escape(str(job.salary))}")
+        lines.append(f"<b>Salary:</b> {_escape(str(job.salary))}")
     lines.append("")
-
-    # Skills block
-    lines.append(f"<b>Key Skills</b>")
-    lines.append(f"⚡  {skills}")
-    lines.append("")
-
-    # Match strength
-    lines.append(f"<b>Match Strength</b>")
-    lines.append(f"   {_match_bar(score)}")
-    lines.append("")
-
-    # Source
-    if is_hiring_post:
-        raw_label = _escape(job.original_source or "")
-        if raw_label:
-            lines.append(f"📢  <i>Posted via LinkedIn #Hiring</i>")
-        else:
-            lines.append(f"📢  <i>Via LinkedIn #Hiring Post</i>")
-    elif source:
-        lines.append(f"🌐  <i>Source: {source}</i>")
-
-    lines.append("")
-    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
-    lines.append(f"<code>{'─' * 32}</code>")
+    if source:
+        lines.append(f"<i>via {source}</i>")
+    lines.append(f'<a href="{job.url}">Apply →</a>')
 
     return "\n".join(lines).strip()
 
-
-# ─────────────────────────────────────────────────────────────
-# 📤 Sending — 10 jobs per channel, no cross-channel duplicates
-# ─────────────────────────────────────────────────────────────
 
 def _send_to_topic(message, thread_id=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_GROUP_ID:
