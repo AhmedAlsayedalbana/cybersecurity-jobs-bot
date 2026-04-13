@@ -1,84 +1,106 @@
 """
-Cybersecurity Jobs Bot — V12 (Professional System)
-Orchestrates the full pipeline: Fetch → Filter → Score → Send.
+Job Dataclass & Filtering Logic — V12 (Professional System)
 """
 
+import re
 import logging
-import os
-import time
+from dataclasses import dataclass, field
 from datetime import datetime
-from sources import ALL_FETCHERS
-from models import filter_jobs, Job
-from scoring import score_job, sort_by_location_priority
-from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen
-from telegram_sender import send_jobs
-from classifier import classify_location
+from typing import Optional
 import config
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
-log = logging.getLogger("main")
+log = logging.getLogger(__name__)
 
-def main():
-    start_time = time.time()
-    log.info("=" * 60)
-    log.info(f"🔐 Professional CyberSec Bot Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log.info("=" * 60)
+@dataclass
+class Job:
+    title: str
+    company: str
+    location: str
+    url: str
+    source: str
+    description: str = ""
+    salary: str = ""
+    job_type: str = ""
+    posted_date: Optional[datetime] = None
+    tags: list = field(default_factory=list)
+    is_remote: bool = False
+    score: int = 0
+    original_source: str = ""
 
-    # 1. Load seen jobs
-    seen_dict = load_seen_ids()
-    
-    # 2. Fetch jobs from all sources
-    all_raw_jobs = []
-    for name, fetcher in ALL_FETCHERS:
-        try:
-            log.info(f"📡 Fetching: {name}")
-            jobs = fetcher()
-            all_raw_jobs.extend(jobs)
-            log.info(f"   ✓ {name}: {len(jobs)}")
-        except Exception:
-            # Silent failure for sources to avoid warning spam
+    @property
+    def unique_id(self) -> str:
+        """Unique ID for deduplication."""
+        clean_url = re.sub(r'[?&]utm_.*', '', self.url)
+        return f"{self.title.lower()}|{self.company.lower()}|{clean_url}"
+
+
+# =========================
+# 🔥 FIX (المشكلة كانت هنا)
+# =========================
+def _flatten_tags(tags: list) -> str:
+    """Convert tag list into a searchable string."""
+    try:
+        return " ".join(str(t) for t in (tags or []))
+    except Exception:
+        return ""
+
+
+def _is_in_egypt(location: str) -> bool:
+    loc = location.lower()
+    return any(p in loc for p in config.EGYPT_PATTERNS)
+
+
+def _is_in_gulf(location: str) -> bool:
+    loc = location.lower()
+    return any(p in loc for p in config.GULF_PATTERNS)
+
+
+def _is_remote(location: str, title: str = "") -> bool:
+    text = (location + " " + title).lower()
+    return any(p in text for p in config.REMOTE_PATTERNS)
+
+
+def passes_cyber_filter(title: str) -> bool:
+    title = title.lower()
+
+    # 1. Must have at least one include keyword
+    if not any(k in title for k in config.INCLUDE_KEYWORDS):
+        return False
+
+    # 2. Must NOT have any exclude keywords
+    if any(k in title for k in config.EXCLUDE_KEYWORDS):
+        return False
+
+    return True
+
+
+def filter_jobs(jobs: list[Job]) -> list[Job]:
+    """Filter jobs by cybersec relevance and location."""
+    filtered = []
+
+    for job in jobs:
+        if not job.title or not job.url:
             continue
 
-    # 3. Filter jobs
-    filtered_jobs = filter_jobs(all_raw_jobs)
-    log.info(f"🔍 After filter: {len(filtered_jobs)}")
+        # 1. Cybersec Relevance
+        if not passes_cyber_filter(job.title):
+            continue
 
-    # 4. Deduplicate
-    new_jobs = deduplicate(filtered_jobs, seen_dict)
-    log.info(f"✨ New jobs: {len(new_jobs)}")
+        # 2. Location Filter (Egypt, Gulf, or Remote only)
+        is_eg = _is_in_egypt(job.location)
+        is_gulf = _is_in_gulf(job.location)
+        is_rem = _is_remote(job.location, job.title) or job.is_remote
 
-    if not new_jobs:
-        log.info("🏁 No new jobs to process.")
-        return
+        if is_eg or is_gulf or is_rem:
+            # Normalize location
+            if is_eg:
+                job.location = "Egypt 🇪🇬"
+            elif is_gulf:
+                job.location = "Gulf 🌙"
+            elif is_rem:
+                job.is_remote = True
 
-    # 5. Score and Sort
-    scored_jobs = [(j, score_job(j)) for j in new_jobs]
-    
-    # Sort by location priority (Egypt > Gulf > Global)
-    sorted_jobs = sort_by_location_priority(scored_jobs)
+            filtered.append(job)
 
-    # 6. Distribute to Channels
-    # We take top jobs and send them
-    final_pool = [item[0] for item in sorted_jobs[:config.MAX_JOBS_PER_RUN]]
-    
-    if final_pool:
-        log.info(f"📨 Sending {len(final_pool)} jobs to Telegram...")
-        send_jobs(final_pool)
-        
-        # 7. Mark as seen and save
-        seen_dict = mark_as_seen(final_pool, seen_dict)
-        save_seen_ids(seen_dict)
-    
-    duration = time.time() - start_time
-    log.info("=" * 60)
-    log.info(f"🏁 DONE in {duration:.1f}s")
-    log.info(f"📥 Fetched: {len(all_raw_jobs)} | 🔍 Filtered: {len(filtered_jobs)} | ✨ New: {len(new_jobs)} | 📨 Sent: {len(final_pool)}")
-    log.info("=" * 60)
-
-if __name__ == "__main__":
-    main()
+    log.info(f"Filtered {len(jobs)} jobs down to {len(filtered)}")
+    return filtered
