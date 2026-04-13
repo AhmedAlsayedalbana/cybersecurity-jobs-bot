@@ -1,10 +1,10 @@
 """
 Job scoring and ranking system for Cybersecurity Jobs Bot.
 Scoring Philosophy:
-- Egypt Priority: +8 pts (preferred but not overwhelming)
-- Gulf: +6 pts (strong second)
+- Egypt Priority: +10 pts (Egyptian market is the primary focus)
+- Gulf: +8 pts (strong second)
 - Remote: +5 pts (close to Gulf — remote jobs are very relevant)
-- Specialized skills: up to +4 pts
+- Specialized skills: up to +5 pts (SOC / Pentest / Network Security boosted)
 - Entry-level support: +3 pts
 - Freshness: +5 pts
 """
@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 def score_job(job: Job) -> int:
     """
-    Score a single job. Balanced scoring — Egypt first, but Remote/Gulf are competitive.
+    Score a single job. Egypt-first scoring — Egyptian market and
+    Gulf are the top priorities. SOC / Pentest / Network Security
+    roles get an additional specialization boost.
     """
     score = 0
     title_text = job.title.lower()
@@ -26,26 +28,48 @@ def score_job(job: Job) -> int:
     tags_text = _flatten_tags(job.tags).lower()
     combined_text = f"{title_text} {description_text} {tags_text}".lower()
 
-    # 1. Location Scoring — Egypt preferred, Gulf and Remote are close
+    # 1. Location Scoring — Egypt preferred, Gulf strong second
     loc_type = classify_location(job)
     if loc_type == "egypt":
-        score += 8    # Egypt first, but not overwhelming
+        score += 10   # Egyptian market is primary focus
     elif loc_type == "gulf":
-        score += 6    # Gulf is a strong second
+        score += 8    # Gulf is a strong second
     elif "remote" in combined_text or job.is_remote:
-        score += 5    # Remote is nearly as good as Gulf
+        score += 5    # Remote is relevant but below geo-priority
 
     # 2. Additional remote boost if also Egypt/Gulf (hybrid)
-    if ("remote" in combined_text or job.is_remote) and loc_type in ("egypt", "gulf"):
+    if (("remote" in combined_text or job.is_remote) and loc_type in ("egypt", "gulf")):
         score += 2
 
     # 3. High-Value Tech/Skills Boost
+    # SOC, Pentest, and Network Security get elevated scores to reflect
+    # their higher demand in the Egyptian and Gulf markets.
     tech_keywords = {
+        # SOC / Blue Team — boosted
+        "soc analyst": 5, "soc engineer": 5, "soc": 4,
+        "security operations": 4, "threat analyst": 4,
         "siem": 4, "splunk": 4, "qradar": 4, "sentinel": 4,
+        "incident response": 4, "threat hunting": 4,
+        "blue team": 4, "dfir": 4,
+
+        # Penetration Testing / Offensive — boosted
+        "penetration testing": 5, "pentest": 5, "penetration tester": 5,
+        "red team": 5, "ethical hack": 4, "bug bounty": 4,
+        "offensive security": 4, "oscp": 3,
+
+        # Network Security — boosted
+        "network security": 5, "network engineer security": 5,
+        "firewall": 4, "ids": 3, "ips": 3, "nac": 3,
+        "cisco security": 4, "fortinet": 4, "palo alto": 4,
+        "vpn security": 3, "zero trust": 4, "network defense": 4,
+
+        # Cloud / AppSec
         "aws security": 4, "cloud security": 4, "azure security": 4,
-        "incident response": 3, "soc": 3, "pentest": 3, "penetration": 3,
-        "vulnerability": 3, "appsec": 3, "devsecops": 3, "grc": 2,
-        "compliance": 2, "iso 27001": 2, "nist": 2
+        "appsec": 3, "devsecops": 3,
+
+        # GRC
+        "vulnerability": 3, "grc": 2, "compliance": 2,
+        "iso 27001": 2, "nist": 2,
     }
 
     for kw, val in tech_keywords.items():
@@ -98,4 +122,3 @@ def sort_by_location_priority(jobs_with_scores: list[tuple[Job, int]]) -> list[t
         return (2, -score)
 
     return sorted(jobs_with_scores, key=loc_priority)
-
