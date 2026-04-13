@@ -1,15 +1,12 @@
 """
-Google Jobs scraper — uses SerpAPI or direct scraping fallback.
-Catches jobs from small sites that have no API or RSS feed.
-Focused on Egypt & Gulf cybersecurity roles.
+Google Jobs & Smart Aggregator — V12 (Professional System)
+Focused on Egypt & Gulf cybersecurity roles with silent error handling.
 """
 
 import logging
-import re
-import json
-from models import Job
-from sources.http_utils import get_text, get_json
 import os
+from models import Job
+from sources.http_utils import get_json
 
 log = logging.getLogger(__name__)
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
@@ -30,7 +27,6 @@ GOOGLE_JOBS_SEARCHES = [
     {"q": "security engineer jobs Egypt",       "location": "Egypt"},
     {"q": "information security jobs Egypt",    "location": "Egypt"},
     {"q": "junior cybersecurity jobs Egypt",    "location": "Egypt"},
-    {"q": "security intern Egypt",              "location": "Egypt"},
     # Saudi
     {"q": "cybersecurity jobs Saudi Arabia",    "location": "Saudi Arabia"},
     {"q": "SOC analyst Riyadh",                 "location": "Saudi Arabia"},
@@ -38,15 +34,11 @@ GOOGLE_JOBS_SEARCHES = [
     # UAE
     {"q": "cybersecurity jobs Dubai",           "location": "UAE"},
     {"q": "security analyst UAE",               "location": "UAE"},
-    {"q": "SOC engineer Dubai",                 "location": "UAE"},
-    # Other Gulf
-    {"q": "cybersecurity jobs Qatar",           "location": "Qatar"},
-    {"q": "cybersecurity jobs Kuwait",          "location": "Kuwait"},
 ]
 
 
 def _fetch_via_serpapi():
-    """Use SerpAPI to get Google Jobs results (requires SERPAPI_KEY)."""
+    """Use SerpAPI to get Google Jobs results (Silent if no key)."""
     if not SERPAPI_KEY:
         return []
 
@@ -62,97 +54,43 @@ def _fetch_via_serpapi():
             "hl": "en",
             "gl": "eg" if "Egypt" in search.get("location", "") else "us",
         }
-        data = get_json("https://serpapi.com/search", params=params, headers=HEADERS)
-        if not data or "jobs_results" not in data:
-            continue
-
-        for item in data["jobs_results"]:
-            url_job = ""
-            # Try to get apply link
-            related = item.get("related_links", [])
-            if related:
-                url_job = related[0].get("link", "")
-            if not url_job:
-                url_job = "https://www.google.com/search?q=" + search["q"].replace(" ", "+") + "&ibp=htl;jobs"
-
-            if url_job in seen_urls:
-                continue
-            seen_urls.add(url_job)
-
-            jobs.append(Job(
-                title=item.get("title", ""),
-                company=item.get("company_name", "Unknown"),
-                location=item.get("location", search.get("location", "")),
-                url=url_job,
-                source="google_jobs",
-                salary=item.get("salary", ""),
-                job_type=", ".join(item.get("detected_extensions", {}).get("schedule_type", [])) if item.get("detected_extensions") else "",
-                tags=["google_jobs", search.get("location", "")],
-                is_remote="remote" in item.get("location", "").lower(),
-                description=item.get("description", "")[:300],
-            ))
-
-    log.info("Google Jobs (SerpAPI): " + str(len(jobs)) + " jobs")
-    return jobs
-
-
-def _fetch_via_jooble_arabic():
-    """
-    Fallback: Use Jooble with Arabic-market focused queries.
-    Jooble aggregates from many small sites Google also covers.
-    """
-    from config import JOOBLE_API_KEY
-    if not JOOBLE_API_KEY:
-        return []
-
-    jobs = []
-    searches = [
-        {"keywords": "cybersecurity", "location": "Egypt"},
-        {"keywords": "SOC analyst", "location": "Egypt"},
-        {"keywords": "penetration tester", "location": "Egypt"},
-        {"keywords": "security engineer", "location": "Saudi Arabia"},
-        {"keywords": "cybersecurity", "location": "Dubai"},
-        {"keywords": "information security", "location": "UAE"},
-        {"keywords": "security analyst", "location": "Qatar"},
-    ]
-
-    for s in searches:
-        data = get_json(
-            "https://jooble.org/api/" + JOOBLE_API_KEY,
-            headers=HEADERS,
-        )
-        # Jooble uses POST — handle differently
-        import requests as _req
         try:
-            resp = _req.post(
-                "https://jooble.org/api/" + JOOBLE_API_KEY,
-                json={"keywords": s["keywords"], "location": s["location"]},
-                timeout=10,
-            )
-            data = resp.json() if resp.status_code == 200 else None
-        except Exception:
+            data = get_json("https://serpapi.com/search", params=params, headers=HEADERS)
+            if not data or "jobs_results" not in data:
+                continue
+
+            for item in data["jobs_results"]:
+                url_job = ""
+                related = item.get("related_links", [])
+                if related:
+                    url_job = related[0].get("link", "")
+                if not url_job:
+                    url_job = "https://www.google.com/search?q=" + search["q"].replace(" ", "+") + "&ibp=htl;jobs"
+
+                if url_job in seen_urls:
+                    continue
+                seen_urls.add(url_job)
+
+                jobs.append(Job(
+                    title=item.get("title", ""),
+                    company=item.get("company_name", "Unknown"),
+                    location=item.get("location", search.get("location", "")),
+                    url=url_job,
+                    source="google_jobs",
+                    salary=item.get("salary", ""),
+                    job_type=", ".join(item.get("detected_extensions", {}).get("schedule_type", [])) if item.get("detected_extensions") else "",
+                    tags=["google_jobs", search.get("location", "")],
+                    is_remote="remote" in item.get("location", "").lower(),
+                    description=item.get("description", "")[:300],
+                ))
+        except:
             continue
 
-        if not data:
-            continue
-        for item in data.get("jobs", []):
-            jobs.append(Job(
-                title=item.get("title", ""),
-                company=item.get("company", "Unknown"),
-                location=item.get("location", s["location"]),
-                url=item.get("link", ""),
-                source="jooble_arabic",
-                salary=item.get("salary", ""),
-                tags=["jooble", s["location"]],
-                is_remote="remote" in item.get("location", "").lower(),
-            ))
-
-    log.info("Jooble Arabic: " + str(len(jobs)) + " jobs")
     return jobs
 
 
 def _fetch_adzuna_mena():
-    """Adzuna MENA — Egypt and Gulf searches."""
+    """Adzuna MENA — Egypt and Gulf searches (Silent if no keys)."""
     from config import ADZUNA_APP_ID, ADZUNA_APP_KEY
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         return []
@@ -160,47 +98,43 @@ def _fetch_adzuna_mena():
     jobs = []
     searches = [
         ("eg", "cybersecurity", "Egypt"),
-        ("eg", "SOC analyst", "Egypt"),
-        ("eg", "penetration tester", "Egypt"),
-        ("eg", "security engineer", "Egypt"),
+        ("eg", "information security", "Egypt"),
         ("ae", "cybersecurity", "UAE"),
-        ("ae", "security engineer", "UAE"),
-        ("ae", "SOC analyst", "UAE"),
+        ("sa", "cybersecurity", "Saudi Arabia"),
     ]
 
     for country_code, query, location in searches:
         url = (
-            "https://api.adzuna.com/v1/api/jobs/" + country_code + "/search/1"
-            "?app_id=" + ADZUNA_APP_ID +
-            "&app_key=" + ADZUNA_APP_KEY +
-            "&results_per_page=20&what=" + query.replace(" ", "+") +
-            "&sort_by=date"
+            f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
+            f"?app_id={ADZUNA_APP_ID}&app_key={ADZUNA_APP_KEY}"
+            f"&results_per_page=15&what={query.replace(' ', '+')}&sort_by=date"
         )
-        data = get_json(url, headers=HEADERS)
-        if not data or "results" not in data:
+        try:
+            data = get_json(url, headers=HEADERS)
+            if not data or "results" not in data:
+                continue
+            for item in data["results"]:
+                jobs.append(Job(
+                    title=item.get("title", ""),
+                    company=item.get("company", {}).get("display_name", "Unknown"),
+                    location=item.get("location", {}).get("display_name", location),
+                    url=item.get("redirect_url", ""),
+                    source="adzuna_mena",
+                    tags=["adzuna", location],
+                    is_remote="remote" in item.get("title", "").lower(),
+                ))
+        except:
             continue
-        for item in data["results"]:
-            jobs.append(Job(
-                title=item.get("title", ""),
-                company=item.get("company", {}).get("display_name", "Unknown"),
-                location=item.get("location", {}).get("display_name", location),
-                url=item.get("redirect_url", ""),
-                source="adzuna_mena",
-                salary=str(item.get("salary_min", "")) + "-" + str(item.get("salary_max", "")) if item.get("salary_min") else "",
-                tags=["adzuna", location],
-                is_remote="remote" in item.get("title", "").lower(),
-            ))
 
-    log.info("Adzuna MENA: " + str(len(jobs)) + " jobs")
     return jobs
 
 
 def fetch_google_jobs():
-    """Aggregate Google Jobs + fallbacks."""
+    """Aggregate Google Jobs + fallbacks silently."""
     all_jobs = []
     for fn in [_fetch_via_serpapi, _fetch_adzuna_mena]:
         try:
             all_jobs.extend(fn())
-        except Exception as e:
-            log.warning("google_jobs sub-fetcher " + fn.__name__ + " failed: " + str(e))
+        except:
+            pass
     return all_jobs
