@@ -15,8 +15,11 @@ def fetch_jobicy() -> list[Job]:
     """Fetch jobs from Jobicy. Cybersecurity keyword filter in config applies."""
     jobs = []
     for industry in INDUSTRIES:
-        data = get_json(BASE, params={"count": 50, "industry": industry})
-        if not data or "jobs" not in data:
+        try:
+            data = get_json(BASE, params={"count": 50, "industry": industry})
+        except Exception:
+            data = None
+        if not data or not isinstance(data, dict) or "jobs" not in data:
             continue
         for item in data["jobs"]:
             salary_parts = []
