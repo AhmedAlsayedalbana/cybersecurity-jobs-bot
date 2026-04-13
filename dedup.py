@@ -13,7 +13,7 @@ from config import SEEN_JOBS_FILE
 log = logging.getLogger(__name__)
 
 # Memory limit: 7 days
-MEMORY_DAYS = 7
+MEMORY_DAYS = 3
 
 def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
     """
