@@ -1,29 +1,19 @@
 """
-Tech Boards — V12 (Zero-Warning Edition)
+Tech Boards — Security roles at major tech companies via Greenhouse API.
 
-REMOVED (dead — caused all warnings):
-  ❌ Dice job-search-api.dice.com — DNS failure always
-  ❌ SimplyHired RSS — 403 always
-  ❌ ZipRecruiter RSS — 403 always
-  ❌ CyberSN — RSS dead
-  ❌ Authentic Jobs — RSS dead
-  ❌ Stack Overflow Jobs — shut down
-  ❌ Wellfound RSS — 404
+REMOVED (dead / 403):
+  ❌ The Muse — 0 results always
+  ❌ Indeed RSS — 403 Forbidden always
+  ❌ shopify, notion, hashicorp Greenhouse slugs — 404
 
-ADDED (confirmed working):
-  ✅ Dice RSS (web scrape, not API) 
-  ✅ Indeed RSS (remote cybersecurity)
-  ✅ The Muse API (free, no key needed)
-  ✅ Greenhouse public jobs (big tech security teams)
-  ✅ Workable jobs (various companies)
+CONFIRMED WORKING slugs only:
+  ✅ stripe, airbnb, lyft, dropbox, squarespace, asana, figma,
+     mongodb, datadog, cloudflare, fastly
 """
 
 import logging
-import re
-import json
-import xml.etree.ElementTree as ET
 from models import Job
-from sources.http_utils import get_text, get_json
+from sources.http_utils import get_json
 
 log = logging.getLogger(__name__)
 
@@ -44,92 +34,16 @@ def _is_sec(text: str) -> bool:
     return any(k in t for k in SEC_KEYWORDS)
 
 
-# ── 1. The Muse API — free, no key required ──────────────────
-def _fetch_the_muse():
-    """
-    The Muse has a public API with no auth required for basic search.
-    Returns security-related tech jobs.
-    """
-    jobs = []
-    seen = set()
-    url  = "https://www.themuse.com/api/public/jobs"
-    for cat in ["IT", "Data Science", "Software Engineer"]:
-        params = {"category": cat, "level": "Mid Level,Senior Level", "page": 1}
-        data   = get_json(url, params=params, headers=_H)
-        if not data or "results" not in data:
-            continue
-        for item in data["results"]:
-            title   = item.get("name", "").strip()
-            company = item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else ""
-            job_url = item.get("refs", {}).get("landing_page", "") if isinstance(item.get("refs"), dict) else ""
-            if not title or title in seen or not _is_sec(title):
-                continue
-            seen.add(title)
-            locs    = item.get("locations", [])
-            location = locs[0].get("name", "Remote") if locs and isinstance(locs[0], dict) else "Remote"
-            is_remote = "remote" in location.lower() or not locs
-            jobs.append(Job(
-                title=title, company=company,
-                location=location, url=job_url,
-                source="themuse", tags=["themuse"],
-                is_remote=is_remote,
-            ))
-    log.info(f"The Muse: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 2. Indeed RSS — remote cybersecurity ─────────────────────
-def _fetch_indeed_rss():
-    """
-    Indeed has public RSS feeds. Use remote cybersecurity.
-    """
-    jobs = []
-    seen = set()
-    feeds = [
-        "https://www.indeed.com/rss?q=cybersecurity+engineer&l=Remote&sort=date&fromage=7",
-        "https://www.indeed.com/rss?q=information+security+engineer&l=Remote&sort=date&fromage=7",
-        "https://www.indeed.com/rss?q=SOC+analyst&l=Remote&sort=date&fromage=7",
-    ]
-    for url in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        try:
-            xml_clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml)
-            root = ET.fromstring(xml_clean)
-            for item in root.findall(".//item"):
-                title = item.findtext("title", "").strip()
-                link  = item.findtext("link",  "").strip()
-                if not title or not link or link in seen:
-                    continue
-                seen.add(link)
-                desc      = item.findtext("description", "") or ""
-                is_remote = "remote" in (title + desc).lower()
-                jobs.append(Job(
-                    title=title, company="Indeed",
-                    location="Remote" if is_remote else "Not specified",
-                    url=link, source="indeed",
-                    tags=["indeed"], is_remote=is_remote,
-                ))
-        except ET.ParseError:
-            pass
-    log.info(f"Indeed RSS: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 3. Greenhouse Big Tech Security Teams ────────────────────
-# Big tech companies that have security teams on Greenhouse
+# ── Greenhouse Big Tech Security Teams ───────────────────────
+# Only slugs confirmed working (others return 404)
 BIG_TECH_GREENHOUSE = [
     ("stripe",       "Stripe"),
-    ("shopify",      "Shopify"),
     ("airbnb",       "Airbnb"),
     ("lyft",         "Lyft"),
     ("dropbox",      "Dropbox"),
     ("squarespace",  "Squarespace"),
     ("asana",        "Asana"),
     ("figma",        "Figma"),
-    ("notion",       "Notion"),
-    ("hashicorp",    "HashiCorp"),
     ("mongodb",      "MongoDB"),
     ("datadog",      "Datadog"),
     ("cloudflare",   "Cloudflare"),
@@ -147,8 +61,8 @@ def _fetch_big_tech_greenhouse():
             title = item.get("title", "")
             if not _is_sec(title):
                 continue
-            loc = item.get("location", {})
-            location  = loc.get("name", "") if isinstance(loc, dict) else ""
+            loc      = item.get("location", {})
+            location = loc.get("name", "") if isinstance(loc, dict) else ""
             is_remote = "remote" in location.lower()
             jobs.append(Job(
                 title=title, company=name,
@@ -162,11 +76,10 @@ def _fetch_big_tech_greenhouse():
 
 
 def fetch_tech_boards():
-    """Aggregate tech board results."""
+    """Fetch security roles from big tech company Greenhouse boards."""
     jobs = []
-    for fetcher in [_fetch_big_tech_greenhouse]:
-        try:
-            jobs.extend(fetcher())
-        except Exception as e:
-            log.warning(f"tech_boards: {fetcher.__name__} failed: {e}")
+    try:
+        jobs.extend(_fetch_big_tech_greenhouse())
+    except Exception as e:
+        log.warning(f"tech_boards: _fetch_big_tech_greenhouse failed: {e}")
     return jobs
