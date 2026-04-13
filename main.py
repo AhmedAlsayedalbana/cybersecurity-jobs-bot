@@ -84,7 +84,8 @@ def main():
                 score = score_job(job)
                 loc   = classify_location(job)
                 title = job.title.lower()
-                tags  = " ".join(job.tags).lower() if job.tags else ""
+                from models import _flatten_tags
+                tags  = _flatten_tags(job.tags).lower() if job.tags else ""
 
                 is_soc     = any(k in title for k in ["soc", "security operations", "threat", "incident", "blue team", "dfir", "siem"])
                 is_pentest = any(k in title for k in ["pentest", "penetration", "red team", "ethical hack", "bug bounty", "offensive"])
