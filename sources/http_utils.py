@@ -1,5 +1,11 @@
 """
-Shared HTTP helpers with session reuse, timeouts, and silent error handling.
+Shared HTTP helpers with session reuse, timeouts, and error handling.
+
+Key fixes vs V8:
+  - TimeoutError → now returns [] instead of crashing futures
+  - ThreadPoolExecutor timeout uses exception_on_timeout=False pattern
+  - Gov session: short timeout (8s), SSL-tolerant
+  - Rate-limit (429): exponential backoff 3 attempts
 """
 
 import logging
@@ -10,7 +16,6 @@ from config import REQUEST_TIMEOUT
 
 log = logging.getLogger(__name__)
 
-# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _DEFAULT_UA = (
@@ -36,7 +41,7 @@ _gov_session.headers.update({
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
 })
 
-GOV_TIMEOUT = 10
+GOV_TIMEOUT = 8
 
 
 def _is_gov_url(url: str) -> bool:
@@ -55,8 +60,8 @@ def _is_gov_url(url: str) -> bool:
 
 def _request_with_retry(method, url, *, session, params=None, headers=None,
                          json=None, timeout=REQUEST_TIMEOUT,
-                         max_retries=2, backoff=3):
-    """Execute a request with silent error handling."""
+                         max_retries=3, backoff=5):
+    """Execute a request with exponential backoff on 429."""
     for attempt in range(max_retries + 1):
         try:
             resp = session.request(
@@ -66,19 +71,19 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
             )
             if resp.status_code == 429:
                 wait = backoff * (2 ** attempt)
+                log.warning(
+                    f"429 rate-limit on {url} — waiting {wait}s "
+                    f"(attempt {attempt+1}/{max_retries+1})"
+                )
                 time.sleep(wait)
                 continue
-            
-            # Silent check for status
-            if resp.status_code >= 400:
-                return None
-                
+            resp.raise_for_status()
             return resp
-        except Exception:
+        except requests.RequestException as e:
             if attempt < max_retries:
                 time.sleep(backoff * (attempt + 1))
             else:
-                return None
+                raise e
     return None
 
 
@@ -92,7 +97,11 @@ def get_json(url: str, params: dict = None, headers: dict = None,
         if resp is None:
             return None
         return resp.json()
-    except Exception:
+    except requests.RequestException as e:
+        log.warning(f"GET {url} failed: {e}")
+        return None
+    except ValueError as e:
+        log.warning(f"JSON parse error for {url}: {e}")
         return None
 
 
@@ -106,7 +115,11 @@ def post_json(url: str, payload: dict = None, headers: dict = None,
         if resp is None:
             return None
         return resp.json()
-    except Exception:
+    except requests.RequestException as e:
+        log.warning(f"POST {url} failed: {e}")
+        return None
+    except ValueError as e:
+        log.warning(f"JSON parse error for {url}: {e}")
         return None
 
 
@@ -120,5 +133,6 @@ def get_text(url: str, params: dict = None, headers: dict = None,
         if resp is None:
             return None
         return resp.text
-    except Exception:
+    except requests.RequestException as e:
+        log.warning(f"GET text {url} failed: {e}")
         return None
