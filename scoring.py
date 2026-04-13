@@ -1,12 +1,13 @@
 """
-Job scoring and ranking system for Cybersecurity Jobs Bot.
+Job scoring and ranking system — V15
+
 Scoring Philosophy:
-- Egypt Priority: +10 pts (Egyptian market is the primary focus)
-- Gulf: +8 pts (strong second)
-- Remote: +5 pts (close to Gulf — remote jobs are very relevant)
-- Specialized skills: up to +5 pts (SOC / Pentest / Network Security boosted)
-- Entry-level support: +3 pts
-- Freshness: +5 pts
+- Location is primary signal (Egypt > Gulf > Remote > Global)
+- Tech skills capped at +8 to prevent inflation
+- Source quality boost (+2 for verified local sources)
+- Freshness matters: bonus for new, penalty for stale
+- Hard penalties for non-security / low-quality listings
+- SCORE_THRESHOLD = 12 (meaningful filter now)
 """
 
 from models import Job, _flatten_tags
@@ -16,102 +17,133 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def score_job(job: Job) -> int:
-    """
-    Score a single job. Egypt-first scoring — Egyptian market and
-    Gulf are the top priorities. SOC / Pentest / Network Security
-    roles get an additional specialization boost.
-    """
-    score = 0
-    title_text = job.title.lower()
-    description_text = job.description.lower()
-    tags_text = _flatten_tags(job.tags).lower()
-    combined_text = f"{title_text} {description_text} {tags_text}".lower()
+# ── Source quality tiers ──────────────────────────────────────
+_SOURCE_LOCAL = {
+    "wuzzuf", "forasna", "drjobpro", "akhtaboot", "bayt", "naukrigulf",
+    "stc_ksa", "tdra_uae", "etisalat_uae", "iti", "depi", "nti",
+    "linkedin_egypt_companies", "linkedin_gulf_companies",
+}
+_SOURCE_CYBERSEC = {
+    "bugcrowd", "hackerone", "infosec_jobs", "cybersecjobs", "clearancejobs",
+    "isaca", "isc2",
+}
 
-    # 1. Location Scoring — Egypt preferred, Gulf strong second
+
+def score_job(job: Job) -> int:
+    score = 0
+    title_text       = job.title.lower()
+    description_text = job.description.lower()
+    tags_text        = _flatten_tags(job.tags).lower()
+    combined         = f"{title_text} {description_text} {tags_text}"
+
+    # ── 1. Location (primary signal) ─────────────────────────
     loc_type = classify_location(job)
     if loc_type == "egypt":
-        score += 10   # Egyptian market is primary focus
+        score += 12
     elif loc_type == "gulf":
-        score += 8    # Gulf is a strong second
-    elif "remote" in combined_text or job.is_remote:
-        score += 5    # Remote is relevant but below geo-priority
+        score += 9
+    elif job.is_remote or "remote" in combined:
+        score += 5
+    else:
+        score += 2  # global onsite — lowest priority
 
-    # 2. Additional remote boost if also Egypt/Gulf (hybrid)
-    if (("remote" in combined_text or job.is_remote) and loc_type in ("egypt", "gulf")):
+    # Hybrid boost (Egypt/Gulf + remote option)
+    if loc_type in ("egypt", "gulf") and (job.is_remote or "remote" in combined):
         score += 2
 
-    # 3. High-Value Tech/Skills Boost
-    # SOC, Pentest, and Network Security get elevated scores to reflect
-    # their higher demand in the Egyptian and Gulf markets.
-    tech_keywords = {
-        # SOC / Blue Team — boosted
-        "soc analyst": 5, "soc engineer": 5, "soc": 4,
-        "security operations": 4, "threat analyst": 4,
-        "siem": 4, "splunk": 4, "qradar": 4, "sentinel": 4,
+    # ── 2. Tech Skills (capped at +8) ────────────────────────
+    tech_map = {
+        "soc analyst": 5, "soc engineer": 5, "security operations center": 5,
+        "soc": 3, "blue team": 4, "threat analyst": 4,
+        "siem": 3, "splunk": 3, "qradar": 3, "sentinel": 3,
         "incident response": 4, "threat hunting": 4,
-        "blue team": 4, "dfir": 4,
-
-        # Penetration Testing / Offensive — boosted
-        "penetration testing": 5, "pentest": 5, "penetration tester": 5,
-        "red team": 5, "ethical hack": 4, "bug bounty": 4,
-        "offensive security": 4, "oscp": 3,
-
-        # Network Security — boosted
-        "network security": 5, "network engineer security": 5,
-        "firewall": 4, "ids": 3, "ips": 3, "nac": 3,
-        "cisco security": 4, "fortinet": 4, "palo alto": 4,
-        "vpn security": 3, "zero trust": 4, "network defense": 4,
-
-        # Cloud / AppSec
-        "aws security": 4, "cloud security": 4, "azure security": 4,
-        "appsec": 3, "devsecops": 3,
-
-        # GRC
-        "vulnerability": 3, "grc": 2, "compliance": 2,
-        "iso 27001": 2, "nist": 2,
+        "dfir": 4, "digital forensics": 4, "malware analyst": 4,
+        "detection engineer": 4,
+        "penetration tester": 5, "penetration testing": 5, "pentest": 5,
+        "red team": 5, "offensive security": 4,
+        "ethical hacker": 4, "bug bounty": 4,
+        "oscp": 3, "ceh": 2, "exploit": 3,
+        "network security": 5, "firewall": 3,
+        "ids": 2, "ips": 2, "zero trust": 3,
+        "palo alto": 3, "fortinet": 3, "cisco security": 3,
+        "cloud security": 4, "aws security": 4, "azure security": 4,
+        "appsec": 3, "application security": 3, "devsecops": 3,
+        "sast": 2, "dast": 2,
+        "grc": 3, "iso 27001": 3, "compliance": 2,
+        "nist": 2, "risk analyst": 3, "security auditor": 3,
+        "vulnerability": 2, "ciso": 2, "security architect": 3,
+        "cryptograph": 2,
     }
 
-    for kw, val in tech_keywords.items():
-        if kw in combined_text:
-            score += val
+    tech_score = 0
+    for kw, val in tech_map.items():
+        if kw in combined:
+            tech_score += val
+        if tech_score >= 8:
+            break
 
-    # 4. Freshness
+    score += min(tech_score, 8)
+
+    # ── 3. Freshness ──────────────────────────────────────────
     if job.posted_date:
-        now = datetime.now()
-        diff = now - job.posted_date
-        if diff < timedelta(hours=24):
+        diff = datetime.now() - job.posted_date
+        if diff < timedelta(hours=6):
             score += 5
+        elif diff < timedelta(hours=24):
+            score += 3
+        elif diff < timedelta(days=3):
+            score += 1
+        elif diff > timedelta(days=14):
+            score -= 5
         elif diff > timedelta(days=7):
-            score -= 3
+            score -= 2
 
-    # 5. Entry-level support
-    entry_keywords = ["junior", "intern", "trainee", "fresh grad", "graduate", "entry level", "entry-level"]
-    if any(k in combined_text for k in entry_keywords):
+    # ── 4. Source quality boost ───────────────────────────────
+    src = (job.source or "").lower()
+    if src in _SOURCE_LOCAL:
+        score += 2
+    elif src in _SOURCE_CYBERSEC:
+        score += 1
+    elif src == "linkedin":
+        if any(t in tags_text for t in ["egypt", "gulf", "saudi", "uae"]):
+            score += 1
+
+    # ── 5. Entry-level support ────────────────────────────────
+    entry_kw = [
+        "junior", "intern", "internship", "trainee",
+        "fresh grad", "fresh graduate", "entry level", "entry-level",
+        "graduate program", "0-1 years", "0-2 years", "1-2 years",
+    ]
+    if any(k in combined for k in entry_kw):
         score += 3
 
-    exp_keywords = ["0-2 years", "0-1 years", "no experience", "fresh graduate", "1-2 years"]
-    if any(k in combined_text for k in exp_keywords):
-        score += 2
+    # ── 6. Penalties ─────────────────────────────────────────
+    non_sec_titles = [
+        "it support", "helpdesk", "help desk", "desktop support",
+        "system administrator", "sysadmin", "network administrator",
+        "database administrator", "dba", "data entry",
+        "sales engineer", "pre-sales", "presales",
+    ]
+    if any(k in title_text for k in non_sec_titles):
+        score -= 6
 
-    # 6. Penalties
-    if "support" in title_text and not any(k in title_text for k in ["security", "cyber", "soc"]):
-        score -= 3
+    if "support" in title_text and not any(
+        k in title_text for k in ["security", "cyber", "soc", "analyst"]
+    ):
+        score -= 4
 
     if len(job.title) < 5:
-        score -= 5
-
+        score -= 8
     if not job.url:
         score -= 10
+
+    if loc_type == "global" and not job.is_remote and "remote" not in combined:
+        score -= 4
 
     return score
 
 
 def sort_by_location_priority(jobs_with_scores: list[tuple[Job, int]]) -> list[tuple[Job, int]]:
-    """
-    Sort (job, score) by location priority: Egypt > Gulf > Global.
-    Within each location, sort by score.
-    """
     def loc_priority(item):
         job, score = item
         loc = classify_location(job)
