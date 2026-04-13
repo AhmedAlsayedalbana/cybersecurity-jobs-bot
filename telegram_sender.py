@@ -268,67 +268,71 @@ def _send_to_topic(message, thread_id=None):
 def send_jobs(jobs):
     """
     Send jobs to Telegram channels.
-    Each channel gets MAX_JOBS_PER_CHANNEL unique jobs.
-    A job is sent to at most ONE channel to avoid cross-channel duplicates.
-    Priority order: GEO channels first (egypt, gulf, remote), then topic channels.
+    Each channel gets up to MAX_JOBS_PER_CHANNEL jobs per run.
+
+    Rules:
+    - GEO channels (egypt, gulf, remote): no cross-channel duplicates among themselves.
+    - TOPIC channels (soc, pentest, grc, ...): each channel is independent —
+      a job can appear in multiple topic channels. This ensures every topic
+      channel gets up to 10 jobs per run.
+    - Within a single channel, no duplicate URLs.
     """
     total_sent = 0
 
-    # Track which jobs have been sent (by URL) across ALL channels
-    globally_sent_urls = set()
+    GEO_CHANNELS   = ["egypt", "gulf", "remote"]
+    TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
+    send_order     = GEO_CHANNELS + TOPIC_CHANNELS
 
     # Build per-channel queues
     channel_queues = {key: [] for key in CHANNELS.keys()}
-
     for job in jobs:
-        routed_channels = route_job(job)
-        for ch_key in routed_channels:
+        for ch_key in route_job(job):
             if ch_key in channel_queues:
                 channel_queues[ch_key].append(job)
 
-    # Send in priority order: geo channels first, then topic channels
-    GEO_CHANNELS = ["egypt", "gulf", "remote"]
-    TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
-    send_order = GEO_CHANNELS + TOPIC_CHANNELS
-
     limit = MAX_JOBS_PER_CHANNEL
 
-    for ch_key in send_order:
-        if ch_key not in channel_queues:
-            continue
+    # URLs already sent to any GEO channel — used to avoid cross-geo duplicates only
+    geo_sent_urls = set()
 
-        ch_jobs = channel_queues[ch_key]
+    for ch_key in send_order:
+        ch_jobs   = channel_queues.get(ch_key, [])
         thread_id = get_topic_thread_id(ch_key)
         if not thread_id or not ch_jobs:
             continue
 
-        sent_this_channel = 0
+        is_geo         = ch_key in GEO_CHANNELS
+        sent_this_ch   = 0
+        sent_urls_here = set()  # dedup within this channel
 
         for job in ch_jobs:
-            if sent_this_channel >= limit:
+            if sent_this_ch >= limit:
                 break
-            # Skip if already sent to any channel
-            if job.url in globally_sent_urls:
+            # GEO channels: skip if sent to another geo channel already
+            if is_geo and job.url in geo_sent_urls:
+                continue
+            # Within this channel: no duplicate URL
+            if job.url in sent_urls_here:
                 continue
 
             message = format_job_message(job)
             success = _send_to_topic(message, thread_id)
 
             if success:
-                sent_this_channel += 1
-                total_sent += 1
-                globally_sent_urls.add(job.url)
+                sent_this_ch   += 1
+                total_sent     += 1
+                sent_urls_here.add(job.url)
+                if is_geo:
+                    geo_sent_urls.add(job.url)
                 log.info(
                     "  ✅ [" + ch_key + "] " +
-                    str(sent_this_channel) + "/" + str(limit) +
+                    str(sent_this_ch) + "/" + str(limit) +
                     " — " + job.title[:50]
                 )
 
             time.sleep(TELEGRAM_SEND_DELAY)
 
-        if sent_this_channel > 0:
-            log.info("📨 Channel [" + ch_key + "]: sent " + str(sent_this_channel) + " jobs")
-
-    return total_sent
+        if sent_this_ch > 0:
+            log.info("📨 Channel [" + ch_key + "]: sent " + str(sent_this_ch) + " jobs")
 
     return total_sent
