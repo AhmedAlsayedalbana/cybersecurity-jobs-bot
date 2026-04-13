@@ -166,6 +166,36 @@ def _score_label(score):
         return "Relevant"
     return "Listed"
 
+def _domain_emoji(domain: str) -> str:
+    mapping = {
+        "SOC / Blue Team":              "🖥️",
+        "Penetration Testing / Red Team": "🕵️",
+        "Cloud Security":               "☁️",
+        "AppSec / DevSecOps":           "🛡️",
+        "GRC / Compliance":             "📋",
+        "DFIR / Forensics":             "🔬",
+        "Network Security":             "🌐",
+        "Training / Program":           "🎓",
+        "Cybersecurity":                "🔐",
+    }
+    return mapping.get(domain, "🔐")
+
+def _level_emoji(level: str) -> str:
+    return {"Entry-Level": "🌱", "Mid-Level": "⚙️", "Senior": "👨‍💻", "Open": "🔍"}.get(level, "🔍")
+
+def _match_bar(score: int) -> str:
+    """Visual match strength bar."""
+    if score >= 18:
+        return "🟢🟢🟢🟢🟢  Excellent"
+    if score >= 14:
+        return "🟢🟢🟢🟢⚪  Strong"
+    if score >= 11:
+        return "🟢🟢🟢⚪⚪  Good"
+    if score >= 7:
+        return "🟡🟡⚪⚪⚪  Relevant"
+    return "🔵⚪⚪⚪⚪  Listed"
+
+
 def format_job_message(job):
     from scoring import score_job
     score = score_job(job)
@@ -177,57 +207,81 @@ def format_job_message(job):
     location = _detect_location_flag(job)
     skills   = _extract_skills(text)
     fresh    = _freshness_badge(job)
-    match    = _score_label(score)
 
     title   = _escape(job.title)
     company = _escape(job.company) if job.company else "Unknown"
     source  = _escape(getattr(job, "display_source", None) or job.source or "")
 
     is_hiring_post = job.source == "linkedin_hiring"
+    is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
-    # ── Header ──
+    d_emoji = _domain_emoji(domain)
+    l_emoji = _level_emoji(level)
+
+    # ── Top Badge Row ──────────────────────────────────────────
+    badges = []
+    if fresh == "[NEW]":
+        badges.append("🆕 NEW")
+    elif fresh == "[Today]":
+        badges.append("📅 Today")
+    if is_internship:
+        badges.append("🎓 Internship")
     if is_hiring_post:
-        header = f"<b>{title}</b>"
-        if fresh:
-            header = fresh.strip() + "  " + header
+        badges.append("📢 #Hiring")
+
+    badge_row = "  ·  ".join(badges) if badges else ""
+
+    # ── Build Message ──────────────────────────────────────────
+    lines = []
+
+    # Header
+    if badge_row:
+        lines.append(f"<code>{'─' * 32}</code>")
+        lines.append(f"<b>{badge_row}</b>")
     else:
-        header = f"<b>{title}</b>"
-        if fresh:
-            header = fresh.strip() + "  " + header
+        lines.append(f"<code>{'─' * 32}</code>")
 
-    # ── Build lines ──
-    lines = [header, ""]
+    lines.append(f"{d_emoji}  <b>{title}</b>")
+    lines.append("")
 
-    if is_hiring_post:
-        # Show the original raw title the person posted with
-        raw_label = _escape(job.original_source or "")
-        if raw_label and raw_label != f"#Hiring — {job.title}":
-            lines.append(f"Posted as:  {raw_label}")
+    # Company & Location block
+    lines.append(f"🏢  <b>{company}</b>")
+    lines.append(f"📍  {location}")
+    lines.append("")
 
-    lines += [
-        f"Company:    {company}",
-        f"Location:   {location}",
-        f"Domain:     {domain}",
-        f"Level:      {level}",
-        f"Skills:     {skills}",
-        f"Relevance:  {match}",
-    ]
-
-    if job.salary:
-        lines.append(f"Salary:     {_escape(str(job.salary))}")
-
+    # Role Details block
+    lines.append(f"<b>Role Details</b>")
+    lines.append(f"{l_emoji}  <b>Level</b>    {level}")
+    lines.append(f"{d_emoji}  <b>Domain</b>   {domain}")
     if job.job_type:
-        lines.append(f"Type:       {_escape(job.job_type)}")
+        lines.append(f"📄  <b>Type</b>     {_escape(job.job_type)}")
+    if job.salary:
+        lines.append(f"💰  <b>Salary</b>   {_escape(str(job.salary))}")
+    lines.append("")
 
+    # Skills block
+    lines.append(f"<b>Key Skills</b>")
+    lines.append(f"⚡  {skills}")
+    lines.append("")
+
+    # Match strength
+    lines.append(f"<b>Match Strength</b>")
+    lines.append(f"   {_match_bar(score)}")
+    lines.append("")
+
+    # Source
     if is_hiring_post:
-        lines.append(f"Via:        LinkedIn #Hiring Post")
+        raw_label = _escape(job.original_source or "")
+        if raw_label:
+            lines.append(f"📢  <i>Posted via LinkedIn #Hiring</i>")
+        else:
+            lines.append(f"📢  <i>Via LinkedIn #Hiring Post</i>")
     elif source:
-        lines.append(f"Source:     {source}")
+        lines.append(f"🌐  <i>Source: {source}</i>")
 
-    lines += [
-        "",
-        f'<a href="{job.url}">Apply Now</a>',
-    ]
+    lines.append("")
+    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
+    lines.append(f"<code>{'─' * 32}</code>")
 
     return "\n".join(lines).strip()
 
@@ -273,15 +327,24 @@ def send_jobs(jobs):
     Rules:
     - GEO channels (egypt, gulf, remote): no cross-channel duplicates among themselves.
     - TOPIC channels (soc, pentest, grc, ...): each channel is independent —
-      a job can appear in multiple topic channels. This ensures every topic
+      a job can appear in multiple topic channels. Ensures every topic
       channel gets up to 10 jobs per run.
     - Within a single channel, no duplicate URLs.
+    - All configured channels are always attempted — none skipped.
     """
     total_sent = 0
+    channel_summary = {}
 
     GEO_CHANNELS   = ["egypt", "gulf", "remote"]
     TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
     send_order     = GEO_CHANNELS + TOPIC_CHANNELS
+
+    # Log all channels we will attempt
+    active = [k for k in send_order if get_topic_thread_id(k)]
+    missing = [k for k in send_order if not get_topic_thread_id(k)]
+    log.info(f"📢 Active channels ({len(active)}): {', '.join(active)}")
+    if missing:
+        log.warning(f"⚠️  Missing thread IDs for: {', '.join(missing)} — skipping those")
 
     # Build per-channel queues
     channel_queues = {key: [] for key in CHANNELS.keys()}
@@ -292,26 +355,32 @@ def send_jobs(jobs):
 
     limit = MAX_JOBS_PER_CHANNEL
 
-    # URLs already sent to any GEO channel — used to avoid cross-geo duplicates only
+    # URLs already sent to any GEO channel — avoid cross-geo duplicates
     geo_sent_urls = set()
 
     for ch_key in send_order:
         ch_jobs   = channel_queues.get(ch_key, [])
         thread_id = get_topic_thread_id(ch_key)
-        if not thread_id or not ch_jobs:
+
+        if not thread_id:
+            continue  # already warned above
+
+        ch_name = CHANNELS.get(ch_key, {}).get("name", ch_key)
+
+        if not ch_jobs:
+            log.info(f"📭 [{ch_key}] {ch_name}: 0 matching jobs this run")
+            channel_summary[ch_key] = 0
             continue
 
         is_geo         = ch_key in GEO_CHANNELS
         sent_this_ch   = 0
-        sent_urls_here = set()  # dedup within this channel
+        sent_urls_here = set()
 
         for job in ch_jobs:
             if sent_this_ch >= limit:
                 break
-            # GEO channels: skip if sent to another geo channel already
             if is_geo and job.url in geo_sent_urls:
                 continue
-            # Within this channel: no duplicate URL
             if job.url in sent_urls_here:
                 continue
 
@@ -325,14 +394,24 @@ def send_jobs(jobs):
                 if is_geo:
                     geo_sent_urls.add(job.url)
                 log.info(
-                    "  ✅ [" + ch_key + "] " +
-                    str(sent_this_ch) + "/" + str(limit) +
-                    " — " + job.title[:50]
+                    f"  ✅ [{ch_key}] {sent_this_ch}/{limit} — {job.title[:50]}"
                 )
 
             time.sleep(TELEGRAM_SEND_DELAY)
 
+        channel_summary[ch_key] = sent_this_ch
         if sent_this_ch > 0:
-            log.info("📨 Channel [" + ch_key + "]: sent " + str(sent_this_ch) + " jobs")
+            log.info(f"📨 Channel [{ch_key}] {ch_name}: sent {sent_this_ch} jobs")
+        else:
+            log.info(f"📭 Channel [{ch_key}] {ch_name}: 0 sent (jobs existed but were filtered/deduped)")
+
+    # Final summary
+    log.info("=" * 40)
+    log.info("📊 Per-Channel Summary:")
+    for k, v in channel_summary.items():
+        ch_name = CHANNELS.get(k, {}).get("name", k)
+        bar = "✅" if v > 0 else "⬜"
+        log.info(f"   {bar} {ch_name}: {v} jobs")
+    log.info("=" * 40)
 
     return total_sent
