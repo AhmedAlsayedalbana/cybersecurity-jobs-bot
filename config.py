@@ -1,7 +1,7 @@
 """
 Configuration for Cybersecurity Jobs Telegram Bot.
 Specialized 100% for Cybersecurity roles.
-Priority: Egypt 🇪🇬 → Gulf 🌙 → Remote 🌍
+Priority: Egypt 🇪🇬 → Remote 🌍 → Gulf (optional)
 """
 
 import os
@@ -9,19 +9,15 @@ import os
 # ─── Telegram ───────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_GROUP_ID  = os.getenv("TELEGRAM_GROUP_ID", "")
-TELEGRAM_SEND_DELAY = 2  # Optimized delay
+TELEGRAM_SEND_DELAY = 3  # seconds between messages
 
 # ─── Community Topics ────────────────────────────────────────
 CHANNELS = {
+    
     "egypt": {
         "thread_env": "TOPIC_EGYPT",
         "name": "🇪🇬 Egypt Jobs",
         "match": "GEO_EGYPT",
-    },
-    "gulf": {
-        "thread_env": "TOPIC_GULF",
-        "name": "🌙 Gulf Jobs (KSA/UAE/Qatar/Kuwait)",
-        "match": "GEO_GULF",
     },
     "remote": {
         "thread_env": "TOPIC_REMOTE",
@@ -102,6 +98,11 @@ CHANNELS = {
             "security tools developer", "python security",
         ],
     },
+    "gulf": {
+        "thread_env": "TOPIC_GULF",
+        "name": "🌙 Gulf Jobs (KSA/UAE/Kuwait)",
+        "match": "GEO_GULF",
+    },
     "internships": {
         "thread_env": "TOPIC_INTERNSHIPS",
         "name": "🎓 Internships & Entry Level",
@@ -113,7 +114,9 @@ CHANNELS = {
     },
 }
 
+
 def get_topic_thread_id(channel_key: str) -> int | None:
+    """Get the topic thread_id from environment variable."""
     ch = CHANNELS.get(channel_key, {})
     env_var = ch.get("thread_env", "")
     val = os.getenv(env_var, "")
@@ -123,6 +126,7 @@ def get_topic_thread_id(channel_key: str) -> int | None:
         except ValueError:
             return None
     return None
+
 
 # ─── API Keys ────────────────────────────────────────────────
 RAPIDAPI_KEY     = os.getenv("RAPIDAPI_KEY", "")
@@ -135,7 +139,9 @@ SERPAPI_KEY      = os.getenv("SERPAPI_KEY", "")
 
 # ─── Geo Patterns ────────────────────────────────────────────
 EGYPT_PATTERNS = {
+    # General
     "egypt", "مصر", "egyptian",
+    # Cairo & districts
     "cairo", "القاهرة", "new cairo", "nasr city", "مدينة نصر",
     "maadi", "المعادي", "heliopolis", "مصر الجديدة", "dokki", "الدقي",
     "mohandessin", "المهندسين", "zamalek", "الزمالك",
@@ -143,12 +149,15 @@ EGYPT_PATTERNS = {
     "new capital", "العاصمة الإدارية", "obour", "شبرا",
     "ain shams", "عين شمس", "shoubra", "المرج", "el marg",
     "15th of may", "15 مايو", "badr city", "مدينة بدر",
+    # Giza & surroundings
     "giza", "الجيزة", "6th october", "sheikh zayed", "الشيخ زايد",
     "october city", "hadayek october", "al haram", "الهرم",
     "imbaba", "إمبابة", "bulaq", "بولاق",
+    # Alexandria
     "alexandria", "الإسكندرية", "alex", "smouha", "سموحة",
     "miami", "ميامي اسكندرية", "sidi bishr", "سيدي بشر",
     "agami", "العجمي", "montazah", "المنتزه",
+    # Nile Delta
     "mansoura", "المنصورة", "tanta", "طنطا",
     "zagazig", "الزقازيق", "benha", "بنها",
     "damanhour", "دمنهور", "menouf", "منوف",
@@ -156,21 +165,25 @@ EGYPT_PATTERNS = {
     "mit ghamr", "meet ghamr", "dakahlia", "الدقهلية",
     "sharqia", "الشرقية", "gharbiya", "الغربية",
     "monufia", "المنوفية", "beheira", "البحيرة",
+    # Canal Zone
     "port said", "بورسعيد", "suez", "السويس",
     "ismailia", "الإسماعيلية", "ismailiya",
+    # Upper Egypt
     "assiut", "أسيوط", "aswan", "أسوان", "luxor", "الأقصر",
     "sohag", "سوهاج", "qena", "قنا", "minya", "المنيا",
     "beni suef", "بني سويف", "fayoum", "الفيوم",
+    # Red Sea & Sinai
     "hurghada", "الغردقة", "sharm el sheikh", "شرم الشيخ",
     "el gouna", "الجونة", "ain sokhna", "العين السخنة",
     "dahab", "دهب", "marsa alam", "مرسى علم",
+    # New Cities
     "new alamein", "العلمين الجديدة", "new assiut", "أسيوط الجديدة",
     "new sohag", "new mansoura", "المنصورة الجديدة",
     "10th of ramadan", "العاشر من رمضان",
-    "damietta", "دمياط", "qalyubia", "القليوبية", "faiyum", "الفيوم",
 }
 
 GULF_PATTERNS = {
+    # Saudi Arabia
     "saudi arabia", "saudi", "ksa", "السعودية", "المملكة العربية السعودية",
     "riyadh", "الرياض", "jeddah", "جدة", "dammam", "الدمام",
     "khobar", "الخبر", "dhahran", "الظهران", "neom", "نيوم",
@@ -178,16 +191,21 @@ GULF_PATTERNS = {
     "yanbu", "ينبع", "tabuk", "تبوك", "abha", "أبها",
     "khamis mushait", "خميس مشيط", "taif", "الطائف",
     "hail", "حائل", "najran", "نجران", "jizan", "جازان",
+    # UAE
     "uae", "united arab emirates", "الإمارات", "dubai", "دبي",
     "abu dhabi", "أبوظبي", "sharjah", "الشارقة", "ajman", "عجمان",
     "ras al khaimah", "رأس الخيمة", "fujairah", "الفجيرة",
     "umm al quwain", "أم القيوين", "al ain", "العين",
+    # Kuwait
     "kuwait", "الكويت", "kuwait city", "مدينة الكويت",
     "hawalli", "حولي", "salmiya", "السالمية", "ahmadi", "الأحمدي",
+    # Qatar
     "qatar", "قطر", "doha", "الدوحة", "al wakra", "الوكرة",
     "lusail", "لوسيل", "al khor", "الخور",
+    # Bahrain
     "bahrain", "البحرين", "manama", "المنامة",
     "muharraq", "المحرق", "riffa", "الرفاع",
+    # Oman
     "oman", "عُمان", "muscat", "مسقط", "sohar", "صحار",
     "salalah", "صلالة", "nizwa", "نزوى",
 }
@@ -240,26 +258,121 @@ INCLUDE_KEYWORDS = [
 ]
 
 # ─── Exclude Keywords (title-based) ──────────────────────────
+# Reduced strictness: removed broad terms like 'support', 'sales', 'hr' 
+# that might be part of a legitimate security title (e.g., "Security Support Engineer")
 EXCLUDE_KEYWORDS = [
-    "sales", "marketing", "recruiter", "hr manager", "accountant",
-    "customer service", "receptionist", "driver", "chef", "nurse",
-    "civil engineer", "mechanical engineer", "electrical engineer",
-    "physician", "teacher", "professor", "legal counsel",
-    "business development", "sales manager", "marketing manager",
+    "mechanical engineer", "electrical engineer", "civil engineer",
+    "chemical engineer", "structural engineer", "hardware engineer",
+    "frontend developer", "frontend engineer", "backend developer",
+    "backend engineer", "full stack developer", "fullstack developer",
+    "mobile developer", "flutter developer", "android developer",
+    "ios developer", "react developer", "angular developer",
+    "vue developer", "wordpress developer", "shopify developer",
+    "graphic designer", "ui designer", "ux designer", "ui/ux",
+    "recruiter", "talent acquisition", "hr manager", "human resources",
+    "financial analyst", "accountant", "bookkeeper",
+    "office manager", "administrative assistant",
+    "supply chain", "logistics coordinator",
+    "marketing manager", "digital marketing", "social media manager",
+    "content writer", "copywriter", "seo specialist",
+    "real estate", "insurance agent",
+    "nurse", "physician", "pharmacist", "dental", "clinical",
+    "medical coder", "veterinary",
 ]
 
-# ─── Performance & Limits ────────────────────────────────────
-REQUEST_TIMEOUT = 15
-MAX_JOBS_PER_RUN = 20
-SCORE_THRESHOLD = 15  # Minimum score to be sent
+# ─── Emoji Map ────────────────────────────────────────────────
+EMOJI_MAP = {
+    "penetration": "🕵️", "pentest": "🕵️",
+    "red team": "🔴", "ethical hack": "🕵️",
+    "bug bounty": "💰", "exploit": "💣",
+    "offensive": "⚔️", "oscp": "🎯",
+    "soc analyst": "🖥️", "soc engineer": "🖥️",
+    "threat hunt": "🎯", "threat intel": "🔍",
+    "incident response": "🚨", "blue team": "🔵",
+    "malware": "🦠", "forensic": "🔬", "dfir": "🔬",
+    "application security": "🛡️", "appsec": "🛡️",
+    "devsecops": "⚙️", "product security": "🛡️",
+    "cloud security": "☁️", "aws security": "☁️", "azure security": "☁️",
+    "network security": "🌐", "firewall": "🔥", "zero trust": "🔒",
+    "compliance": "📋", "grc": "📋", "risk analyst": "⚖️",
+    "auditor": "📋", "iso 27001": "📋", "ciso": "👔",
+    "privacy": "🔏", "detection engineer": "🔎",
+    "security architect": "🏗️", "cryptograph": "🔐",
+    "senior": "👨‍💻", "junior": "🌱", "lead": "⭐",
+    "principal": "⭐", "staff": "⭐", "intern": "🎓",
+    "architect": "🏗️", "manager": "👔",
+    "remote": "🌍",
+    "egypt": "🇪🇬", "مصر": "🇪🇬", "cairo": "🇪🇬",
+    "saudi": "🇸🇦", "riyadh": "🇸🇦", "jeddah": "🇸🇦",
+    "dubai": "🇦🇪", "uae": "🇦🇪",
+    "security": "🔒", "cyber": "🔐",
+}
 
-# ─── Egypt Private Sector Companies ──────────────────────────
-EG_PRIVATE_COMPANIES = [
-    "CIB Egypt", "National Bank of Egypt", "Banque Misr", "QNB Alahli",
-    "HSBC Egypt", "Alex Bank", "Arab African International Bank",
-    "Vodafone Egypt", "Orange Egypt", "Etisalat Egypt", "Telecom Egypt",
-    "Fawry", "Paymob", "Vezeeta", "Khazna", "Kashier", "Valify",
-    "Raya", "ITWorx", "Xceed", "Valeo Egypt", "Dell Technologies Egypt",
-    "IBM Egypt", "Microsoft Egypt", "Oracle Egypt", "Amazon Egypt",
-    "Instabug", "Swvl", "Breadfast", "Trella", "MaxAB",
-]
+DEFAULT_EMOJI = "🔐"
+
+# ─── Source Display Names ─────────────────────────────────────
+SOURCE_DISPLAY = {
+    "remotive":      "Remotive",
+    "himalayas":     "Himalayas",
+    "jobicy":        "Jobicy",
+    "remoteok":      "RemoteOK",
+    "arbeitnow":     "Arbeitnow",
+    "wwr":           "We Work Remotely",
+    "workingnomads": "Working Nomads",
+    "jsearch":       None,
+    "linkedin":      "LinkedIn",
+    "adzuna":        "Adzuna",
+    "findwork":      "Findwork",
+    "jooble":        "Jooble",
+    "reed":          "Reed",
+    "infosec_jobs":  "InfoSec-Jobs",
+    "cybersecjobs":  "CyberSecJobs",
+    "clearancejobs": "ClearanceJobs",
+    "isaca":         "ISACA",
+    "isc2":          "(ISC)²",
+    "securityjobs":  "SecurityJobs.net",
+    "dice":          "Dice",
+    "bugcrowd":      "Bugcrowd",
+    "hackerone":     "HackerOne",
+    "greenhouse":    None,
+    "lever":         None,
+}
+
+# ─── Misc ─────────────────────────────────────────────────────
+SEEN_JOBS_FILE   = "seen_jobs.json"
+MAX_JOBS_PER_RUN = 100  # Total pool — channel limits applied separately   # Raised from 20 — more jobs per run
+SCORE_THRESHOLD  = 8
+MAX_JOBS_PER_CHANNEL = 10  # Max jobs sent per channel per run    # Lowered — capture more Egypt/Gulf jobs
+REQUEST_TIMEOUT  = 10   # reduced from 15 — fail fast on slow servers
+SEED_MODE_ENV    = "SEED_MODE"
+
+# ─── New Sources ──────────────────────────────────────────────
+SOURCE_DISPLAY.update({
+    "egcert":         "EG-CERT",
+    "itida":          "ITIDA",
+    "iti":            "ITI Egypt",
+    "depi":           "DEPI",
+    "nti":            "NTI",
+    "ntra":           "NTRA",
+    "mcit":           "MCIT",
+    "tiec":           "TIEC",
+    "cbe":            "Central Bank Egypt",
+    "wuzzuf":         "Wuzzuf",
+    "forasna":        "Forasna",
+    "bayt":           "Bayt.com",
+    "naukrigulf":     "NaukriGulf",
+    "nca_ksa":        "NCA Saudi Arabia",
+    "citc_ksa":       "CITC KSA",
+    "sdaia":          "SDAIA",
+    "aramco":         "Saudi Aramco",
+    "neom":           "NEOM",
+    "g42":            "G42 UAE",
+    "qcert":          "QCERT Qatar",
+    "tanqeeb":        "Tanqeeb",
+    "akhtaboot":      "Akhtaboot",
+    "drjobpro":       "Dr.Job Pro",
+    "google_jobs":    "Google Jobs",
+    "adzuna_mena":    "Adzuna MENA",
+    "linkedin_egypt_companies": "LinkedIn (EG Companies)",
+    "linkedin_gulf_companies":  "LinkedIn (Gulf Companies)",
+})
