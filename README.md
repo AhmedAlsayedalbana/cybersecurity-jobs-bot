@@ -1,4 +1,4 @@
-# Cybersecurity Jobs Bot — v1
+# Cybersecurity Jobs Bot 
 
 An automated job aggregator that continuously fetches cybersecurity job postings from 20+ sources across Egypt, the Gulf, and worldwide. It deduplicates, scores, and distributes jobs to a Telegram supergroup via topic-based channels.
 
