@@ -342,7 +342,7 @@ SOURCE_DISPLAY = {
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
 MAX_JOBS_PER_RUN = 200  # v16
-SCORE_THRESHOLD  = 5    # Egypt=8, Gulf=6 — threshold 5 passes all geo jobs
+SCORE_THRESHOLD  = 8    # V19: raised from 5 — Egypt=12, Gulf=9 comfortably pass; weak global jobs filtered out
 MAX_JOBS_PER_CHANNEL = 10  # Max jobs sent per channel per run
 REQUEST_TIMEOUT  = 10
 SEED_MODE_ENV    = "SEED_MODE"
