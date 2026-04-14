@@ -1,7 +1,7 @@
 """
 Telegram message formatting and multi-topic sending.
 KEY FEATURE: 10 jobs per channel per run, no duplicates across channels.
-V19: Strict geo-routing — double-checks location before assigning to Egypt/Gulf channels.
+Format: matches reference telegram_sender exactly.
 """
 
 import time
@@ -20,59 +20,18 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
-# 🔎 Geo Helpers (strict — location field is authoritative)
+# 🔎 Geo Helpers
 # ─────────────────────────────────────────────────────────────
 
-from classifier import classify_location as _classify_location
+def _is_egypt_job(job):
+    loc = (job.location or "").lower()
+    return any(p in loc for p in EGYPT_PATTERNS)
 
-def _location_field_matches(loc: str, patterns: set) -> bool:
-    """Check if the raw location string matches any pattern."""
-    return any(p in loc for p in patterns)
+def _is_gulf_job(job):
+    loc = (job.location or "").lower()
+    return any(p in loc for p in GULF_PATTERNS)
 
-def _is_egypt_job(job) -> bool:
-    """
-    Strict Egypt check:
-    1. Location field must match an Egypt pattern, OR
-    2. Location is ambiguous (remote/empty) AND classifier returns 'egypt'
-    We NEVER classify as Egypt if location clearly names another country.
-    """
-    loc = (job.location or "").lower().strip()
-
-    # Direct match in location field → definitive YES
-    if _location_field_matches(loc, EGYPT_PATTERNS):
-        return True
-
-    # Location clearly names a Gulf country → definitive NO
-    if _location_field_matches(loc, GULF_PATTERNS):
-        return False
-
-    # Location is a real non-Egypt, non-Gulf place (e.g. London, New York)?
-    # Check if it's ambiguous (remote/empty/generic) — only then use classifier
-    from classifier import _location_is_ambiguous
-    if not _location_is_ambiguous(loc):
-        return False  # Real foreign location, not Egypt
-
-    # Ambiguous location: trust the full classifier
-    return _classify_location(job) == "egypt"
-
-def _is_gulf_job(job) -> bool:
-    """
-    Strict Gulf check — mirrors _is_egypt_job logic.
-    """
-    loc = (job.location or "").lower().strip()
-
-    if _location_field_matches(loc, GULF_PATTERNS):
-        return True
-    if _location_field_matches(loc, EGYPT_PATTERNS):
-        return False
-
-    from classifier import _location_is_ambiguous
-    if not _location_is_ambiguous(loc):
-        return False
-
-    return _classify_location(job) == "gulf"
-
-def _is_remote_job(job) -> bool:
+def _is_remote_job(job):
     if job.is_remote:
         return True
     combined = (job.title + " " + job.location + " " + job.job_type).lower()
@@ -111,7 +70,7 @@ def route_job(job):
 
 
 # ─────────────────────────────────────────────────────────────
-# ✨ Message Formatting
+# ✨ Message Formatting — matches reference format exactly
 # ─────────────────────────────────────────────────────────────
 
 def _escape(text):
@@ -199,34 +158,7 @@ def _extract_skills(text):
     found = [label for kw, label in skill_map.items() if kw in text]
     return ", ".join(found[:5]) if found else "General Security"
 
-def _score_label(score):
-    if score >= 18:
-        return "High Priority"
-    if score >= 11:
-        return "Good Match"
-    if score >= 5:
-        return "Relevant"
-    return "Listed"
-
-def _domain_emoji(domain: str) -> str:
-    mapping = {
-        "SOC / Blue Team":              "🖥️",
-        "Penetration Testing / Red Team": "🕵️",
-        "Cloud Security":               "☁️",
-        "AppSec / DevSecOps":           "🛡️",
-        "GRC / Compliance":             "📋",
-        "DFIR / Forensics":             "🔬",
-        "Network Security":             "🌐",
-        "Training / Program":           "🎓",
-        "Cybersecurity":                "🔐",
-    }
-    return mapping.get(domain, "🔐")
-
-def _level_emoji(level: str) -> str:
-    return {"Entry-Level": "🌱", "Mid-Level": "⚙️", "Senior": "👨‍💻", "Open": "🔍"}.get(level, "🔍")
-
 def _match_bar(score: int) -> str:
-    """Visual match strength bar."""
     if score >= 18:
         return "🟢🟢🟢🟢🟢  Excellent"
     if score >= 14:
@@ -236,6 +168,23 @@ def _match_bar(score: int) -> str:
     if score >= 7:
         return "🟡🟡⚪⚪⚪  Relevant"
     return "🔵⚪⚪⚪⚪  Listed"
+
+def _domain_emoji(domain: str) -> str:
+    mapping = {
+        "SOC / Blue Team":               "🖥️",
+        "Penetration Testing / Red Team": "🕵️",
+        "Cloud Security":                "☁️",
+        "AppSec / DevSecOps":            "🛡️",
+        "GRC / Compliance":              "📋",
+        "DFIR / Forensics":              "🔬",
+        "Network Security":              "🌐",
+        "Training / Program":            "🎓",
+        "Cybersecurity":                 "🔐",
+    }
+    return mapping.get(domain, "🔐")
+
+def _level_emoji(level: str) -> str:
+    return {"Entry-Level": "🌱", "Mid-Level": "⚙️", "Senior": "👨‍💻", "Open": "🔍"}.get(level, "🔍")
 
 
 def format_job_message(job):
@@ -260,7 +209,7 @@ def format_job_message(job):
     d_emoji = _domain_emoji(domain)
     l_emoji = _level_emoji(level)
 
-    # ── Badges ────────────────────────────────────────────────
+    # ── Badges ─────────────────────────────
     badges = []
     if fresh == "[NEW]":
         badges.append("🆕 NEW")
@@ -271,47 +220,57 @@ def format_job_message(job):
     if is_hiring_post:
         badges.append("📢 #Hiring")
 
+    badge_row = "  ·  ".join(badges)
+
+    match_bar = _match_bar(score)
+
+    # ── Build Message ───────────────────────
     lines = []
 
-    # Badge row (only if exists)
-    if badges:
-        lines.append(f"<b>{'  ·  '.join(badges)}</b>")
+    lines.append(f"<code>{'─' * 32}</code>")
 
-    # Title + domain
-    lines.append(f"{d_emoji} <b>{title}</b>")
+    if badge_row:
+        lines.append(f"<b>{badge_row}</b>")
+        lines.append("")
 
-    # Company & Location — compact, single line each
-    lines.append(f"🏢 {company}   {location}")
+    # Title
+    lines.append(f"{d_emoji}  <b>{title}</b>")
+    lines.append("")
 
-    # Level / Type / Salary — one line
-    details = f"{l_emoji} {level}  ·  {d_emoji} {domain}"
-    if job.job_type:
-        details += f"  ·  📄 {_escape(job.job_type)}"
-    if job.salary:
-        details += f"  ·  💰 {_escape(str(job.salary))}"
-    lines.append(details)
+    # Company + Location
+    lines.append(f"🏢  <b>{company}</b>")
+    lines.append(f"📍  {location}")
+    lines.append("")
 
-    # Skills — score emoji only (no "Key Skills" header)
+    # 🔥 Compact Role Line (فرق كبير جدًا)
+    lines.append(f"{l_emoji} {level}   ·   {d_emoji} {domain}")
+    lines.append("")
+
+    # Skills
     lines.append(f"⚡ {skills}")
+    lines.append("")
 
-    # Match bar — compact
-    lines.append(f"📊 {_match_bar(score)}")
+    # Match
+    lines.append(f"{match_bar}")
+    lines.append("")
 
     # Source
     if is_hiring_post:
-        raw_label = _escape(job.original_source or "")
-        lines.append(f"📢 <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
+        lines.append(f"📢 <i>LinkedIn #Hiring</i>")
     elif source:
         lines.append(f"🌐 <i>{source}</i>")
 
-    # Apply link
+    lines.append("")
+
+    # CTA
     lines.append(f'<a href="{job.url}">🚀 Apply Now →</a>')
+
+    lines.append(f"<code>{'─' * 32}</code>")
 
     return "\n".join(lines).strip()
 
-
 # ─────────────────────────────────────────────────────────────
-# 📤 Sending — 10 jobs per channel, no cross-channel duplicates
+# 📤 Sending — per channel, no cross-channel duplicates
 # ─────────────────────────────────────────────────────────────
 
 def _send_to_topic(message, thread_id=None):
@@ -350,30 +309,23 @@ def send_jobs(jobs):
 
     Rules:
     - GEO channels (egypt, gulf, remote): no cross-channel duplicates among themselves.
-    - TOPIC channels (soc, pentest, grc, ...): each channel is independent —
-      a job can appear in multiple topic channels. Ensures every topic
-      channel gets up to 10 jobs per run.
+    - TOPIC channels (soc, pentest, grc, ...): each channel is independent.
     - Within a single channel, no duplicate URLs.
     - All configured channels are always attempted — none skipped.
-
-    Returns: (total_sent: int, sent_urls: set)
     """
     total_sent = 0
-    sent_urls = set()
     channel_summary = {}
 
     GEO_CHANNELS   = ["egypt", "gulf", "remote"]
     TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
     send_order     = GEO_CHANNELS + TOPIC_CHANNELS
 
-    # Log all channels we will attempt
-    active = [k for k in send_order if get_topic_thread_id(k)]
+    active  = [k for k in send_order if get_topic_thread_id(k)]
     missing = [k for k in send_order if not get_topic_thread_id(k)]
     log.info(f"📢 Active channels ({len(active)}): {', '.join(active)}")
     if missing:
         log.warning(f"⚠️  Missing thread IDs for: {', '.join(missing)} — skipping those")
 
-    # Build per-channel queues
     channel_queues = {key: [] for key in CHANNELS.keys()}
     for job in jobs:
         for ch_key in route_job(job):
@@ -381,8 +333,6 @@ def send_jobs(jobs):
                 channel_queues[ch_key].append(job)
 
     limit = MAX_JOBS_PER_CHANNEL
-
-    # URLs already sent to any GEO channel — avoid cross-geo duplicates
     geo_sent_urls = set()
 
     for ch_key in send_order:
@@ -390,7 +340,7 @@ def send_jobs(jobs):
         thread_id = get_topic_thread_id(ch_key)
 
         if not thread_id:
-            continue  # already warned above
+            continue
 
         ch_name = CHANNELS.get(ch_key, {}).get("name", ch_key)
 
@@ -418,7 +368,6 @@ def send_jobs(jobs):
                 sent_this_ch   += 1
                 total_sent     += 1
                 sent_urls_here.add(job.url)
-                sent_urls.add(job.url)
                 if is_geo:
                     geo_sent_urls.add(job.url)
                 log.info(
@@ -433,7 +382,6 @@ def send_jobs(jobs):
         else:
             log.info(f"📭 Channel [{ch_key}] {ch_name}: 0 sent (jobs existed but were filtered/deduped)")
 
-    # Final summary
     log.info("=" * 40)
     log.info("📊 Per-Channel Summary:")
     for k, v in channel_summary.items():
@@ -442,4 +390,4 @@ def send_jobs(jobs):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
 
-    return total_sent, sent_urls
+    return total_sent
