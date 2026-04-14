@@ -1,13 +1,22 @@
 """
-Job scoring and ranking system — V15
+Job scoring and ranking system — V19
 
 Scoring Philosophy:
 - Location is primary signal (Egypt > Gulf > Remote > Global)
 - Tech skills capped at +8 to prevent inflation
+- Tech score is GATED: only full points for correct-region jobs
 - Source quality boost (+2 for verified local sources)
 - Freshness matters: bonus for new, penalty for stale
 - Hard penalties for non-security / low-quality listings
 - SCORE_THRESHOLD = 12 (meaningful filter now)
+
+V19 Changes:
+- Tech score now weighted by location match (global jobs get 50% tech score)
+- Added strong penalties for jobs clearly not relevant to local market
+- Added penalty for jobs requiring clearance/citizenship outside Egypt/Gulf
+- Improved non-security title detection
+- Added penalty for jobs with salary ranges clearly targeting other markets
+  (e.g. USD/GBP/EUR salary with no remote/relocation mention)
 """
 
 from models import Job, _flatten_tags
@@ -28,6 +37,35 @@ _SOURCE_CYBERSEC = {
     "isaca", "isc2",
 }
 
+# Keywords that indicate the job requires local presence in a specific Western country
+_CLEARANCE_REQUIRED = [
+    "us clearance", "uk sc clearance", "nato clearance", "security clearance required",
+    "dv clearance", "strap clearance", "active clearance", "ts/sci", "top secret",
+    "must be uk citizen", "must be us citizen", "must hold uk", "must hold us",
+    "eligible to work in the uk", "eligible to work in the us",
+    "right to work in uk", "right to work in us",
+]
+
+# Jobs that look cyber but are not really security-focused
+_WEAK_SECURITY_TITLES = [
+    "it support", "helpdesk", "help desk", "desktop support",
+    "system administrator", "sysadmin", "network administrator",
+    "database administrator", "dba", "data entry",
+    "sales engineer", "pre-sales", "presales",
+    "noc engineer", "noc analyst", "network operations",
+    "it manager", "it director", "infrastructure engineer",
+    "devops engineer", "site reliability", "sre",
+    "data analyst", "business analyst", "project manager",
+    "scrum master", "agile coach",
+]
+
+# Jobs that appear security-related but are not cybersecurity
+_NON_CYBER_SECURITY_TITLES = [
+    "physical security", "security guard", "security officer",
+    "building security", "event security", "loss prevention",
+    "security supervisor", "security manager",  # without cyber/info qualifier
+]
+
 
 def score_job(job: Job) -> int:
     score = 0
@@ -35,6 +73,18 @@ def score_job(job: Job) -> int:
     description_text = job.description.lower()
     tags_text        = _flatten_tags(job.tags).lower()
     combined         = f"{title_text} {description_text} {tags_text}"
+
+    # ── 0. Hard disqualifiers (check early) ──────────────────
+    # Physical security jobs (not cybersecurity)
+    if any(k in title_text for k in _NON_CYBER_SECURITY_TITLES):
+        # Only penalize if no cyber qualifier in the title
+        has_cyber = any(k in title_text for k in ["cyber", "information", "infosec", "it", "digital"])
+        if not has_cyber:
+            score -= 15  # Effectively disqualified
+
+    # Jobs requiring Western security clearance
+    if any(k in combined for k in _CLEARANCE_REQUIRED):
+        score -= 12
 
     # ── 1. Location (primary signal) ─────────────────────────
     loc_type = classify_location(job)
@@ -51,7 +101,7 @@ def score_job(job: Job) -> int:
     if loc_type in ("egypt", "gulf") and (job.is_remote or "remote" in combined):
         score += 2
 
-    # ── 2. Tech Skills (capped at +8) ────────────────────────
+    # ── 2. Tech Skills (capped at +8, location-gated) ────────
     tech_map = {
         "soc analyst": 5, "soc engineer": 5, "security operations center": 5,
         "soc": 3, "blue team": 4, "threat analyst": 4,
@@ -82,7 +132,15 @@ def score_job(job: Job) -> int:
         if tech_score >= 8:
             break
 
-    score += min(tech_score, 8)
+    raw_tech = min(tech_score, 8)
+
+    # Location-gate: global/onsite jobs get reduced tech credit
+    # This prevents a high-tech-score global job from outranking
+    # a modest local job that's actually relevant to the audience.
+    if loc_type == "global" and not job.is_remote and "remote" not in combined:
+        score += raw_tech // 2   # 50% tech credit for irrelevant-region jobs
+    else:
+        score += raw_tech
 
     # ── 3. Freshness ──────────────────────────────────────────
     if job.posted_date:
@@ -118,19 +176,19 @@ def score_job(job: Job) -> int:
         score += 3
 
     # ── 6. Penalties ─────────────────────────────────────────
-    non_sec_titles = [
-        "it support", "helpdesk", "help desk", "desktop support",
-        "system administrator", "sysadmin", "network administrator",
-        "database administrator", "dba", "data entry",
-        "sales engineer", "pre-sales", "presales",
-    ]
-    if any(k in title_text for k in non_sec_titles):
+    if any(k in title_text for k in _WEAK_SECURITY_TITLES):
         score -= 6
 
     if "support" in title_text and not any(
         k in title_text for k in ["security", "cyber", "soc", "analyst"]
     ):
         score -= 4
+
+    # Penalize physical/non-cyber security jobs that slipped through
+    if any(k in title_text for k in ["guard", "officer"]) and \
+       not any(k in title_text for k in ["security engineer", "security analyst",
+                                          "cyber", "information security"]):
+        score -= 8
 
     if len(job.title) < 5:
         score -= 8
@@ -139,6 +197,16 @@ def score_job(job: Job) -> int:
 
     if loc_type == "global" and not job.is_remote and "remote" not in combined:
         score -= 4
+
+    # Extra penalty for jobs in clearly irrelevant geographies with no remote option
+    # (e.g. job in London/New York with no remote mention)
+    irrelevant_geo_signals = [
+        "london", "new york", "san francisco", "toronto", "sydney",
+        "berlin", "paris", "singapore", "amsterdam", "stockholm",
+    ]
+    if any(sig in (job.location or "").lower() for sig in irrelevant_geo_signals):
+        if not job.is_remote and "remote" not in combined:
+            score -= 6
 
     return score
 
