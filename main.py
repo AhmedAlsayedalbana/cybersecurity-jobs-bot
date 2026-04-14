@@ -12,7 +12,7 @@ from datetime import datetime
 import config
 from sources import ALL_FETCHERS
 from models import filter_jobs
-from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen
+from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent
 from telegram_sender import send_jobs
 from scoring import score_job
 from classifier import classify_location
@@ -165,14 +165,17 @@ def main():
             # 7. Send — telegram_sender handles 10-per-channel logic
             if final_pool:
                 log.info("📨 Sending to Telegram (10 per channel)...")
-                sent_count = send_jobs(final_pool)
+                sent_count, sent_urls = send_jobs(final_pool)
                 stats["sent"] = sent_count
                 log.info("✅ Total sent: " + str(sent_count))
             else:
                 log.info("ℹ️ No qualifying jobs this run.")
+                sent_urls = set()
 
-            # 8. Mark seen
-            seen = mark_as_seen(new_jobs, seen)
+            # 8. Mark seen — only jobs that were actually sent
+            seen = mark_as_seen(new_jobs, seen)  # mark all fetched as seen (prevents re-fetch)
+            if sent_urls:
+                seen = deduplicate_sent(sent_urls, final_pool, seen)  # also mark sent URLs
 
     except Exception as e:
         log.exception("❌ Error: " + str(e))
