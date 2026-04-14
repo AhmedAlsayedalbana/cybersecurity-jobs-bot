@@ -226,7 +226,9 @@ def format_job_message(job):
     d_emoji = _domain_emoji(domain)
     l_emoji = _level_emoji(level)
 
-    # ── Badges ────────────────────────────────────────────────
+    lines = []
+
+    # ── Badge row (only if exists) ────────────────────────────
     badges = []
     if fresh == "[NEW]":
         badges.append("🆕 NEW")
@@ -236,42 +238,52 @@ def format_job_message(job):
         badges.append("🎓 Internship")
     if is_hiring_post:
         badges.append("📢 #Hiring")
-
-    lines = []
-
-    # Badge row (only if exists)
     if badges:
         lines.append(f"<b>{'  ·  '.join(badges)}</b>")
+        lines.append("")
 
-    # Title + domain
-    lines.append(f"{d_emoji} <b>{title}</b>")
+    # ── Title ─────────────────────────────────────────────────
+    lines.append(f"{d_emoji}  <b>{title}</b>")
+    lines.append("")
 
-    # Company & Location — compact, single line each
-    lines.append(f"🏢 {company}   {location}")
+    # ── Company & Location ────────────────────────────────────
+    lines.append(f"🏢  <b>{company}</b>")
+    lines.append(f"📍  {location}")
+    lines.append("")
 
-    # Level / Type / Salary — one line
-    details = f"{l_emoji} {level}  ·  {d_emoji} {domain}"
+    # ── Role Details ──────────────────────────────────────────
+    lines.append(f"<b>━━ Role Details</b>")
+    lines.append(f"{l_emoji}  {level}   {d_emoji}  {domain}")
     if job.job_type:
-        details += f"  ·  📄 {_escape(job.job_type)}"
+        lines.append(f"📄  {_escape(job.job_type)}")
     if job.salary:
-        details += f"  ·  💰 {_escape(str(job.salary))}"
-    lines.append(details)
+        lines.append(f"💰  {_escape(str(job.salary))}")
+    lines.append("")
 
-    # Skills — score emoji only (no "Key Skills" header)
-    lines.append(f"⚡ {skills}")
+    # ── Skills ────────────────────────────────────────────────
+    lines.append(f"<b>━━ Key Skills</b>")
+    lines.append(f"⚡  {skills}")
+    lines.append("")
 
-    # Match bar — compact
-    lines.append(f"📊 {_match_bar(score)}")
+    # ── Match Strength — bar + score ─────────────────────────
+    lines.append(f"<b>━━ Match Strength</b>")
+    lines.append(f"   {_match_bar(score)}  <b>({score})</b>")
+    lines.append("")
 
-    # Source
+    # ── Source ────────────────────────────────────────────────
     if is_hiring_post:
         raw_label = _escape(job.original_source or "")
-        lines.append(f"📢 <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
+        lines.append(f"📢  <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
     elif source:
-        lines.append(f"🌐 <i>{source}</i>")
+        lines.append(f"🌐  <i>Source: {source}</i>")
 
-    # Apply link
-    lines.append(f'<a href="{job.url}">🚀 Apply Now →</a>')
+    lines.append("")
+
+    # ── Apply button ─────────────────────────────────────────
+    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
+
+    # ── Bottom separator (short) ─────────────────────────────
+    lines.append(f"<code>{'─' * 14}</code>")
 
     return "\n".join(lines).strip()
 
