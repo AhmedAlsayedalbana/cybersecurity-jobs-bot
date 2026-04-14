@@ -1,6 +1,7 @@
 """
 Telegram message formatting and multi-topic sending.
 KEY FEATURE: 10 jobs per channel per run, no duplicates across channels.
+V19: Strict geo-routing — double-checks location before assigning to Egypt/Gulf channels.
 """
 
 import time
@@ -19,26 +20,59 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
-# 🔎 Geo Helpers
+# 🔎 Geo Helpers (strict — location field is authoritative)
 # ─────────────────────────────────────────────────────────────
 
 from classifier import classify_location as _classify_location
 
-def _is_egypt_job(job):
-    loc = (job.location or "").lower()
-    # Primary fast check
-    if any(p in loc for p in EGYPT_PATTERNS):
+def _location_field_matches(loc: str, patterns: set) -> bool:
+    """Check if the raw location string matches any pattern."""
+    return any(p in loc for p in patterns)
+
+def _is_egypt_job(job) -> bool:
+    """
+    Strict Egypt check:
+    1. Location field must match an Egypt pattern, OR
+    2. Location is ambiguous (remote/empty) AND classifier returns 'egypt'
+    We NEVER classify as Egypt if location clearly names another country.
+    """
+    loc = (job.location or "").lower().strip()
+
+    # Direct match in location field → definitive YES
+    if _location_field_matches(loc, EGYPT_PATTERNS):
         return True
-    # Secondary: use full classifier (checks description + tags too)
+
+    # Location clearly names a Gulf country → definitive NO
+    if _location_field_matches(loc, GULF_PATTERNS):
+        return False
+
+    # Location is a real non-Egypt, non-Gulf place (e.g. London, New York)?
+    # Check if it's ambiguous (remote/empty/generic) — only then use classifier
+    from classifier import _location_is_ambiguous
+    if not _location_is_ambiguous(loc):
+        return False  # Real foreign location, not Egypt
+
+    # Ambiguous location: trust the full classifier
     return _classify_location(job) == "egypt"
 
-def _is_gulf_job(job):
-    loc = (job.location or "").lower()
-    if any(p in loc for p in GULF_PATTERNS):
+def _is_gulf_job(job) -> bool:
+    """
+    Strict Gulf check — mirrors _is_egypt_job logic.
+    """
+    loc = (job.location or "").lower().strip()
+
+    if _location_field_matches(loc, GULF_PATTERNS):
         return True
+    if _location_field_matches(loc, EGYPT_PATTERNS):
+        return False
+
+    from classifier import _location_is_ambiguous
+    if not _location_is_ambiguous(loc):
+        return False
+
     return _classify_location(job) == "gulf"
 
-def _is_remote_job(job):
+def _is_remote_job(job) -> bool:
     if job.is_remote:
         return True
     combined = (job.title + " " + job.location + " " + job.job_type).lower()
@@ -226,9 +260,7 @@ def format_job_message(job):
     d_emoji = _domain_emoji(domain)
     l_emoji = _level_emoji(level)
 
-    lines = []
-
-    # ── Badge row (only if exists) ────────────────────────────
+    # ── Badges ────────────────────────────────────────────────
     badges = []
     if fresh == "[NEW]":
         badges.append("🆕 NEW")
@@ -238,52 +270,42 @@ def format_job_message(job):
         badges.append("🎓 Internship")
     if is_hiring_post:
         badges.append("📢 #Hiring")
+
+    lines = []
+
+    # Badge row (only if exists)
     if badges:
         lines.append(f"<b>{'  ·  '.join(badges)}</b>")
-        lines.append("")
 
-    # ── Title ─────────────────────────────────────────────────
-    lines.append(f"{d_emoji}  <b>{title}</b>")
-    lines.append("")
+    # Title + domain
+    lines.append(f"{d_emoji} <b>{title}</b>")
 
-    # ── Company & Location ────────────────────────────────────
-    lines.append(f"🏢  <b>{company}</b>")
-    lines.append(f"📍  {location}")
-    lines.append("")
+    # Company & Location — compact, single line each
+    lines.append(f"🏢 {company}   {location}")
 
-    # ── Role Details ──────────────────────────────────────────
-    lines.append(f"<b>━━ Role Details</b>")
-    lines.append(f"{l_emoji}  {level}   {d_emoji}  {domain}")
+    # Level / Type / Salary — one line
+    details = f"{l_emoji} {level}  ·  {d_emoji} {domain}"
     if job.job_type:
-        lines.append(f"📄  {_escape(job.job_type)}")
+        details += f"  ·  📄 {_escape(job.job_type)}"
     if job.salary:
-        lines.append(f"💰  {_escape(str(job.salary))}")
-    lines.append("")
+        details += f"  ·  💰 {_escape(str(job.salary))}"
+    lines.append(details)
 
-    # ── Skills ────────────────────────────────────────────────
-    lines.append(f"<b>━━ Key Skills</b>")
-    lines.append(f"⚡  {skills}")
-    lines.append("")
+    # Skills — score emoji only (no "Key Skills" header)
+    lines.append(f"⚡ {skills}")
 
-    # ── Match Strength — bar + score ─────────────────────────
-    lines.append(f"<b>━━ Match Strength</b>")
-    lines.append(f"   {_match_bar(score)}  <b>({score})</b>")
-    lines.append("")
+    # Match bar — compact
+    lines.append(f"📊 {_match_bar(score)}")
 
-    # ── Source ────────────────────────────────────────────────
+    # Source
     if is_hiring_post:
         raw_label = _escape(job.original_source or "")
-        lines.append(f"📢  <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
+        lines.append(f"📢 <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
     elif source:
-        lines.append(f"🌐  <i>Source: {source}</i>")
+        lines.append(f"🌐 <i>{source}</i>")
 
-    lines.append("")
-
-    # ── Apply button ─────────────────────────────────────────
-    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
-
-    # ── Bottom separator (short) ─────────────────────────────
-    lines.append(f"<code>{'─' * 14}</code>")
+    # Apply link
+    lines.append(f'<a href="{job.url}">🚀 Apply Now →</a>')
 
     return "\n".join(lines).strip()
 
