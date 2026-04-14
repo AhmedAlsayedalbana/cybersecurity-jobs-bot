@@ -376,43 +376,6 @@ def _fetch_jobzella() -> list:
 
 
 
-# ── 9. GitHub Security Jobs (Repos & Issues tagged [Hiring]) ──
-def _fetch_github_security_jobs() -> list:
-    """
-    GitHub Jobs: searches public repos & issues for cybersecurity hiring posts.
-    Targets: awesome-security-jobs, security-jobs repos + GitHub search API.
-    """
-    jobs = []
-    seen = set()
-    endpoints = [
-        # GitHub Search API — issues tagged [Hiring] in security communities
-        "https://api.github.com/search/issues?q=%5BHiring%5D+cybersecurity+is%3Aopen&sort=created&order=desc&per_page=20",
-        "https://api.github.com/search/issues?q=%5BHiring%5D+%22security+engineer%22+is%3Aopen&sort=created&order=desc&per_page=20",
-        "https://api.github.com/search/issues?q=%5BHiring%5D+%22SOC%22+is%3Aopen&sort=created&order=desc&per_page=10",
-        "https://api.github.com/search/issues?q=%5BHiring%5D+%22penetration+tester%22+is%3Aopen&sort=created&order=desc&per_page=10",
-    ]
-    headers = {**_H, "Accept": "application/vnd.github+json"}
-    for url in endpoints:
-        data = get_json(url, headers=headers)
-        if not data or "items" not in data:
-            continue
-        for item in data.get("items", []):
-            title = item.get("title", "").strip()
-            link  = item.get("html_url", "")
-            body  = (item.get("body") or "")[:300]
-            if not title or not link or link in seen:
-                continue
-            if not _is_sec(title + " " + body):
-                continue
-            seen.add(link)
-            jobs.append(Job(
-                title=title, company="GitHub Community",
-                location="Remote / Worldwide", url=link,
-                source="github_jobs", description=body,
-                tags=["github", "community", "remote"], is_remote=True,
-            ))
-    log.info(f"GitHub Security Jobs: {len(jobs)} jobs")
-    return jobs
 
 
 # ── 10. MITRE ATT&CK / CVE Community Job Boards ──────────────
@@ -529,54 +492,6 @@ def _fetch_egypt_tech_hubs() -> list:
     log.info(f"Egypt Tech Hubs: {len(jobs)} jobs")
     return jobs
 
-
-# ── 12. Telegram Channel Monitoring (Public Channels) ─────────
-def _fetch_telegram_public_channels() -> list:
-    """
-    Scrape public Telegram channel web previews for job posts.
-    Targets known Arabic cybersecurity job channels.
-    """
-    jobs = []
-    seen = set()
-
-    channels = [
-        ("https://t.me/s/CyberJobsEgypt",   "CyberJobsEgypt",   "Egypt",             ["egypt", "cybersecurity"]),
-        ("https://t.me/s/ITjobsEgypt",       "ITJobsEgypt",      "Egypt",             ["egypt", "it"]),
-        ("https://t.me/s/cybersecjobs",      "CyberSecJobs",     "Remote / Worldwide",["cybersecurity", "remote"]),
-        ("https://t.me/s/Gulf_Jobs_IT",      "GulfJobsIT",       "Gulf",              ["gulf", "it"]),
-        ("https://t.me/s/ITjobsGCC",         "ITJobsGCC",        "Gulf",              ["gulf", "gcc", "it"]),
-    ]
-
-    for ch_url, company, location, tags in channels:
-        html = get_text(ch_url, headers=_H)
-        if not html:
-            continue
-        # Extract message text blocks
-        for msg in re.findall(
-            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
-            html, re.DOTALL
-        ):
-            text = re.sub(r'<[^>]+>', ' ', msg).strip()
-            text = re.sub(r'\s+', ' ', text)
-            if len(text) < 20 or not _is_sec(text):
-                continue
-            # Extract title from first line
-            first_line = text.split('\n')[0][:120].strip()
-            if not first_line or first_line in seen:
-                continue
-            seen.add(first_line)
-            # Try to extract a URL from the message
-            url_match = re.search(r'https?://[^\s<>"]+', msg)
-            job_url = url_match.group(0) if url_match else ch_url
-            jobs.append(Job(
-                title=first_line, company=company,
-                location=location, url=job_url,
-                source="telegram_channel", description=text[:300],
-                tags=tags,
-            ))
-
-    log.info(f"Telegram Public Channels: {len(jobs)} jobs")
-    return jobs
 
 
 # ── 13. InfoSec Twitter/X Job Threads (via Nitter RSS) ────────
@@ -733,9 +648,7 @@ def fetch_new_sources() -> list:
         ("Greenhouse Cybersec",     _fetch_greenhouse_cybersec),
         ("Jobzella",                _fetch_jobzella),
         # ── v17 Creative New Sources ──
-        ("GitHub Security Jobs",    _fetch_github_security_jobs),
         ("Egypt Tech Hubs",         _fetch_egypt_tech_hubs),
-        ("Telegram Public Channels",_fetch_telegram_public_channels),
         ("Nitter Security Jobs",    _fetch_nitter_security_jobs),
         ("Arabic Startup Jobs",     _fetch_arabic_startup_jobs),
         ("Bug Bounty Careers",      _fetch_bugbounty_careers),
