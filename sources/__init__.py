@@ -39,6 +39,7 @@ from sources.jooble           import fetch_jooble
 from sources.reed             import fetch_reed
 from sources.freelance        import fetch_freelance
 from sources.jsearch          import fetch_jsearch
+from sources.new_sources      import fetch_new_sources          # v17 creative sources
 
 ALL_FETCHERS = [
     # ── 1. Egypt — top priority 🇪🇬 ──────────────────────────
@@ -283,4 +284,7 @@ ALL_FETCHERS = [
 
     # ── 9. Freelance 🔧 ──────────────────────────────────────
     ("Freelance",       fetch_freelance),       # Mostaql + Khamsat + Truelancer + WorkInSecurity
+
+    # ── 10. Creative v17 Sources 🚀 ───────────────────────────
+    ("New Sources v17", fetch_new_sources),     # GitHub, Telegram channels, Bug Bounty, Egypt hubs, Nitter
 ]
