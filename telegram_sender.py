@@ -22,13 +22,21 @@ log = logging.getLogger(__name__)
 # 🔎 Geo Helpers
 # ─────────────────────────────────────────────────────────────
 
+from classifier import classify_location as _classify_location
+
 def _is_egypt_job(job):
     loc = (job.location or "").lower()
-    return any(p in loc for p in EGYPT_PATTERNS)
+    # Primary fast check
+    if any(p in loc for p in EGYPT_PATTERNS):
+        return True
+    # Secondary: use full classifier (checks description + tags too)
+    return _classify_location(job) == "egypt"
 
 def _is_gulf_job(job):
     loc = (job.location or "").lower()
-    return any(p in loc for p in GULF_PATTERNS)
+    if any(p in loc for p in GULF_PATTERNS):
+        return True
+    return _classify_location(job) == "gulf"
 
 def _is_remote_job(job):
     if job.is_remote:
@@ -216,50 +224,54 @@ def format_job_message(job):
     is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
     d_emoji = _domain_emoji(domain)
+    l_emoji = _level_emoji(level)
 
-    # ── Optional badges (inline, only if present) ─────────────
+    # ── Badges ────────────────────────────────────────────────
     badges = []
     if fresh == "[NEW]":
-        badges.append("🆕")
+        badges.append("🆕 NEW")
+    elif fresh == "[Today]":
+        badges.append("📅 Today")
     if is_internship:
         badges.append("🎓 Internship")
     if is_hiring_post:
-        badges.append("#Hiring")
-    badge_prefix = " ".join(badges) + " " if badges else ""
+        badges.append("📢 #Hiring")
 
-    # ── Score as short text ────────────────────────────────────
-    score_text = _score_label(score)
-
-    # ── Salary line (only if available) ───────────────────────
-    salary_line = f" · 💰 {_escape(str(job.salary))}" if job.salary else ""
-
-    # ── Job type (only if available) ──────────────────────────
-    type_line = f" · {_escape(job.job_type)}" if job.job_type else ""
-
-    # ── Source label ──────────────────────────────────────────
-    if is_hiring_post:
-        source_label = "LinkedIn #Hiring"
-    else:
-        source_label = source
-
-    # ── Build compact message ─────────────────────────────────
     lines = []
 
-    # Line 1: emoji + title
-    lines.append(f"{d_emoji} <b>{badge_prefix}{title}</b>")
+    # Badge row (only if exists)
+    if badges:
+        lines.append(f"<b>{'  ·  '.join(badges)}</b>")
 
-    # Line 2: company + location
-    lines.append(f"🏢 {company}  ·  {location}")
+    # Title + domain
+    lines.append(f"{d_emoji} <b>{title}</b>")
 
-    # Line 3: domain + level + type + salary (all on one line)
-    meta = f"{domain}  ·  {level}{type_line}{salary_line}"
-    lines.append(f"<i>{meta}</i>")
+    # Company & Location — compact, single line each
+    lines.append(f"🏢 {company}   {location}")
 
-    # Line 4: skills as score tags
-    lines.append(f"<code>{skills}</code>  —  {score_text}")
+    # Level / Type / Salary — one line
+    details = f"{l_emoji} {level}  ·  {d_emoji} {domain}"
+    if job.job_type:
+        details += f"  ·  📄 {_escape(job.job_type)}"
+    if job.salary:
+        details += f"  ·  💰 {_escape(str(job.salary))}"
+    lines.append(details)
 
-    # Line 5: source + apply
-    lines.append(f'<a href="{job.url}">🔗 Apply</a>  ·  <i>{source_label}</i>')
+    # Skills — score emoji only (no "Key Skills" header)
+    lines.append(f"⚡ {skills}")
+
+    # Match bar — compact
+    lines.append(f"📊 {_match_bar(score)}")
+
+    # Source
+    if is_hiring_post:
+        raw_label = _escape(job.original_source or "")
+        lines.append(f"📢 <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
+    elif source:
+        lines.append(f"🌐 <i>{source}</i>")
+
+    # Apply link
+    lines.append(f'<a href="{job.url}">🚀 Apply Now →</a>')
 
     return "\n".join(lines).strip()
 
@@ -309,8 +321,11 @@ def send_jobs(jobs):
       channel gets up to 10 jobs per run.
     - Within a single channel, no duplicate URLs.
     - All configured channels are always attempted — none skipped.
+
+    Returns: (total_sent: int, sent_urls: set)
     """
     total_sent = 0
+    sent_urls = set()
     channel_summary = {}
 
     GEO_CHANNELS   = ["egypt", "gulf", "remote"]
@@ -369,6 +384,7 @@ def send_jobs(jobs):
                 sent_this_ch   += 1
                 total_sent     += 1
                 sent_urls_here.add(job.url)
+                sent_urls.add(job.url)
                 if is_geo:
                     geo_sent_urls.add(job.url)
                 log.info(
@@ -392,4 +408,4 @@ def send_jobs(jobs):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
 
-    return total_sent
+    return total_sent, sent_urls
