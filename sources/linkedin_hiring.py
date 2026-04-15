@@ -86,27 +86,44 @@ HIRING_SEARCHES_EGYPT = [
     {"keywords": "#hiring GRC",                  "location": "Egypt",        "f_TPR": "r604800"},
     {"keywords": "#hiring cybersecurity",        "location": "Cairo, Egypt", "f_TPR": "r604800"},
     {"keywords": "#hiring security",             "location": "Cairo, Egypt", "f_TPR": "r604800"},
-    {"keywords": "نحن نوظف أمن معلومات",         "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "نحن نوظف أمن سيبراني",          "location": "Egypt",        "f_TPR": "r604800"},
+    # Without # — catches posts that spell it out
+    {"keywords": "hiring cybersecurity Egypt",   "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "we are hiring security",       "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "join our team cybersecurity",  "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "security analyst vacancy",     "location": "Egypt",        "f_TPR": "r604800"},
+    # Arabic
+    {"keywords": "نحن نوظف أمن معلومات",        "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "نحن نوظف أمن سيبراني",         "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "مطلوب محلل أمن",               "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "وظيفة أمن سيبراني",            "location": "Egypt",        "f_TPR": "r604800"},
 ]
 
 HIRING_SEARCHES_GULF = [
-    {"keywords": "#hiring cybersecurity",     "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "#hiring SOC analyst",       "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "#hiring security engineer", "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "#hiring cybersecurity",     "location": "United Arab Emirates", "f_TPR": "r604800"},
-    {"keywords": "#hiring SOC analyst",       "location": "United Arab Emirates", "f_TPR": "r604800"},
-    {"keywords": "#hiring security engineer", "location": "United Arab Emirates", "f_TPR": "r604800"},
-    {"keywords": "#hiring cybersecurity",     "location": "Qatar",                "f_TPR": "r604800"},
-    {"keywords": "#hiring cybersecurity",     "location": "Kuwait",               "f_TPR": "r604800"},
+    {"keywords": "#hiring cybersecurity",        "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "#hiring SOC analyst",          "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "#hiring security engineer",    "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "#hiring cybersecurity",        "location": "United Arab Emirates", "f_TPR": "r604800"},
+    {"keywords": "#hiring SOC analyst",          "location": "United Arab Emirates", "f_TPR": "r604800"},
+    {"keywords": "#hiring security engineer",    "location": "United Arab Emirates", "f_TPR": "r604800"},
+    {"keywords": "#hiring cybersecurity",        "location": "Qatar",                "f_TPR": "r604800"},
+    {"keywords": "#hiring cybersecurity",        "location": "Kuwait",               "f_TPR": "r604800"},
+    # Without # variants
+    {"keywords": "we are hiring cybersecurity",  "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "hiring security engineer",     "location": "United Arab Emirates", "f_TPR": "r604800"},
+    # Arabic Gulf
+    {"keywords": "نحن نوظف أمن سيبراني",         "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "وظيفة أمن معلومات",            "location": "Saudi Arabia",         "f_TPR": "r604800"},
 ]
 
 HIRING_SEARCHES_REMOTE = [
-    {"keywords": "#hiring cybersecurity",       "f_WT": "2", "f_TPR": "r604800"},
-    {"keywords": "#hiring SOC analyst",         "f_WT": "2", "f_TPR": "r604800"},
-    {"keywords": "#hiring penetration tester",  "f_WT": "2", "f_TPR": "r604800"},
-    {"keywords": "#hiring threat intelligence", "f_WT": "2", "f_TPR": "r604800"},
-    {"keywords": "#hiring cloud security",      "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring cybersecurity",        "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring SOC analyst",          "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring penetration tester",   "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring threat intelligence",  "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring cloud security",       "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring appsec",               "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring red team",             "f_WT": "2", "f_TPR": "r604800"},
+    {"keywords": "#hiring devsecops",            "f_WT": "2", "f_TPR": "r604800"},
 ]
 
 ALL_HIRING_SEARCHES = HIRING_SEARCHES_EGYPT + HIRING_SEARCHES_GULF + HIRING_SEARCHES_REMOTE
