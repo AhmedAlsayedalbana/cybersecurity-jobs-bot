@@ -179,11 +179,26 @@ SEARCHES = (
 
 
 
-def _fetch_with_retry(url, params=None, max_retries=3) -> str | None:
-    """GET with exponential backoff — LinkedIn often returns empty on first hit."""
+_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+
+
+def _fetch_with_retry(url, params=None, max_retries=3, rotate_ua=False) -> str | None:
+    """GET with exponential backoff — LinkedIn often returns empty on first hit.
+    rotate_ua=True sends a fresh random User-Agent on every attempt so LinkedIn
+    cannot fingerprint a single persistent UA across the full search run.
+    """
     import random
     for attempt in range(max_retries):
-        html = get_text(url, params=params, headers=_headers())
+        # Always rotate UA when requested — not only on retries
+        headers = {"User-Agent": random.choice(_UA_POOL)} if rotate_ua else _headers()
+        html = get_text(url, params=params, headers=headers)
         if html and len(html) > 200:
             return html
         wait = (2 ** attempt) + random.uniform(1, 3)
@@ -204,7 +219,7 @@ def fetch_linkedin() -> list[Job]:
     consecutive_failures = 0
     total_failures = 0
     MAX_CONSECUTIVE = 6   # was 2 — caused premature stop
-    MAX_TOTAL = 12
+    MAX_TOTAL = 20        # raised from 12 — 90+ searches need more headroom
 
     for search in SEARCHES:
         if total_failures >= MAX_TOTAL:
@@ -228,7 +243,7 @@ def fetch_linkedin() -> list[Job]:
         if "f_TPR" in search:
             params["f_TPR"] = search["f_TPR"]
 
-        html = _fetch_with_retry(SEARCH_URL, params=params, max_retries=3)
+        html = _fetch_with_retry(SEARCH_URL, params=params, max_retries=3, rotate_ua=True)
         if not html:
             consecutive_failures += 1
             total_failures += 1
@@ -251,7 +266,7 @@ def fetch_linkedin() -> list[Job]:
                 continue
             seen_ids.add(job_id)
 
-            detail_html = _fetch_with_retry(DETAIL_URL.format(job_id=job_id), max_retries=2)
+            detail_html = _fetch_with_retry(DETAIL_URL.format(job_id=job_id), max_retries=2, rotate_ua=True)
             if not detail_html:
                 continue
 
