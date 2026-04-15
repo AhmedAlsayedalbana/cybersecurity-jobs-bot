@@ -209,7 +209,9 @@ def format_job_message(job):
     d_emoji = _domain_emoji(domain)
     l_emoji = _level_emoji(level)
 
-    # ── Badges ─────────────────────────────
+    lines = []
+
+    # ── Badge row (only if exists) ────────────────────────────
     badges = []
     if fresh == "[NEW]":
         badges.append("🆕 NEW")
@@ -219,55 +221,53 @@ def format_job_message(job):
         badges.append("🎓 Internship")
     if is_hiring_post:
         badges.append("📢 #Hiring")
-
-    badge_row = "  ·  ".join(badges)
-
-    match_bar = _match_bar(score)
-
-    # ── Build Message ───────────────────────
-    lines = []
-
-    lines.append(f"<code>{'─' * 32}</code>")
-
-    if badge_row:
-        lines.append(f"<b>{badge_row}</b>")
+    if badges:
+        lines.append(f"<b>{'  ·  '.join(badges)}</b>")
         lines.append("")
 
-    # Title
+    # ── Title ─────────────────────────────────────────────────
     lines.append(f"{d_emoji}  <b>{title}</b>")
     lines.append("")
 
-    # Company + Location
+    # ── Company & Location ────────────────────────────────────
     lines.append(f"🏢  <b>{company}</b>")
     lines.append(f"📍  {location}")
     lines.append("")
 
-    # 🔥 Compact Role Line (فرق كبير جدًا)
-    lines.append(f"{l_emoji} {level}   ·   {d_emoji} {domain}")
+    # ── Role Details ──────────────────────────────────────────
+    lines.append(f"<b>━━ Role Details</b>")
+    lines.append(f"{l_emoji}  {level}   {d_emoji}  {domain}")
+    if job.job_type:
+        lines.append(f"📄  {_escape(job.job_type)}")
+    if job.salary:
+        lines.append(f"💰  {_escape(str(job.salary))}")
     lines.append("")
 
-    # Skills
-    lines.append(f"⚡ {skills}")
+    # ── Skills ────────────────────────────────────────────────
+    lines.append(f"<b>━━ Key Skills</b>")
+    lines.append(f"⚡  {skills}")
     lines.append("")
 
-    # Match
-    lines.append(f"{match_bar}")
+    # ── Match Strength — bar + score ─────────────────────────
+    lines.append(f"<b>━━ Match Strength</b>")
+    lines.append(f"   {_match_bar(score)}  <b>({score})</b>")
     lines.append("")
 
-    # Source
+    # ── Source ────────────────────────────────────────────────
     if is_hiring_post:
-        lines.append(f"📢 <i>LinkedIn #Hiring</i>")
+        raw_label = _escape(job.original_source or "")
+        lines.append(f"📢  <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
     elif source:
-        lines.append(f"🌐 <i>{source}</i>")
+        lines.append(f"🌐  <i>Source: {source}</i>")
 
     lines.append("")
 
-    # CTA
-    lines.append(f'<a href="{job.url}">🚀 Apply Now →</a>')
-
-    lines.append(f"<code>{'─' * 32}</code>")
+    # ── Apply + short bottom separator ───────────────────────
+    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
+    lines.append(f"<code>{'─' * 14}</code>")
 
     return "\n".join(lines).strip()
+
 
 # ─────────────────────────────────────────────────────────────
 # 📤 Sending — per channel, no cross-channel duplicates
