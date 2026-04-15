@@ -1,5 +1,5 @@
 """
-Job scoring and ranking system — V19
+Job scoring and ranking system — V21
 
 Scoring Philosophy:
 - Location is primary signal (Egypt > Gulf > Remote > Global)
@@ -8,15 +8,15 @@ Scoring Philosophy:
 - Source quality boost (+2 for verified local sources)
 - Freshness matters: bonus for new, penalty for stale
 - Hard penalties for non-security / low-quality listings
-- SCORE_THRESHOLD = 12 (meaningful filter now)
+- SCORE_THRESHOLD = 12 (raised — only meaningful jobs pass)
 
-V19 Changes:
-- Tech score now weighted by location match (global jobs get 50% tech score)
-- Added strong penalties for jobs clearly not relevant to local market
-- Added penalty for jobs requiring clearance/citizenship outside Egypt/Gulf
-- Improved non-security title detection
-- Added penalty for jobs with salary ranges clearly targeting other markets
-  (e.g. USD/GBP/EUR salary with no remote/relocation mention)
+V21 Changes vs V19:
+- SCORE_THRESHOLD logic moved to config.py (now 12, was 8)
+- Duplicate detection moved upstream (dedup.py handles URL+title hash)
+- Non-cyber titles get -20 (was -15) — effectively always blocked
+- Weak security titles get -8 (was -6) — tighter filter
+- Global onsite penalty increased: -6 (was -4)
+- Clearance penalty increased: -15 (was -12)
 """
 
 from models import Job, _flatten_tags
@@ -77,14 +77,13 @@ def score_job(job: Job) -> int:
     # ── 0. Hard disqualifiers (check early) ──────────────────
     # Physical security jobs (not cybersecurity)
     if any(k in title_text for k in _NON_CYBER_SECURITY_TITLES):
-        # Only penalize if no cyber qualifier in the title
         has_cyber = any(k in title_text for k in ["cyber", "information", "infosec", "it", "digital"])
         if not has_cyber:
-            score -= 15  # Effectively disqualified
+            score -= 20  # Always disqualified
 
     # Jobs requiring Western security clearance
     if any(k in combined for k in _CLEARANCE_REQUIRED):
-        score -= 12
+        score -= 15
 
     # ── 1. Location (primary signal) ─────────────────────────
     loc_type = classify_location(job)
@@ -177,7 +176,7 @@ def score_job(job: Job) -> int:
 
     # ── 6. Penalties ─────────────────────────────────────────
     if any(k in title_text for k in _WEAK_SECURITY_TITLES):
-        score -= 6
+        score -= 8  # was -6
 
     if "support" in title_text and not any(
         k in title_text for k in ["security", "cyber", "soc", "analyst"]
@@ -196,7 +195,7 @@ def score_job(job: Job) -> int:
         score -= 10
 
     if loc_type == "global" and not job.is_remote and "remote" not in combined:
-        score -= 4
+        score -= 6  # was -4
 
     # Extra penalty for jobs in clearly irrelevant geographies with no remote option
     # (e.g. job in London/New York with no remote mention)
