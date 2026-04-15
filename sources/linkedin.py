@@ -112,21 +112,109 @@ REMOTE_SEARCHES = [
     {"keywords": "red team",                      "f_WT": "2", "f_TPR": "r86400"},
 ]
 
-# Combined in priority order: Egypt → Gulf → Remote
-SEARCHES = EGYPT_SEARCHES + GULF_SEARCHES + REMOTE_SEARCHES
+# ── Extra Egypt searches — doubles coverage creatively ────────
+EGYPT_EXTRA_SEARCHES = [
+    # Arabic keywords — catches local HR posts
+    {"keywords": "أمن معلومات",               "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "أمن سيبراني",               "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "محلل أمن",                  "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "اختبار اختراق",             "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "مهندس أمن",                 "location": "Egypt",        "f_TPR": "r604800"},
+    # Specific job functions not covered above
+    {"keywords": "security operations center", "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "vulnerability assessment",   "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "risk analyst",               "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "compliance analyst",         "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "cyber analyst",              "location": "Cairo, Egypt", "f_TPR": "r604800"},
+    {"keywords": "appsec",                     "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "security architect",         "location": "Egypt",        "f_TPR": "r604800"},
+    {"keywords": "CISO",                       "location": "Egypt",        "f_TPR": "r604800"},
+    # Internship / fresh grad — very important for Egyptian audience
+    {"keywords": "cybersecurity internship",   "location": "Egypt",        "f_TPR": "r2592000"},
+    {"keywords": "security graduate program",  "location": "Egypt",        "f_TPR": "r2592000"},
+    {"keywords": "IT security fresh graduate", "location": "Egypt",        "f_TPR": "r2592000"},
+    # Known big employers in Egypt
+    {"keywords": "cybersecurity",              "location": "Smart Village, Egypt",    "f_TPR": "r604800"},
+    {"keywords": "security",                   "location": "Maadi, Egypt",            "f_TPR": "r604800"},
+    {"keywords": "security",                   "location": "Heliopolis, Egypt",       "f_TPR": "r604800"},
+    {"keywords": "cybersecurity",              "location": "New Administrative Capital, Egypt", "f_TPR": "r604800"},
+]
+
+# ── Extra Gulf searches — doubles coverage creatively ─────────
+GULF_EXTRA_SEARCHES = [
+    # Arabic keywords Gulf
+    {"keywords": "أمن سيبراني",               "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "أمن معلومات",               "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "أمن سيبراني",               "location": "United Arab Emirates", "f_TPR": "r604800"},
+    # Additional roles
+    {"keywords": "security operations center", "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "vulnerability management",   "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "compliance analyst",         "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "security architect",         "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "appsec",                     "location": "United Arab Emirates", "f_TPR": "r604800"},
+    {"keywords": "red team",                   "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "CISO",                       "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    {"keywords": "devsecops",                  "location": "United Arab Emirates", "f_TPR": "r604800"},
+    # Key Saudi government/Vision2030 tech hubs
+    {"keywords": "cybersecurity",              "location": "NEOM, Saudi Arabia",   "f_TPR": "r604800"},
+    {"keywords": "cybersecurity",              "location": "Dhahran, Saudi Arabia","f_TPR": "r604800"},
+    {"keywords": "security engineer",          "location": "Khobar, Saudi Arabia", "f_TPR": "r604800"},
+    # Internship Gulf
+    {"keywords": "cybersecurity internship",   "location": "Saudi Arabia",         "f_TPR": "r2592000"},
+    {"keywords": "security trainee",           "location": "United Arab Emirates", "f_TPR": "r2592000"},
+    # Company-level — high-value Gulf employers
+    {"keywords": "security",                   "location": "Aramco, Saudi Arabia", "f_TPR": "r604800"},
+    {"keywords": "cybersecurity",              "location": "Abu Dhabi, United Arab Emirates", "f_TPR": "r604800"},
+]
+
+# Combined in priority order: Egypt → Egypt Extra → Gulf → Gulf Extra → Remote
+SEARCHES = (
+    EGYPT_SEARCHES
+    + EGYPT_EXTRA_SEARCHES
+    + GULF_SEARCHES
+    + GULF_EXTRA_SEARCHES
+    + REMOTE_SEARCHES
+)
+
+
+
+
+def _fetch_with_retry(url, params=None, max_retries=3) -> str | None:
+    """GET with exponential backoff — LinkedIn often returns empty on first hit."""
+    import random
+    for attempt in range(max_retries):
+        html = get_text(url, params=params, headers=_headers())
+        if html and len(html) > 200:
+            return html
+        wait = (2 ** attempt) + random.uniform(1, 3)
+        log.debug(f"LinkedIn: empty response attempt {attempt+1}, waiting {wait:.1f}s")
+        time.sleep(wait)
+    return None
 
 
 def fetch_linkedin() -> list[Job]:
-    """Fetch cybersecurity jobs from LinkedIn guest API."""
+    """
+    Fetch cybersecurity jobs from LinkedIn guest API.
+    V21: doubled search queries, raised failure threshold 2→6,
+    retry per request, 5 job IDs per search (was 3).
+    """
+    import random
     jobs = []
     seen_ids: set[str] = set()
     consecutive_failures = 0
+    total_failures = 0
+    MAX_CONSECUTIVE = 6   # was 2 — caused premature stop
+    MAX_TOTAL = 12
 
     for search in SEARCHES:
-        # Stop early if LinkedIn is blocking us — was 3, lowered to 2
-        if consecutive_failures >= 2:
-            log.warning("LinkedIn: too many consecutive failures — stopping early.")
+        if total_failures >= MAX_TOTAL:
+            log.warning("LinkedIn: hit max total failures — stopping.")
             break
+
+        if consecutive_failures >= MAX_CONSECUTIVE:
+            log.warning(f"LinkedIn: {consecutive_failures} consecutive failures — waiting 45s.")
+            time.sleep(45)
+            consecutive_failures = 0
 
         params = {
             "keywords": search.get("keywords", ""),
@@ -140,45 +228,41 @@ def fetch_linkedin() -> list[Job]:
         if "f_TPR" in search:
             params["f_TPR"] = search["f_TPR"]
 
-        html = get_text(SEARCH_URL, params=params, headers=_headers())
+        html = _fetch_with_retry(SEARCH_URL, params=params, max_retries=3)
         if not html:
             consecutive_failures += 1
-            # Longer backoff on failures — let LinkedIn cool down
-            wait = 10 * consecutive_failures
+            total_failures += 1
+            wait = min(10 * consecutive_failures, 60)
             log.info(f"LinkedIn: failure {consecutive_failures}, waiting {wait}s")
             time.sleep(wait)
             continue
 
         consecutive_failures = 0
 
-        # Extract job IDs from search results page
+        # Extract job IDs
         job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
         if not job_ids:
             job_ids = re.findall(r'"jobPostingId":(\d+)', html)
         if not job_ids:
             job_ids = re.findall(r'/jobs/view/(\d+)/', html)
 
-        for job_id in job_ids[:3]:  # reduced from 5 → 3 to reduce hammering
+        for job_id in job_ids[:5]:  # increased from 3 → 5
             if job_id in seen_ids:
                 continue
             seen_ids.add(job_id)
 
-            detail_html = get_text(
-                DETAIL_URL.format(job_id=job_id),
-                headers=_headers(),
-            )
+            detail_html = _fetch_with_retry(DETAIL_URL.format(job_id=job_id), max_retries=2)
             if not detail_html:
                 continue
 
             job = _parse_detail(detail_html, job_id)
             if job:
                 jobs.append(job)
-            time.sleep(1.5)   # increased from 0.5 → 1.5s — more polite
+            time.sleep(random.uniform(1.5, 2.5))
 
-        # Longer delay between searches to avoid 429s
-        time.sleep(3)
+        time.sleep(random.uniform(2.5, 4.0))
 
-    log.info(f"LinkedIn: fetched {len(jobs)} jobs.")
+    log.info(f"LinkedIn: fetched {len(jobs)} jobs. (failures: {total_failures})")
     return jobs
 
 
