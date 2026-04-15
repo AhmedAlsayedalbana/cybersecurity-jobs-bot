@@ -57,7 +57,16 @@ _linkedin_session.headers.update({
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Cache-Control": "max-age=0",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Referer": "https://www.linkedin.com/jobs/search/",
 })
+# Seed session with a guest visit first (sets JSESSIONID-like cookies)
+# This simulates a real browser visiting LinkedIn before calling the API
+_linkedin_session.cookies.set("lang", "v=2&lang=en-us", domain=".linkedin.com")
+_linkedin_session.cookies.set("bcookie", '"v=2&' + "a1b2c3d4-e5f6-7890-abcd-ef1234567890" + '"', domain=".linkedin.com")
+_linkedin_session.cookies.set("bscookie", '"v=1&' + "20240101000000abcdef1234567890abcdef" + '"', domain=".linkedin.com")
 
 # ── SSL-tolerant session for gov sites ────────────────────────
 _gov_session = requests.Session()
@@ -142,6 +151,15 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
                 )
                 time.sleep(wait)
                 _domain_last_req[_get_domain(url)] = time.time()
+                continue
+            # 403 on LinkedIn — back off and retry (block is often temporary)
+            if resp.status_code == 403 and _is_linkedin_url(url):
+                jitter = random.uniform(2, 5)
+                wait = backoff * (attempt + 1) + jitter
+                log.warning(f"HTTP 403 for {url} — waiting {wait:.1f}s before retry")
+                time.sleep(wait)
+                if session.headers:
+                    session.headers.update({"User-Agent": _random_ua()})
                 continue
             # Don't retry on other 4xx errors
             if 400 <= resp.status_code < 500:
