@@ -520,7 +520,10 @@ def _fetch_iti_egypt() -> list:
 
 # ── Main aggregator ───────────────────────────────────────────
 def fetch_new_sources() -> list:
-    """Aggregate all v23 new sources (dead sources removed)."""
+    """Aggregate all v24 new sources — 4-minute wall-clock budget."""
+    BUDGET_SECONDS = 4 * 60
+    _start = time.time()
+
     all_jobs = []
     fetchers = [
         ("Bayt HTML",               _fetch_bayt),
@@ -535,6 +538,9 @@ def fetch_new_sources() -> list:
         ("ITI Egypt",               _fetch_iti_egypt),
     ]
     for name, fn in fetchers:
+        if time.time() - _start > BUDGET_SECONDS:
+            log.warning(f"new_sources: 4-min budget exhausted at '{name}' — skipping remaining.")
+            break
         try:
             results = fn()
             all_jobs.extend(results)
