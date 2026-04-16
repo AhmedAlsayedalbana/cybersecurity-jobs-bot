@@ -236,21 +236,28 @@ def fetch_linkedin_hiring() -> list[Job]:
     """
     Fetch cybersecurity #Hiring posts from LinkedIn.
 
-    v20 FIXES:
+    v24 FIXES:
+    - Added 5-minute wall-clock budget to prevent timeout
     - Raises consecutive_failures threshold: 2 → 5
     - Adds per-request retry with exponential backoff
     - Rotates User-Agent on each request
     - Falls back to public search page if API keeps failing
     - Total failure hard limit: 10 (not just consecutive)
     """
+    BUDGET_SECONDS = 5 * 60  # hard ceiling: 5 minutes
+    _start = time.time()
+
     jobs: list[Job] = []
     seen_ids: set[str] = set()
     consecutive_failures = 0
     total_failures       = 0
-    MAX_CONSECUTIVE      = 5   # was 2 — this was the bug
+    MAX_CONSECUTIVE      = 5
     MAX_TOTAL            = 10
 
     for search in ALL_HIRING_SEARCHES:
+        if time.time() - _start > BUDGET_SECONDS:
+            log.warning(f"LinkedIn #Hiring: 5-min budget exhausted after {len(jobs)} jobs — stopping early.")
+            break
         # Hard stop on too many total failures
         if total_failures >= MAX_TOTAL:
             log.warning("LinkedIn #Hiring: hit max total failures limit — stopping.")
