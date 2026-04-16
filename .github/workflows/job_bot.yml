@@ -2,7 +2,7 @@ name: Cybersecurity Jobs Bot V5
 
 on:
   schedule:
-    - cron: "0 */3 * * *"       # Every 3 hour
+    - cron: "0 */2 * * *"       # Every 2 hour
   workflow_dispatch:       # Manual trigger
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 55
 
     steps:
       - name: Checkout
