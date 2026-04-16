@@ -1,40 +1,40 @@
 """
-Source registry — v23
+Source registry — v25
 
-PRIORITY ORDER:
-  1. Egypt (🇪🇬) — All governorates, public + private sector + #Hiring posts
-  2. Egypt expanded — Security companies, internships, DrJobPro, Akhtaboot
-  3. Gulf (🌙) — KSA, UAE, Kuwait, Qatar, Bahrain, Oman + expanded companies
-  4. Gulf expanded — Internships, Akhtaboot, Naukrigulf
-  5. Cybersec boards (global)
-  6. LinkedIn (global jobs + #Hiring posts) [v23: trimmed 107→52 searches + 8-min budget]
-  7. Google Jobs (SerpAPI)
-  8. Tech boards
-  9. Remote job boards
-  10. API-based (optional — need keys)
-  11. Freelance (Arab + global)
-  12. New Sources v17 — Greenhouse cybersec, Telegram, GitHub, Bug Bounty
-  13. Expanded Sources v18 — Greenhouse/Lever 50+ companies, YC, HN Hiring, MENA+
+Log analysis (2026-04-16) — dead sources marked, clean registry:
 
-DEAD SOURCES (removed after log analysis 2026-04-16):
-  ❌ Bayt RSS         — HTTP 403
-  ❌ Wellfound        — HTTP 403
-  ❌ Dice RSS         — 0 results
-  ❌ DrJobPro         — HTTP 404
-  ❌ Laimoon          — HTTP 404
-  ❌ Reddit r/netsec  — HTTP 403
-  ❌ Jobzella         — HTTP 404
-  ❌ NTI Egypt        — HTTP 404
-  ❌ Wamda            — HTTP 404
-  ❌ EgyTech.net      — SSL error
-  ❌ HackerOne jobs   — HTTP 404
-  ❌ Intigriti jobs   — HTTP 404
+ACTIVE (confirmed producing jobs):
+  ✅ Gov Egypt          : 9 jobs
+  ✅ Egypt Alt          : 58 jobs
+  ✅ Egypt Companies    : 1 job   (DrJobPro+Akhtaboot dead, only internships working)
+  ✅ Gov Gulf           : 46 jobs
+  ✅ Gulf Expanded      : 7 jobs  (NaukriGulf timeout removed)
+  ✅ CyberSec Boards    : 4 jobs  (Bugcrowd only; CyberSecJobs/HackerOne/BuiltIn dead)
+  ✅ LinkedIn           : ~100 jobs (rate-limited but works)
+  ✅ LinkedIn #Hiring   : 12 jobs
+  ✅ Google Jobs        : 10 jobs
+  ✅ Tech Boards        : 163 jobs
+  ✅ Remotive           : active
+  ✅ Himalayas          : 280 jobs
+  ✅ Jobicy             : 100 jobs
+  ✅ RemoteOK           : 96 jobs
+  ✅ Arbeitnow          : 100 jobs
+  ✅ WWR               : 120 jobs
+  ✅ Working Nomads     : 19 jobs
+  ✅ New Sources v25    : Bayt HTML, GH Cybersec, Reddit RSS, HN, GitHub, Telegram, Nitter, InfoSec-Jobs, CISA
+  ✅ Expanded v25       : Greenhouse 40 companies + HN Hiring
 
-WORKING (confirmed from run logs):
-  ✅ Greenhouse Cybersec: 22 jobs
-  ✅ Nitter (CyberSecJobs): 6 jobs
-  ✅ GitHub Security Issues: active
-  ✅ Telegram public channels: active
+SKIPPED (key not set):
+  ⚠️ Adzuna, Jooble, Findwork, Reed — need API keys
+
+DEAD (confirmed from logs, removed from new_sources + expanded):
+  ❌ Gulf Boards (Monster): 0 jobs — kept in list (cheap call)
+  ❌ Freelance (Mostaql/Khamsat/Truelancer): 0 jobs — kept (cheap)
+  ❌ Lever API: all 404 — fully removed from expanded_sources
+  ❌ YC workatastartup, Sequoia, 500Global: 404/0 — removed
+  ❌ Jobspresso, Outsourcely (DNS dead), Nodesk, Reddit JSON, SO Jobs: removed
+  ❌ CyberSeek, Akhtaboot, NaukriGulf (timeout): removed
+  ❌ GulfTalent, Wuzzuf expanded, LinkedIn Egypt expanded: 0 — removed
 """
 
 from sources.gov_egypt        import fetch_gov_egypt
@@ -61,32 +61,32 @@ from sources.jooble           import fetch_jooble
 from sources.reed             import fetch_reed
 from sources.freelance        import fetch_freelance
 from sources.jsearch          import fetch_jsearch
-from sources.new_sources      import fetch_new_sources       # v17: Greenhouse cybersec, Telegram, GitHub
-from sources.expanded_sources import fetch_expanded_sources  # v18: 50+ career pages + MENA+
+from sources.new_sources      import fetch_new_sources       # v25: fixed, import time added
+from sources.expanded_sources import fetch_expanded_sources  # v25: dead sources removed
 
 ALL_FETCHERS = [
-    # ── 1. Egypt — top priority 🇪🇬 ──────────────────────────
-    ("Gov Egypt",            fetch_gov_egypt),      # LinkedIn Egypt companies + gov pages
-    ("Egypt Alt",            fetch_egypt_alt),       # Wuzzuf + LinkedIn search/governorates
-    ("Egypt Companies",      fetch_egypt_companies), # Security companies + internships
+    # ── 1. Egypt 🇪🇬 ─────────────────────────────────────────
+    ("Gov Egypt",            fetch_gov_egypt),
+    ("Egypt Alt",            fetch_egypt_alt),
+    ("Egypt Companies",      fetch_egypt_companies),
 
     # ── 2. Gulf 🌙 ────────────────────────────────────────────
-    ("Gov Gulf",             fetch_gov_gulf),        # STC, TDRA, Etisalat + LinkedIn Gulf
-    ("Gulf Expanded",        fetch_gulf_expanded),   # 40+ Gulf companies + Akhtaboot
-    ("Gulf Boards",          fetch_gulf_boards),     # Monster Gulf RSS
+    ("Gov Gulf",             fetch_gov_gulf),
+    ("Gulf Expanded",        fetch_gulf_expanded),
+    ("Gulf Boards",          fetch_gulf_boards),
 
-    # ── 3. Cybersec-specific boards ──────────────────────────
-    ("CyberSec Boards",      fetch_cybersec_boards), # Bugcrowd + HackerOne + BuiltIn
+    # ── 3. Cybersec boards ────────────────────────────────────
+    ("CyberSec Boards",      fetch_cybersec_boards),
 
-    # ── 4. LinkedIn (global) ──────────────────────────────────
+    # ── 4. LinkedIn ───────────────────────────────────────────
     ("LinkedIn",             fetch_linkedin),
-    ("LinkedIn #Hiring",     fetch_linkedin_hiring), # #Hiring posts
+    ("LinkedIn #Hiring",     fetch_linkedin_hiring),
 
-    # ── 5. Google Jobs (SerpAPI) ─────────────────────────────
+    # ── 5. Google Jobs ────────────────────────────────────────
     ("Google Jobs",          fetch_google_jobs),
 
     # ── 6. Tech boards ───────────────────────────────────────
-    ("Tech Boards",          fetch_tech_boards),     # Big Tech Greenhouse
+    ("Tech Boards",          fetch_tech_boards),
 
     # ── 7. Remote job boards ─────────────────────────────────
     ("Remotive",             fetch_remotive),
@@ -97,19 +97,19 @@ ALL_FETCHERS = [
     ("WWR",                  fetch_wwr),
     ("Working Nomads",       fetch_workingnomads),
 
-    # ── 8. API-based (optional — need keys) ──────────────────
+    # ── 8. API-based (need keys) ──────────────────────────────
     ("Adzuna",               fetch_adzuna),
     ("Jooble",               fetch_jooble),
     ("Findwork",             fetch_findwork),
     ("Reed",                 fetch_reed),
-    # ("JSearch",            fetch_jsearch),  # Uncomment if RAPIDAPI_KEY is set
+    # ("JSearch",            fetch_jsearch),  # Uncomment if RAPIDAPI_KEY set
 
-    # ── 9. Freelance 🔧 ──────────────────────────────────────
-    ("Freelance",            fetch_freelance),       # Mostaql + Khamsat + Truelancer
+    # ── 9. Freelance ──────────────────────────────────────────
+    ("Freelance",            fetch_freelance),
 
-    # ── 10. Creative v17 Sources ──────────────────────────────
-    ("New Sources v17",      fetch_new_sources),     # Greenhouse cybersec, Telegram, GitHub, Nitter
+    # ── 10. New Sources v25 ───────────────────────────────────
+    ("New Sources v25",      fetch_new_sources),
 
-    # ── 11. Expanded Sources v18 🚀 ──────────────────────────
-    ("Expanded Sources v18", fetch_expanded_sources), # 50+ Greenhouse/Lever, YC, HN Hiring, MENA+
+    # ── 11. Expanded Sources v25 ─────────────────────────────
+    ("Expanded Sources v25", fetch_expanded_sources),
 ]
