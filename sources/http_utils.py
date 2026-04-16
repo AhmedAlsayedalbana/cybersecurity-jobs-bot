@@ -1,16 +1,20 @@
 """
 Shared HTTP helpers with session reuse, timeouts, and error handling.
 
-V15 improvements:
-  - Rotating User-Agent pool to reduce LinkedIn 429 rate-limits
-  - Random jitter on all sleeps to avoid burst detection
-  - Per-domain rate tracking to space out requests
-  - Gov session: short timeout (8s), SSL-tolerant
-  - Rate-limit (429): exponential backoff with jitter, 4 attempts
-  - Separate LinkedIn session with browser-like headers
+V16 fix:
+  - LinkedIn Guest API now returns HTTP 400 unless a valid CSRF token
+    is included in every request.
+  - Added _bootstrap_linkedin() which visits the public LinkedIn jobs
+    page once at startup, captures the JSESSIONID cookie (used as the
+    CSRF token) and stores it for all subsequent calls.
+  - All LinkedIn requests now include Csrf-Token / X-Li-Lang headers.
+  - Rotating User-Agent pool retained.
+  - Per-domain rate tracking retained.
+  - Gov session: short timeout (8s), SSL-tolerant.
 """
 
 import logging
+import re
 import time
 import random
 import requests
@@ -44,29 +48,94 @@ _session.headers.update({
     "Accept-Language": "en-US,en;q=0.9",
 })
 
-# ── LinkedIn-specific session with full browser fingerprint ───
+# ── LinkedIn session — bootstrapped with real CSRF token ──────
 _linkedin_session = requests.Session()
 _linkedin_session.headers.update({
     "User-Agent": _DEFAULT_UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Cache-Control": "max-age=0",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "Referer": "https://www.linkedin.com/jobs/search/",
 })
-# Seed session with a guest visit first (sets JSESSIONID-like cookies)
-# This simulates a real browser visiting LinkedIn before calling the API
-_linkedin_session.cookies.set("lang", "v=2&lang=en-us", domain=".linkedin.com")
-_linkedin_session.cookies.set("bcookie", '"v=2&' + "a1b2c3d4-e5f6-7890-abcd-ef1234567890" + '"', domain=".linkedin.com")
-_linkedin_session.cookies.set("bscookie", '"v=1&' + "20240101000000abcdef1234567890abcdef" + '"', domain=".linkedin.com")
+
+_linkedin_csrf_token: str = "ajax:0123456789"
+_linkedin_bootstrapped: bool = False
+
+
+def _bootstrap_linkedin():
+    """
+    Visit LinkedIn's public jobs page to collect real cookies and CSRF token.
+    LinkedIn Guest API returns HTTP 400 without a valid CSRF token.
+    Must be called once before the first API request.
+    """
+    global _linkedin_csrf_token, _linkedin_bootstrapped
+
+    if _linkedin_bootstrapped:
+        return
+
+    bootstrap_urls = [
+        "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Egypt",
+        "https://www.linkedin.com/jobs/search/?keywords=cybersecurity",
+    ]
+
+    for url in bootstrap_urls:
+        try:
+            resp = _linkedin_session.get(
+                url,
+                headers={
+                    "User-Agent": _random_ua(),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Upgrade-Insecure-Requests": "1",
+                },
+                timeout=15,
+                allow_redirects=True,
+            )
+
+            # JSESSIONID cookie value IS the CSRF token on LinkedIn
+            csrf = _linkedin_session.cookies.get("JSESSIONID", "")
+            if csrf:
+                csrf = csrf.strip('"')
+            if csrf:
+                _linkedin_csrf_token = csrf
+                log.info(f"LinkedIn bootstrap OK (JSESSIONID): {csrf[:20]}…")
+                _linkedin_bootstrapped = True
+                break
+
+            # Fallback: extract from HTML
+            m = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', resp.text)
+            if not m:
+                m = re.search(r'name="csrf-token"\s+content="([^"]+)"', resp.text)
+            if m:
+                _linkedin_csrf_token = m.group(1)
+                log.info(f"LinkedIn bootstrap OK (HTML): {_linkedin_csrf_token[:20]}…")
+                _linkedin_bootstrapped = True
+                break
+
+            log.debug(f"LinkedIn bootstrap: no CSRF from {url} (status={resp.status_code})")
+            time.sleep(random.uniform(3, 6))
+
+        except Exception as e:
+            log.debug(f"LinkedIn bootstrap failed ({url}): {e}")
+            time.sleep(random.uniform(2, 4))
+
+    if not _linkedin_bootstrapped:
+        log.warning("LinkedIn bootstrap: no CSRF obtained — using fallback token")
+        _linkedin_bootstrapped = True  # mark done to avoid infinite loops
+
+    # Apply CSRF to session headers
+    _linkedin_session.headers.update({
+        "Csrf-Token": _linkedin_csrf_token,
+        "X-Li-Lang": "en_US",
+        "X-Requested-With": "XMLHttpRequest",
+        "x-restli-protocol-version": "2.0.0",
+        "Referer": "https://www.linkedin.com/jobs/search/",
+    })
+
+    time.sleep(random.uniform(2, 4))
+
 
 # ── SSL-tolerant session for gov sites ────────────────────────
 _gov_session = requests.Session()
@@ -81,7 +150,7 @@ GOV_TIMEOUT = 8
 
 # ── Per-domain last request time tracker (rate spacing) ───────
 _domain_last_req: dict = {}
-_LINKEDIN_MIN_INTERVAL = 1.5  # minimum seconds between LinkedIn requests
+_LINKEDIN_MIN_INTERVAL = 2.0
 
 
 def _get_domain(url: str) -> str:
@@ -93,14 +162,13 @@ def _get_domain(url: str) -> str:
 
 
 def _throttle_domain(url: str):
-    """Sleep if we've hit this domain too recently."""
     domain = _get_domain(url)
     if "linkedin.com" in domain:
         now = time.time()
         last = _domain_last_req.get(domain, 0)
         elapsed = now - last
         if elapsed < _LINKEDIN_MIN_INTERVAL:
-            wait = _LINKEDIN_MIN_INTERVAL - elapsed + random.uniform(0.3, 1.2)
+            wait = _LINKEDIN_MIN_INTERVAL - elapsed + random.uniform(0.5, 1.5)
             time.sleep(wait)
     _domain_last_req[domain] = time.time()
 
@@ -126,15 +194,15 @@ def _is_gov_url(url: str) -> bool:
 def _request_with_retry(method, url, *, session, params=None, headers=None,
                          json=None, timeout=REQUEST_TIMEOUT,
                          max_retries=4, backoff=5):
-    """Execute a request with exponential backoff + jitter on 429."""
-    # Throttle per domain before sending
+    """Execute a request with exponential backoff + jitter on 429/400."""
+    if _is_linkedin_url(url):
+        _bootstrap_linkedin()
+
     _throttle_domain(url)
 
     for attempt in range(max_retries + 1):
-        # Rotate UA on each retry for LinkedIn
         if _is_linkedin_url(url) and attempt > 0:
-            if session.headers:
-                session.headers.update({"User-Agent": _random_ua()})
+            session.headers.update({"User-Agent": _random_ua()})
 
         try:
             resp = session.request(
@@ -145,28 +213,31 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
             if resp.status_code == 429:
                 jitter = random.uniform(1, 3)
                 wait = backoff * (2 ** attempt) + jitter
-                log.warning(
-                    f"429 rate-limit on {url} — waiting {wait:.1f}s "
-                    f"(attempt {attempt+1}/{max_retries+1})"
-                )
+                log.warning(f"429 rate-limit on {url} — waiting {wait:.1f}s (attempt {attempt+1}/{max_retries+1})")
                 time.sleep(wait)
                 _domain_last_req[_get_domain(url)] = time.time()
                 continue
-            # 403 on LinkedIn — back off and retry (block is often temporary)
-            if resp.status_code == 403 and _is_linkedin_url(url):
-                jitter = random.uniform(2, 5)
-                wait = backoff * (attempt + 1) + jitter
-                log.warning(f"HTTP 403 for {url} — waiting {wait:.1f}s before retry")
-                time.sleep(wait)
-                if session.headers:
-                    session.headers.update({"User-Agent": _random_ua()})
-                continue
-            # Don't retry on other 4xx errors
+
+            # HTTP 400 on LinkedIn = bad/expired CSRF token → re-bootstrap
+            if resp.status_code == 400 and _is_linkedin_url(url):
+                if attempt < max_retries:
+                    global _linkedin_bootstrapped
+                    _linkedin_bootstrapped = False
+                    log.warning(f"HTTP 400 on LinkedIn (bad CSRF) — re-bootstrapping (attempt {attempt+1})")
+                    _bootstrap_linkedin()
+                    time.sleep(random.uniform(3, 7))
+                    continue
+                else:
+                    log.warning(f"HTTP 400 for {url} — giving up after {max_retries} retries")
+                    return None
+
             if 400 <= resp.status_code < 500:
                 log.warning(f"HTTP {resp.status_code} for {url} — skipping")
                 return None
+
             resp.raise_for_status()
             return resp
+
         except requests.RequestException as e:
             if attempt < max_retries:
                 wait = backoff * (attempt + 1) + random.uniform(0, 2)
