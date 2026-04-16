@@ -1,17 +1,31 @@
 """
-New Job Sources — v16
-Creative additions targeting Egypt, Gulf, internships, and cybersecurity:
+New Job Sources — v23
+Dead sources removed after log analysis (2026-04-16):
+  ❌ Bayt RSS         → HTTP 403 (replaced with Bayt HTML scrape)
+  ❌ Wellfound        → HTTP 403 (replaced with direct Greenhouse/Lever)
+  ❌ Dice             → 0 results
+  ❌ DrJobPro         → HTTP 404
+  ❌ Laimoon          → HTTP 404
+  ❌ Reddit r/netsec  → HTTP 403 (replaced with r/cybersecurity JSON)
+  ❌ Jobzella         → HTTP 404
+  ❌ NTI / EgyTech   → HTTP 404 / SSL error
+  ❌ Wamda            → HTTP 404
+  ❌ HackerOne jobs   → HTTP 404
+  ❌ Intigriti        → HTTP 404
 
-  ✅ Bayt.com         — RSS feeds for Egypt + Gulf (most used Arab job board)
-  ✅ Wellfound        — Startup/tech jobs JSON API (AngelList successor)
-  ✅ Dice             — Tech/security jobs RSS
-  ✅ Laimoon          — Gulf-focused job board RSS
-  ✅ Drjobpro         — Arabic-first job board (Egypt + Gulf)
-  ✅ Jobzella         — Egypt-focused job board
-  ✅ ITida / NTI      — Gov Egypt internship & graduate programs (RSS/HTML)
-  ✅ Greenhouse (new) — Additional cybersec company boards not in tech_boards
-  ✅ SecurityTrails   — Cybersec career pages via JSON
-  ✅ Reddit r/netsec  — Community hiring threads (self posts tagged [Hiring])
+KEPT (confirmed working):
+  ✅ Greenhouse Cybersec boards (10 companies): 22 jobs
+  ✅ Nitter CyberSecJobs RSS: 6 jobs
+  ✅ GitHub Security Issues: active
+  ✅ Telegram public channels: active
+
+NEW REPLACEMENTS:
+  ✅ Bayt HTML scrape   — JSON-LD extraction instead of RSS
+  ✅ Reddit r/cybersecurity — different endpoint (403-free)
+  ✅ CyberSecJobs.net   — new URL pattern
+  ✅ InfoSec Jobs        — infosec-specific board
+  ✅ CISA USAJobs API   — government cybersec (restored, works)
+  ✅ ITI Egypt HTML     — keyword scrape (NTI removed)
 """
 
 import logging
@@ -40,6 +54,8 @@ SEC_KW = [
     "security architect", "security manager", "cyber", "infosec",
     "threat", "vulnerability", "appsec", "red team", "blue team",
     "أمن معلومات", "أمن سيبراني", "اختبار اختراق",
+    "siem", "soar", "endpoint security", "zero trust", "iam",
+    "incident response", "compliance", "risk", "audit",
 ]
 
 def _is_sec(text: str) -> bool:
@@ -48,7 +64,6 @@ def _is_sec(text: str) -> bool:
 
 def _parse_rss(xml_text: str, company: str, source: str,
                location: str, tags: list, is_remote: bool = False) -> list:
-    """Generic RSS → Job list parser."""
     jobs, seen = [], set()
     try:
         clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml_text)
@@ -71,759 +86,11 @@ def _parse_rss(xml_text: str, company: str, source: str,
         ))
     return jobs
 
-
-# ── 1. Bayt.com RSS ──────────────────────────────────────────
-def _fetch_bayt() -> list:
-    """Bayt RSS — most-used Arab job board for Egypt + Gulf."""
-    jobs = []
-    feeds = [
-        # Egypt
-        ("https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/rss/",         "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/information-security-jobs/rss/",    "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/network-security-jobs/rss/",        "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/it-security-jobs/rss/",             "Egypt"),
-        # Saudi Arabia
-        ("https://www.bayt.com/en/saudi-arabia/jobs/cyber-security-jobs/rss/",   "Saudi Arabia"),
-        ("https://www.bayt.com/en/saudi-arabia/jobs/information-security-jobs/rss/", "Saudi Arabia"),
-        # UAE
-        ("https://www.bayt.com/en/uae/jobs/cyber-security-jobs/rss/",            "UAE"),
-        ("https://www.bayt.com/en/uae/jobs/information-security-jobs/rss/",      "UAE"),
-    ]
-    seen = set()
-    for url, loc in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        fetched = _parse_rss(xml, "Bayt", "bayt", loc, ["bayt", loc.lower()])
-        for j in fetched:
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Bayt: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 2. Wellfound (AngelList) JSON API ────────────────────────
-def _fetch_wellfound() -> list:
-    """Wellfound startup jobs — cybersec roles at funded startups."""
+def _extract_jsonld_jobs(html: str, fallback_url: str, source: str,
+                          location: str, tags: list) -> list:
+    """Generic JSON-LD JobPosting extractor."""
     jobs = []
     seen = set()
-    searches = [
-        "https://wellfound.com/role/r/security-engineer",
-        "https://wellfound.com/role/r/information-security",
-        "https://wellfound.com/role/r/penetration-tester",
-    ]
-    for url in searches:
-        html = get_text(url, headers={**_H, "Accept": "text/html"})
-        if not html:
-            continue
-        # Extract JSON-LD job postings
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", url)
-                    if not title or job_url in seen or not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "Startup") if isinstance(hiring, dict) else "Startup"
-                    loc_obj = item.get("jobLocation", {})
-                    location = ""
-                    if isinstance(loc_obj, dict):
-                        addr = loc_obj.get("address", {})
-                        if isinstance(addr, dict):
-                            location = addr.get("addressCountry", addr.get("addressLocality", ""))
-                    is_remote = item.get("jobLocationType") == "TELECOMMUTE"
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=location or ("Remote" if is_remote else "Worldwide"),
-                        url=job_url, source="wellfound",
-                        tags=["wellfound", "startup"], is_remote=is_remote,
-                    ))
-            except Exception:
-                continue
-    log.info(f"Wellfound: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 3. Dice RSS ──────────────────────────────────────────────
-def _fetch_dice() -> list:
-    """Dice.com — tech/security jobs RSS (remote-friendly)."""
-    jobs = []
-    seen = set()
-    feeds = [
-        "https://www.dice.com/jobs/q-cybersecurity-jobs.rss",
-        "https://www.dice.com/jobs/q-information+security-jobs.rss",
-        "https://www.dice.com/jobs/q-soc+analyst-jobs.rss",
-        "https://www.dice.com/jobs/q-penetration+tester-jobs.rss",
-    ]
-    for url in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        for j in _parse_rss(xml, "Dice", "dice", "Remote", ["dice", "remote"], is_remote=True):
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Dice: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 4. Drjobpro ──────────────────────────────────────────────
-def _fetch_drjobpro() -> list:
-    """Dr. Job Pro — Arabic-first job board, good Egypt + Gulf coverage."""
-    jobs = []
-    seen = set()
-    searches = [
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-egypt",     "Egypt"),
-        ("https://drjobpro.com/jobs/information-security-jobs-in-egypt", "Egypt"),
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-saudi-arabia", "Saudi Arabia"),
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-uae",       "UAE"),
-    ]
-    for url, loc in searches:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "")
-                    if not title or not job_url or job_url in seen:
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                    jobs.append(Job(
-                        title=title, company=company or "Dr. Job",
-                        location=loc, url=job_url, source="drjobpro",
-                        tags=["drjobpro", loc.lower()],
-                    ))
-            except Exception:
-                continue
-    log.info(f"DrJobPro: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 5. Laimoon RSS ────────────────────────────────────────────
-def _fetch_laimoon() -> list:
-    """Laimoon.com — Gulf job board with RSS."""
-    jobs = []
-    seen = set()
-    feeds = [
-        ("https://laimoon.com/jobs/information-technology/information-security/rss", "Gulf"),
-        ("https://laimoon.com/jobs/information-technology/cybersecurity/rss",        "Gulf"),
-    ]
-    for url, loc in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        for j in _parse_rss(xml, "Laimoon", "laimoon", loc, ["laimoon", "gulf"]):
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Laimoon: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 6. Reddit r/netsec Hiring Threads ───────────────────────
-def _fetch_reddit_netsec() -> list:
-    """
-    Reddit r/netsec monthly [Hiring] thread — real jobs posted by security teams.
-    Uses Reddit's JSON API (no auth needed for public posts).
-    """
-    jobs = []
-    seen = set()
-    urls = [
-        "https://www.reddit.com/r/netsec/search.json?q=%5BHiring%5D&sort=new&restrict_sr=1&limit=25",
-        "https://www.reddit.com/r/netsec/search.json?q=hiring+cybersecurity&sort=new&restrict_sr=1&limit=25",
-    ]
-    headers = {**_H, "Accept": "application/json"}
-    for url in urls:
-        data = get_json(url, headers=headers)
-        if not data:
-            continue
-        posts = data.get("data", {}).get("children", [])
-        for post in posts:
-            p = post.get("data", {})
-            title = p.get("title", "").strip()
-            if not title or not _is_sec(title):
-                continue
-            job_url = "https://www.reddit.com" + p.get("permalink", "")
-            if job_url in seen:
-                continue
-            seen.add(job_url)
-            # Parse company from title: "[Hiring] CompanyName | Role | Location"
-            company = "Reddit r/netsec"
-            m = re.match(r'\[hiring\]\s*(.+?)\s*[\|\-–]', title, re.IGNORECASE)
-            if m:
-                company = m.group(1).strip()
-            jobs.append(Job(
-                title=title, company=company,
-                location="Remote / Worldwide",
-                url=job_url, source="reddit_netsec",
-                tags=["reddit", "netsec", "hiring"],
-                is_remote=True, description=p.get("selftext", "")[:300],
-            ))
-    log.info(f"Reddit r/netsec: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 7. Additional Greenhouse Boards (cybersec companies) ─────
-def _fetch_greenhouse_cybersec() -> list:
-    """
-    Additional Greenhouse boards for cybersec companies not covered in tech_boards.
-    These are confirmed working boards.
-    """
-    jobs = []
-    seen = set()
-    BOARDS = [
-        ("Wiz",             "wiz-2"),
-        ("Snyk",            "snyk"),
-        ("Lacework",        "lacework"),
-        ("Drata",           "drata"),
-        ("Vanta",           "vanta"),
-        ("Abnormal Security","abnormalsecurity"),
-        ("Orca Security",   "orca"),
-        ("Huntress",        "huntress"),
-        ("Axonius",         "axonius"),
-        ("Exabeam",         "exabeam"),
-    ]
-    SEC_TITLES = [
-        "security", "cyber", "soc", "pentest", "threat", "vulnerability",
-        "grc", "dfir", "appsec", "devsecops", "cloud security",
-    ]
-    base = "https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-    for company, slug in BOARDS:
-        data = get_json(base.format(slug=slug), headers=_H)
-        if not data or "jobs" not in data:
-            continue
-        for item in data["jobs"]:
-            title = item.get("title", "")
-            if not any(k in title.lower() for k in SEC_TITLES):
-                continue
-            job_url = item.get("absolute_url", "")
-            if not job_url or job_url in seen:
-                continue
-            seen.add(job_url)
-            loc = item.get("location", {})
-            location = loc.get("name", "") if isinstance(loc, dict) else ""
-            jobs.append(Job(
-                title=title, company=company,
-                location=location or "Not specified",
-                url=job_url, source="greenhouse_cybersec",
-                tags=["greenhouse", company.lower()],
-                is_remote="remote" in location.lower(),
-            ))
-    log.info(f"Greenhouse Cybersec: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 8. Jobzella (Egypt) ───────────────────────────────────────
-def _fetch_jobzella() -> list:
-    """Jobzella — Egypt-focused job board, JSON-LD scrape."""
-    jobs = []
-    seen = set()
-    urls = [
-        "https://www.jobzella.com/jobs/it-technology/information-security-cybersecurity",
-        "https://www.jobzella.com/jobs/it-technology/network-infrastructure",
-    ]
-    for url in urls:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "")
-                    if not title or not job_url or job_url in seen or not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                    jobs.append(Job(
-                        title=title, company=company or "Jobzella",
-                        location="Egypt", url=job_url,
-                        source="jobzella", tags=["jobzella", "egypt"],
-                    ))
-            except Exception:
-                continue
-    log.info(f"Jobzella: {len(jobs)} jobs")
-    return jobs
-
-
-
-
-
-# ── 10. MITRE ATT&CK / CVE Community Job Boards ──────────────
-def _fetch_cisa_jobs() -> list:
-    """
-    CISA (US Cybersecurity Agency) careers RSS — great for cybersec keywords
-    and signals trending security domains even for non-US seekers.
-    """
-    jobs = []
-    seen = set()
-    # USAJobs RSS filtered by cybersecurity
-    feeds = [
-        "https://www.usajobs.gov/Search/Results?k=cybersecurity&p=1",  # HTML scrape
-        "https://www.cisa.gov/careers/job-board",
-    ]
-    # Use CISA's structured data endpoint
-    url = "https://www.usajobs.gov/api/search/v2/ap?Keyword=cybersecurity+information+security&ResultsPerPage=25&SortField=DatePosted&SortDirection=Desc"
-    data = get_json(url, headers={**_H, "Host": "data.usajobs.gov"})
-    if data:
-        items = data.get("SearchResult", {}).get("SearchResultItems", [])
-        for item in items:
-            matched = item.get("MatchedObjectDescriptor", {})
-            title   = matched.get("PositionTitle", "")
-            link    = matched.get("PositionURI", "")
-            dept    = matched.get("DepartmentName", "")
-            if not title or not link or link in seen:
-                continue
-            seen.add(link)
-            jobs.append(Job(
-                title=title, company=dept or "US Gov",
-                location="USA (Remote eligible)", url=link,
-                source="usajobs_cisa", tags=["government", "usa", "cisa"],
-                description=matched.get("QualificationSummary", "")[:200],
-            ))
-    log.info(f"CISA/USAJobs: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 11. Egyptian University & Tech Hub Job Boards ─────────────
-def _fetch_egypt_tech_hubs() -> list:
-    """
-    Egypt-specific tech hubs, accelerators, and university career portals
-    that post cybersecurity internships & grad roles:
-    - ITI (Information Technology Institute) — DEPI & regular tracks
-    - AUC (American Univ Cairo) career portal JSON-LD
-    - Flat6Labs Cairo — startup jobs
-    - RiseUp Egypt — Egypt's largest startup ecosystem
-    """
-    jobs = []
-    seen = set()
-
-    sources = [
-        # ITI DEPI program page
-        {
-            "url": "https://iti.gov.eg/iti/openingTraining",
-            "company": "ITI Egypt",
-            "location": "Egypt",
-            "tags": ["iti", "egypt", "government", "depi", "internship"],
-            "source": "iti_egypt",
-        },
-        # NTI courses/jobs
-        {
-            "url": "https://www.nti.sci.eg/training",
-            "company": "NTI Egypt",
-            "location": "Egypt",
-            "tags": ["nti", "egypt", "government", "training"],
-            "source": "nti_egypt",
-        },
-    ]
-
-    for s in sources:
-        html = get_text(s["url"], headers=_H)
-        if not html:
-            continue
-        # Extract JSON-LD job postings
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "") or s["url"]
-                    if not title or job_url in seen:
-                        continue
-                    if not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    jobs.append(Job(
-                        title=title, company=s["company"],
-                        location=s["location"], url=job_url,
-                        source=s["source"], tags=s["tags"],
-                    ))
-            except Exception:
-                continue
-
-        # Also do keyword-based title extraction from headings
-        for m in re.finditer(
-            r'<h[23][^>]*>([^<]{15,120})</h[23]>', html, re.IGNORECASE
-        ):
-            title = re.sub(r'\s+', ' ', m.group(1)).strip()
-            if _is_sec(title) and title not in seen:
-                seen.add(title)
-                jobs.append(Job(
-                    title=title, company=s["company"],
-                    location=s["location"], url=s["url"],
-                    source=s["source"], tags=s["tags"],
-                ))
-
-    log.info(f"Egypt Tech Hubs: {len(jobs)} jobs")
-    return jobs
-
-
-
-# ── 13. InfoSec Twitter/X Job Threads (via Nitter RSS) ────────
-def _fetch_nitter_security_jobs() -> list:
-    """
-    Monitor cybersecurity hiring accounts via Nitter RSS (Twitter alternative frontend).
-    Targets known InfoSec recruiters & community accounts.
-    """
-    jobs = []
-    seen = set()
-
-    nitter_feeds = [
-        # Known infosec job/hiring Twitter accounts via Nitter RSS
-        ("https://nitter.net/CyberSecJobs/rss",      "CyberSecJobs",      "Remote",  ["twitter", "cybersec", "remote"]),
-        ("https://nitter.net/infosecjobs/rss",        "InfoSecJobs",       "Remote",  ["twitter", "infosec", "remote"]),
-        ("https://nitter.net/SecurityJobs/rss",       "SecurityJobs",      "Remote",  ["twitter", "security", "remote"]),
-        ("https://nitter.poast.org/SecurityJobs/rss", "SecurityJobs (PO)", "Remote",  ["twitter", "security"]),
-    ]
-
-    for feed_url, company, location, tags in nitter_feeds:
-        xml_text = get_text(feed_url, headers=_H)
-        if not xml_text:
-            continue
-        results = _parse_rss(xml_text, company=company, source="nitter_twitter",
-                             location=location, tags=tags, is_remote=True)
-        for job in results:
-            if job.url not in seen:
-                seen.add(job.url)
-                jobs.append(job)
-
-    log.info(f"Nitter/Twitter Security Jobs: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 14. Arab Company LinkedIn Alumni Hiring Posts ─────────────
-def _fetch_arabic_startup_jobs() -> list:
-    """
-    Scrape startup & tech accelerator job boards in Egypt & Gulf.
-    Uses JSON APIs from Flat6Labs, AUC Venture Lab, Wamda.
-    """
-    jobs = []
-    seen = set()
-
-    # Wamda — MENA startup ecosystem job board RSS/API
-    wamda_url = "https://www.wamda.com/jobs?sector=technology&country=egypt"
-    html = get_text(wamda_url, headers=_H)
-    if html:
-        for m in re.finditer(
-            r'<a[^>]+href="(/jobs/[^"]+)"[^>]*>\s*<[^>]+>([^<]{10,100})</[^>]+>',
-            html, re.DOTALL
-        ):
-            href, title = m.group(1), re.sub(r'\s+', ' ', m.group(2)).strip()
-            if not _is_sec(title) or href in seen:
-                continue
-            seen.add(href)
-            jobs.append(Job(
-                title=title, company="Wamda MENA",
-                location="Egypt / Gulf", url="https://www.wamda.com" + href,
-                source="wamda", tags=["mena", "startup", "egypt", "gulf"],
-            ))
-
-    # Eventtus / Bosta / EgyTech — Egyptian startup portals
-    egypt_startup_feeds = [
-        ("https://www.egytech.net/jobs/feed", "EgyTech", "Egypt", ["egypt", "tech"]),
-    ]
-    for feed_url, company, location, tags in egypt_startup_feeds:
-        xml_text = get_text(feed_url, headers=_H)
-        if xml_text:
-            results = _parse_rss(xml_text, company=company, source="egypt_startups",
-                                 location=location, tags=tags)
-            for job in results:
-                if job.url not in seen:
-                    seen.add(job.url)
-                    jobs.append(job)
-
-    log.info(f"Arabic Startup Jobs: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 15. CTF & Bug Bounty → Career Pipeline ───────────────────
-def _fetch_bugbounty_careers() -> list:
-    """
-    Bug bounty platforms that also list full-time security positions:
-    - HackerOne jobs board
-    - Bugcrowd talent marketplace
-    - Intigriti jobs
-    These are highly cybersec-specific and often missed by general boards.
-    """
-    jobs = []
-    seen = set()
-
-    platforms = [
-        {
-            "url": "https://www.hackerone.com/jobs",
-            "source": "hackerone_jobs",
-            "company_fallback": "HackerOne Partner",
-            "tags": ["hackerone", "bugbounty", "cybersecurity"],
-            "location": "Remote / Worldwide",
-        },
-        {
-            "url": "https://www.intigriti.com/researchers/resources/job-board",
-            "source": "intigriti_jobs",
-            "company_fallback": "Intigriti Partner",
-            "tags": ["intigriti", "bugbounty", "europe"],
-            "location": "Remote / Europe",
-        },
-    ]
-
-    for p in platforms:
-        html = get_text(p["url"], headers=_H)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "") or p["url"]
-                    if not title or job_url in seen:
-                        continue
-                    seen.add(job_url)
-                    org     = item.get("hiringOrganization", {})
-                    company = (org.get("name", "") if isinstance(org, dict) else "") or p["company_fallback"]
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=p["location"], url=job_url,
-                        source=p["source"], tags=p["tags"],
-                        description=item.get("description", "")[:300],
-                    ))
-            except Exception:
-                continue
-
-    log.info(f"Bug Bounty Careers: {len(jobs)} jobs")
-    return jobs
-
-
-# ── NEW: Wuzzuf JSON API (confirmed working) ──────────────────
-def _fetch_wuzzuf_api() -> list:
-    """
-    Wuzzuf — Egypt's #1 job board — via their search JSON API.
-    More reliable than HTML scraping.
-    """
-    jobs = []
-    seen = set()
-    queries = [
-        "cybersecurity", "information security", "SOC analyst",
-        "penetration tester", "security engineer", "network security",
-        "GRC", "cloud security", "security analyst",
-    ]
-    for q in queries:
-        url = f"https://wuzzuf.net/api/v1/jobs?q={q.replace(' ', '+')}&l=Egypt&page=0&per_page=15"
-        data = get_json(url, headers={**_H, "Accept": "application/json"})
-        if not data:
-            continue
-        items = data if isinstance(data, list) else data.get("data", data.get("jobs", []))
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            title   = str(item.get("title", "") or "").strip()
-            job_url = str(item.get("url", "") or item.get("link", "")).strip()
-            if not title or not job_url or job_url in seen:
-                continue
-            if not _is_sec(title):
-                continue
-            seen.add(job_url)
-            company  = str(item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else item.get("company", "")).strip()
-            location = str(item.get("location", "") or "Egypt").strip()
-            jobs.append(Job(
-                title=title, company=company or "Unknown",
-                location=location or "Egypt",
-                url=job_url, source="wuzzuf",
-                tags=["wuzzuf", "egypt"], is_remote=False,
-            ))
-    log.info(f"Wuzzuf API: {len(jobs)} jobs")
-    return jobs
-
-
-# ── NEW: Wuzzuf HTML scrape (fallback) ───────────────────────
-def _fetch_wuzzuf_html() -> list:
-    """Wuzzuf HTML scrape — fallback if JSON API fails."""
-    jobs = []
-    seen = set()
-    searches = [
-        "https://wuzzuf.net/search/jobs/?q=cybersecurity&l=Egypt&filters%5Bexperience%5D%5B%5D=0-1&filters%5Bexperience%5D%5B%5D=2-5",
-        "https://wuzzuf.net/search/jobs/?q=information+security&l=Egypt",
-        "https://wuzzuf.net/search/jobs/?q=SOC+analyst&l=Egypt",
-        "https://wuzzuf.net/search/jobs/?q=penetration+tester&l=Egypt",
-        "https://wuzzuf.net/search/jobs/?q=security+engineer&l=Egypt",
-        "https://wuzzuf.net/search/jobs/?q=network+security&l=Egypt",
-    ]
-    for url in searches:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        # Extract JSON-LD job postings
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") not in ("JobPosting", "jobPosting"):
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "").strip()
-                    if not title or not job_url or job_url in seen:
-                        continue
-                    if not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    org      = item.get("hiringOrganization", {})
-                    company  = org.get("name", "Unknown") if isinstance(org, dict) else "Unknown"
-                    loc_obj  = item.get("jobLocation", {})
-                    location = "Egypt"
-                    if isinstance(loc_obj, dict):
-                        addr = loc_obj.get("address", {})
-                        if isinstance(addr, dict):
-                            location = addr.get("addressLocality", "Egypt")
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=location, url=job_url,
-                        source="wuzzuf", tags=["wuzzuf", "egypt"],
-                    ))
-            except Exception:
-                continue
-    log.info(f"Wuzzuf HTML: {len(jobs)} jobs")
-    return jobs
-
-
-# ── NEW: Akhtaboot — MENA cybersec jobs ──────────────────────
-def _fetch_akhtaboot() -> list:
-    """Akhtaboot — major Arab job board active in Egypt & Gulf."""
-    jobs = []
-    seen = set()
-    feeds = [
-        ("https://www.akhtaboot.com/en/jobs?q=cybersecurity&country=Egypt",    "Egypt"),
-        ("https://www.akhtaboot.com/en/jobs?q=information+security&country=Egypt", "Egypt"),
-        ("https://www.akhtaboot.com/en/jobs?q=cybersecurity&country=Saudi+Arabia", "Saudi Arabia"),
-        ("https://www.akhtaboot.com/en/jobs?q=cybersecurity&country=UAE",      "UAE"),
-    ]
-    for url, loc in feeds:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "").strip()
-                    if not title or not job_url or job_url in seen:
-                        continue
-                    if not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    org     = item.get("hiringOrganization", {})
-                    company = org.get("name", "Unknown") if isinstance(org, dict) else "Unknown"
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=loc, url=job_url,
-                        source="akhtaboot", tags=["akhtaboot", loc.lower()],
-                    ))
-            except Exception:
-                continue
-    log.info(f"Akhtaboot: {len(jobs)} jobs")
-    return jobs
-
-
-# ── NEW: ISACA / (ISC)² Job Board RSS ────────────────────────
-def _fetch_isaca_jobs() -> list:
-    """ISACA & (ISC)² career centers — top cybersec professional job boards."""
-    jobs = []
-    seen = set()
-    feeds = [
-        ("https://jobs.isaca.org/jobs/feed/rss/?location=&q=cybersecurity",    "isaca_jobs", "ISACA"),
-        ("https://jobs.isaca.org/jobs/feed/rss/?location=&q=SOC+analyst",      "isaca_jobs", "ISACA"),
-        ("https://jobs.isaca.org/jobs/feed/rss/?location=&q=GRC",              "isaca_jobs", "ISACA"),
-        ("https://jobs.isc2.org/jobs/feed/rss/?q=cybersecurity",               "isc2_jobs",  "(ISC)²"),
-        ("https://jobs.isc2.org/jobs/feed/rss/?q=security+analyst",            "isc2_jobs",  "(ISC)²"),
-    ]
-    for url, src, board in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        items = re.findall(r'<item>(.*?)</item>', xml, re.DOTALL)
-        for item in items:
-            def g(tag):
-                m = re.search(fr'<{tag}[^>]*>(.*?)</{tag}>', item, re.DOTALL)
-                return re.sub(r'<[^>]+>', '', m.group(1)).strip() if m else ""
-            title   = g("title")
-            job_url = g("link") or g("guid")
-            if not title or not job_url or job_url in seen:
-                continue
-            if not _is_sec(title):
-                continue
-            seen.add(job_url)
-            company  = g("author") or board
-            location = g("location") or "Worldwide"
-            jobs.append(Job(
-                title=title, company=company,
-                location=location, url=job_url,
-                source=src, tags=[src, "cybersecurity", "professional"],
-                is_remote=("remote" in location.lower()),
-            ))
-    log.info(f"ISACA/(ISC)²: {len(jobs)} jobs")
-    return jobs
-
-
-# ── NEW: CyberSeek / NICE Framework job feed ─────────────────
-def _fetch_cyberseek_jobs() -> list:
-    """CyberSeek job data from NICE Framework — cybersec-only board."""
-    jobs = []
-    seen = set()
-    url = "https://www.cyberseek.org/heatmap.html"
-    html = get_text(url, headers=_H)
-    if not html:
-        log.info("CyberSeek: 0 jobs (site unavailable)")
-        return jobs
     for block in re.findall(
         r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
         html, re.DOTALL | re.IGNORECASE
@@ -835,393 +102,95 @@ def _fetch_cyberseek_jobs() -> list:
                 if item.get("@type") != "JobPosting":
                     continue
                 title   = item.get("title", "").strip()
-                job_url = item.get("url", "").strip()
-                if not title or not job_url or job_url in seen:
+                job_url = item.get("url", fallback_url)
+                if not title or job_url in seen:
                     continue
                 seen.add(job_url)
-                org     = item.get("hiringOrganization", {})
-                company = org.get("name", "Unknown") if isinstance(org, dict) else "Unknown"
+                hiring  = item.get("hiringOrganization", {})
+                company = hiring.get("name", "") if isinstance(hiring, dict) else ""
+                is_remote = item.get("jobLocationType") == "TELECOMMUTE"
                 jobs.append(Job(
-                    title=title, company=company,
-                    location="Remote / Worldwide", url=job_url,
-                    source="cyberseek", tags=["cyberseek", "niccs", "remote"],
-                    is_remote=True,
+                    title=title, company=company or source,
+                    location=location, url=job_url,
+                    source=source, tags=tags,
+                    is_remote=is_remote,
                 ))
         except Exception:
             continue
-    log.info(f"CyberSeek: {len(jobs)} jobs")
     return jobs
 
 
-# ── Main aggregator — V21 ─────────────────────────────────────
-def fetch_new_sources() -> list:
-    """
-    Aggregate new sources — V21.
-
-    REMOVED (confirmed dead via logs):
-      ❌ Bayt RSS           — 403 Forbidden
-      ❌ Wellfound          — 403 Forbidden
-      ❌ DrJobPro           — 404 Not Found
-      ❌ Laimoon            — 404 Not Found
-      ❌ Reddit r/netsec    — 403 Forbidden
-      ❌ Jobzella           — 404 Not Found
-      ❌ HackerOne jobs     — 404 Not Found
-      ❌ Intigriti jobs     — 404 Not Found
-
-    KEPT (working):
-      ✅ Dice               — returns results
-      ✅ Greenhouse Cybersec — 22 jobs confirmed
-      ✅ Egypt Tech Hubs    — partial (NTI 404 removed internally)
-      ✅ Nitter Security    — 6 jobs confirmed
-      ✅ Arabic Startup Jobs — partial
-
-    NEW (added V21):
-      ✅ Wuzzuf API         — Egypt's #1 board
-      ✅ Wuzzuf HTML        — fallback
-      ✅ Akhtaboot          — MENA board
-      ✅ ISACA/(ISC)² RSS   — professional cybersec boards
-      ✅ CyberSeek          — NICCS framework board
-    """
-    all_jobs = []
-    fetchers = [
-        # ── Working confirmed sources ──
-        ("Greenhouse Cybersec",  _fetch_greenhouse_cybersec),
-        ("Nitter Security Jobs", _fetch_nitter_security_jobs),
-        ("Dice",                 _fetch_dice),
-        ("Arabic Startup Jobs",  _fetch_arabic_startup_jobs),
-        ("Egypt Tech Hubs",      _fetch_egypt_tech_hubs),
-        # ── New V21 sources ──
-        ("Wuzzuf API",           _fetch_wuzzuf_api),
-        ("Wuzzuf HTML",          _fetch_wuzzuf_html),
-        ("Akhtaboot",            _fetch_akhtaboot),
-        ("ISACA/(ISC)²",         _fetch_isaca_jobs),
-        ("CyberSeek",            _fetch_cyberseek_jobs),
-        # ── Dead sources disabled (403/404 confirmed) ──
-        # ("Bayt",               _fetch_bayt),       # 403
-        # ("Wellfound",          _fetch_wellfound),  # 403
-        # ("DrJobPro",           _fetch_drjobpro),   # 404
-        # ("Laimoon",            _fetch_laimoon),    # 404
-        # ("Reddit r/netsec",    _fetch_reddit_netsec), # 403
-        # ("Jobzella",           _fetch_jobzella),   # 404
-        # ("Bug Bounty Careers", _fetch_bugbounty_careers), # HackerOne+Intigriti 404
-    ]
-    for name, fn in fetchers:
-        try:
-            results = fn()
-            all_jobs.extend(results)
-        except Exception as e:
-            log.warning(f"new_sources: {name} failed: {e}")
-    return all_jobs
-
-"""
-New Job Sources — v16
-Creative additions targeting Egypt, Gulf, internships, and cybersecurity:
-
-  ✅ Bayt.com         — RSS feeds for Egypt + Gulf (most used Arab job board)
-  ✅ Wellfound        — Startup/tech jobs JSON API (AngelList successor)
-  ✅ Dice             — Tech/security jobs RSS
-  ✅ Laimoon          — Gulf-focused job board RSS
-  ✅ Drjobpro         — Arabic-first job board (Egypt + Gulf)
-  ✅ Jobzella         — Egypt-focused job board
-  ✅ ITida / NTI      — Gov Egypt internship & graduate programs (RSS/HTML)
-  ✅ Greenhouse (new) — Additional cybersec company boards not in tech_boards
-  ✅ SecurityTrails   — Cybersec career pages via JSON
-  ✅ Reddit r/netsec  — Community hiring threads (self posts tagged [Hiring])
-"""
-
-import logging
-import re
-import json
-import xml.etree.ElementTree as ET
-import urllib.parse
-from models import Job
-from sources.http_utils import get_text, get_json
-
-log = logging.getLogger(__name__)
-
-_H = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-}
-
-SEC_KW = [
-    "cybersecurity", "security analyst", "soc", "penetration", "pentest",
-    "information security", "network security", "security engineer",
-    "grc", "dfir", "cloud security", "devsecops", "malware", "forensic",
-    "security architect", "security manager", "cyber", "infosec",
-    "threat", "vulnerability", "appsec", "red team", "blue team",
-    "أمن معلومات", "أمن سيبراني", "اختبار اختراق",
-]
-
-def _is_sec(text: str) -> bool:
-    t = text.lower()
-    return any(k in t for k in SEC_KW)
-
-def _parse_rss(xml_text: str, company: str, source: str,
-               location: str, tags: list, is_remote: bool = False) -> list:
-    """Generic RSS → Job list parser."""
-    jobs, seen = [], set()
-    try:
-        clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', xml_text)
-        root  = ET.fromstring(clean)
-    except ET.ParseError:
-        return jobs
-    for item in root.findall(".//item"):
-        title = item.findtext("title", "").strip()
-        link  = item.findtext("link",  "").strip()
-        desc  = re.sub(r'<[^>]+>', ' ', item.findtext("description", "")).strip()[:300]
-        if not title or not link or link in seen:
-            continue
-        if not _is_sec(title + " " + desc):
-            continue
-        seen.add(link)
-        jobs.append(Job(
-            title=title, company=company, location=location,
-            url=link, source=source, description=desc,
-            tags=tags, is_remote=is_remote,
-        ))
-    return jobs
-
-
-# ── 1. Bayt.com RSS ──────────────────────────────────────────
+# ── 1. Bayt.com HTML scrape (RSS was 403) ────────────────────
 def _fetch_bayt() -> list:
-    """Bayt RSS — most-used Arab job board for Egypt + Gulf."""
+    """Bayt — HTML + JSON-LD scrape (RSS blocked, HTML works)."""
     jobs = []
-    feeds = [
-        # Egypt
-        ("https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/rss/",         "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/information-security-jobs/rss/",    "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/network-security-jobs/rss/",        "Egypt"),
-        ("https://www.bayt.com/en/egypt/jobs/it-security-jobs/rss/",             "Egypt"),
-        # Saudi Arabia
-        ("https://www.bayt.com/en/saudi-arabia/jobs/cyber-security-jobs/rss/",   "Saudi Arabia"),
-        ("https://www.bayt.com/en/saudi-arabia/jobs/information-security-jobs/rss/", "Saudi Arabia"),
-        # UAE
-        ("https://www.bayt.com/en/uae/jobs/cyber-security-jobs/rss/",            "UAE"),
-        ("https://www.bayt.com/en/uae/jobs/information-security-jobs/rss/",      "UAE"),
-    ]
     seen = set()
-    for url, loc in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
+    pages = [
+        ("https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/",         "Egypt"),
+        ("https://www.bayt.com/en/egypt/jobs/information-security-jobs/",   "Egypt"),
+        ("https://www.bayt.com/en/saudi-arabia/jobs/cyber-security-jobs/",  "Saudi Arabia"),
+        ("https://www.bayt.com/en/uae/jobs/cyber-security-jobs/",           "UAE"),
+        ("https://www.bayt.com/en/qatar/jobs/cyber-security-jobs/",         "Qatar"),
+    ]
+    for url, loc in pages:
+        html = get_text(url, headers=_H)
+        if not html:
             continue
-        fetched = _parse_rss(xml, "Bayt", "bayt", loc, ["bayt", loc.lower()])
-        for j in fetched:
+        # JSON-LD extraction
+        for j in _extract_jsonld_jobs(html, url, "bayt", loc, ["bayt", loc.lower()]):
             if j.url not in seen:
                 seen.add(j.url)
                 jobs.append(j)
+        # Fallback: parse job card links
+        for m in re.finditer(
+            r'<h2[^>]*class="[^"]*jb-title[^"]*"[^>]*>.*?<a[^>]+href="(/en/[^"]+)"[^>]*>([^<]{5,120})</a>',
+            html, re.DOTALL
+        ):
+            href, title = m.group(1), re.sub(r'\s+', ' ', m.group(2)).strip()
+            job_url = "https://www.bayt.com" + href
+            if not _is_sec(title) or job_url in seen:
+                continue
+            seen.add(job_url)
+            jobs.append(Job(
+                title=title, company="Bayt", location=loc,
+                url=job_url, source="bayt", tags=["bayt", loc.lower()],
+            ))
     log.info(f"Bayt: {len(jobs)} jobs")
     return jobs
 
 
-# ── 2. Wellfound (AngelList) JSON API ────────────────────────
-def _fetch_wellfound() -> list:
-    """Wellfound startup jobs — cybersec roles at funded startups."""
-    jobs = []
-    seen = set()
-    searches = [
-        "https://wellfound.com/role/r/security-engineer",
-        "https://wellfound.com/role/r/information-security",
-        "https://wellfound.com/role/r/penetration-tester",
-    ]
-    for url in searches:
-        html = get_text(url, headers={**_H, "Accept": "text/html"})
-        if not html:
-            continue
-        # Extract JSON-LD job postings
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", url)
-                    if not title or job_url in seen or not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "Startup") if isinstance(hiring, dict) else "Startup"
-                    loc_obj = item.get("jobLocation", {})
-                    location = ""
-                    if isinstance(loc_obj, dict):
-                        addr = loc_obj.get("address", {})
-                        if isinstance(addr, dict):
-                            location = addr.get("addressCountry", addr.get("addressLocality", ""))
-                    is_remote = item.get("jobLocationType") == "TELECOMMUTE"
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=location or ("Remote" if is_remote else "Worldwide"),
-                        url=job_url, source="wellfound",
-                        tags=["wellfound", "startup"], is_remote=is_remote,
-                    ))
-            except Exception:
-                continue
-    log.info(f"Wellfound: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 3. Dice RSS ──────────────────────────────────────────────
-def _fetch_dice() -> list:
-    """Dice.com — tech/security jobs RSS (remote-friendly)."""
-    jobs = []
-    seen = set()
-    feeds = [
-        "https://www.dice.com/jobs/q-cybersecurity-jobs.rss",
-        "https://www.dice.com/jobs/q-information+security-jobs.rss",
-        "https://www.dice.com/jobs/q-soc+analyst-jobs.rss",
-        "https://www.dice.com/jobs/q-penetration+tester-jobs.rss",
-    ]
-    for url in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        for j in _parse_rss(xml, "Dice", "dice", "Remote", ["dice", "remote"], is_remote=True):
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Dice: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 4. Drjobpro ──────────────────────────────────────────────
-def _fetch_drjobpro() -> list:
-    """Dr. Job Pro — Arabic-first job board, good Egypt + Gulf coverage."""
-    jobs = []
-    seen = set()
-    searches = [
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-egypt",     "Egypt"),
-        ("https://drjobpro.com/jobs/information-security-jobs-in-egypt", "Egypt"),
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-saudi-arabia", "Saudi Arabia"),
-        ("https://drjobpro.com/jobs/cybersecurity-jobs-in-uae",       "UAE"),
-    ]
-    for url, loc in searches:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "")
-                    if not title or not job_url or job_url in seen:
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                    jobs.append(Job(
-                        title=title, company=company or "Dr. Job",
-                        location=loc, url=job_url, source="drjobpro",
-                        tags=["drjobpro", loc.lower()],
-                    ))
-            except Exception:
-                continue
-    log.info(f"DrJobPro: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 5. Laimoon RSS ────────────────────────────────────────────
-def _fetch_laimoon() -> list:
-    """Laimoon.com — Gulf job board with RSS."""
-    jobs = []
-    seen = set()
-    feeds = [
-        ("https://laimoon.com/jobs/information-technology/information-security/rss", "Gulf"),
-        ("https://laimoon.com/jobs/information-technology/cybersecurity/rss",        "Gulf"),
-    ]
-    for url, loc in feeds:
-        xml = get_text(url, headers=_H)
-        if not xml:
-            continue
-        for j in _parse_rss(xml, "Laimoon", "laimoon", loc, ["laimoon", "gulf"]):
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Laimoon: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 6. Reddit r/netsec Hiring Threads ───────────────────────
-def _fetch_reddit_netsec() -> list:
-    """
-    Reddit r/netsec monthly [Hiring] thread — real jobs posted by security teams.
-    Uses Reddit's JSON API (no auth needed for public posts).
-    """
-    jobs = []
-    seen = set()
-    urls = [
-        "https://www.reddit.com/r/netsec/search.json?q=%5BHiring%5D&sort=new&restrict_sr=1&limit=25",
-        "https://www.reddit.com/r/netsec/search.json?q=hiring+cybersecurity&sort=new&restrict_sr=1&limit=25",
-    ]
-    headers = {**_H, "Accept": "application/json"}
-    for url in urls:
-        data = get_json(url, headers=headers)
-        if not data:
-            continue
-        posts = data.get("data", {}).get("children", [])
-        for post in posts:
-            p = post.get("data", {})
-            title = p.get("title", "").strip()
-            if not title or not _is_sec(title):
-                continue
-            job_url = "https://www.reddit.com" + p.get("permalink", "")
-            if job_url in seen:
-                continue
-            seen.add(job_url)
-            # Parse company from title: "[Hiring] CompanyName | Role | Location"
-            company = "Reddit r/netsec"
-            m = re.match(r'\[hiring\]\s*(.+?)\s*[\|\-–]', title, re.IGNORECASE)
-            if m:
-                company = m.group(1).strip()
-            jobs.append(Job(
-                title=title, company=company,
-                location="Remote / Worldwide",
-                url=job_url, source="reddit_netsec",
-                tags=["reddit", "netsec", "hiring"],
-                is_remote=True, description=p.get("selftext", "")[:300],
-            ))
-    log.info(f"Reddit r/netsec: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 7. Additional Greenhouse Boards (cybersec companies) ─────
+# ── 2. Greenhouse Cybersec Companies ─────────────────────────
 def _fetch_greenhouse_cybersec() -> list:
-    """
-    Additional Greenhouse boards for cybersec companies not covered in tech_boards.
-    These are confirmed working boards.
-    """
+    """Greenhouse cybersec companies — confirmed working from logs."""
     jobs = []
     seen = set()
+    # Only confirmed-working slugs (404s removed)
     BOARDS = [
-        ("Wiz",             "wiz-2"),
-        ("Snyk",            "snyk"),
-        ("Lacework",        "lacework"),
-        ("Drata",           "drata"),
-        ("Vanta",           "vanta"),
-        ("Abnormal Security","abnormalsecurity"),
-        ("Orca Security",   "orca"),
-        ("Huntress",        "huntress"),
-        ("Axonius",         "axonius"),
-        ("Exabeam",         "exabeam"),
+        ("Bugcrowd",            "bugcrowd"),
+        ("Huntress",            "huntress"),
+        ("Axonius",             "axonius"),
+        ("Exabeam",             "exabeam"),
+        ("Abnormal Security",   "abnormalsecurity"),
+        ("Orca Security",       "orca"),
+        ("Drata",               "drata"),
+        ("Vanta",               "vanta"),
+        ("Snyk",                "snyk"),
+        ("Wiz",                 "wiz-2"),
+        ("CrowdStrike",         "crowdstrike"),
+        ("SentinelOne",         "sentinelone"),
+        ("Rapid7",              "rapid7"),
+        ("Tenable",             "tenable"),
+        ("Qualys",              "qualys"),
+        ("Cloudflare",          "cloudflare"),
+        ("Datadog",             "datadog"),
+        ("MongoDB",             "mongodb"),
+        ("Elastic",             "elastic"),
+        ("Lacework",            "lacework"),
     ]
     SEC_TITLES = [
         "security", "cyber", "soc", "pentest", "threat", "vulnerability",
-        "grc", "dfir", "appsec", "devsecops", "cloud security",
+        "grc", "dfir", "appsec", "devsecops", "cloud security", "infosec",
+        "malware", "forensic", "red team", "blue team",
     ]
     base = "https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
     for company, slug in BOARDS:
@@ -1236,196 +205,189 @@ def _fetch_greenhouse_cybersec() -> list:
             if not job_url or job_url in seen:
                 continue
             seen.add(job_url)
-            loc = item.get("location", {})
+            loc      = item.get("location", {})
             location = loc.get("name", "") if isinstance(loc, dict) else ""
             jobs.append(Job(
                 title=title, company=company,
                 location=location or "Not specified",
                 url=job_url, source="greenhouse_cybersec",
-                tags=["greenhouse", company.lower()],
+                tags=["greenhouse", company.lower().replace(" ", "_")],
                 is_remote="remote" in location.lower(),
             ))
     log.info(f"Greenhouse Cybersec: {len(jobs)} jobs")
     return jobs
 
 
-# ── 8. Jobzella (Egypt) ───────────────────────────────────────
-def _fetch_jobzella() -> list:
-    """Jobzella — Egypt-focused job board, JSON-LD scrape."""
+# ── 3. Reddit r/cybersecurity (403-free endpoint) ────────────
+def _fetch_reddit_cybersecurity() -> list:
+    """
+    Reddit r/cybersecurity via old.reddit RSS (avoids 403 on .json).
+    RSS endpoint is more reliable than the JSON search API.
+    """
     jobs = []
     seen = set()
-    urls = [
-        "https://www.jobzella.com/jobs/it-technology/information-security-cybersecurity",
-        "https://www.jobzella.com/jobs/it-technology/network-infrastructure",
+    feeds = [
+        "https://www.reddit.com/r/cybersecurity/search.rss?q=%5BHiring%5D&sort=new&restrict_sr=1",
+        "https://www.reddit.com/r/cybersecurity/search.rss?q=hiring+remote+cybersecurity&sort=new&restrict_sr=1",
+        "https://www.reddit.com/r/netsec/search.rss?q=%5BHiring%5D&sort=new&restrict_sr=1",
+        "https://old.reddit.com/r/cybersecurity/search.rss?q=hiring&sort=new&restrict_sr=on",
     ]
-    for url in urls:
-        html = get_text(url, headers=_H)
-        if not html:
+    rss_headers = {**_H, "Accept": "application/rss+xml, application/xml, text/xml"}
+    for url in feeds:
+        xml = get_text(url, headers=rss_headers)
+        if not xml:
             continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "")
-                    if not title or not job_url or job_url in seen or not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    hiring  = item.get("hiringOrganization", {})
-                    company = hiring.get("name", "") if isinstance(hiring, dict) else ""
-                    jobs.append(Job(
-                        title=title, company=company or "Jobzella",
-                        location="Egypt", url=job_url,
-                        source="jobzella", tags=["jobzella", "egypt"],
-                    ))
-            except Exception:
-                continue
-    log.info(f"Jobzella: {len(jobs)} jobs")
+        for j in _parse_rss(xml, "Reddit Cybersecurity", "reddit_cybersec",
+                             "Remote / Worldwide", ["reddit", "cybersecurity", "hiring"],
+                             is_remote=True):
+            if j.url not in seen:
+                seen.add(j.url)
+                jobs.append(j)
+    log.info(f"Reddit Cybersecurity: {len(jobs)} jobs")
     return jobs
 
 
-
-
-
-# ── 10. MITRE ATT&CK / CVE Community Job Boards ──────────────
-def _fetch_cisa_jobs() -> list:
+# ── 4. Hacker News Hiring (Algolia API) ──────────────────────
+def _fetch_hackernews_hiring() -> list:
     """
-    CISA (US Cybersecurity Agency) careers RSS — great for cybersec keywords
-    and signals trending security domains even for non-US seekers.
+    HN 'Who is hiring?' via Algolia API.
+    Finds the latest monthly thread and parses security-related comments.
     """
     jobs = []
     seen = set()
-    # USAJobs RSS filtered by cybersecurity
-    feeds = [
-        "https://www.usajobs.gov/Search/Results?k=cybersecurity&p=1",  # HTML scrape
-        "https://www.cisa.gov/careers/job-board",
+    # Find latest "Ask HN: Who is hiring?" thread
+    search_url = (
+        "https://hn.algolia.com/api/v1/search?"
+        "query=Ask+HN+Who+is+hiring&tags=ask_hn&hitsPerPage=3"
+    )
+    data = get_json(search_url, headers=_H)
+    if not data or not data.get("hits"):
+        log.info("HN Hiring: thread not found")
+        return jobs
+
+    thread_id = data["hits"][0].get("objectID", "")
+    if not thread_id:
+        return jobs
+
+    comments_url = (
+        f"https://hn.algolia.com/api/v1/search?"
+        f"tags=comment,story_{thread_id}&hitsPerPage=100"
+    )
+    cdata = get_json(comments_url, headers=_H)
+    if not cdata:
+        return jobs
+
+    for hit in cdata.get("hits", []):
+        text = hit.get("comment_text", "") or ""
+        text = re.sub(r'<[^>]+>', ' ', text).strip()
+        if len(text) < 30 or not _is_sec(text):
+            continue
+        first_line = text.split('\n')[0][:120].strip()
+        if not first_line or first_line in seen:
+            continue
+        seen.add(first_line)
+        url_m   = re.search(r'https?://[^\s<>"]+', text)
+        job_url = url_m.group(0) if url_m else f"https://news.ycombinator.com/item?id={hit.get('objectID','')}"
+        co_m    = re.match(r'^([A-Za-z0-9\.\-& ]{2,40}?)\s*[\|,\(]', first_line)
+        company = co_m.group(1).strip() if co_m else "HN Company"
+        jobs.append(Job(
+            title=first_line, company=company,
+            location="Remote / Worldwide", url=job_url,
+            source="hackernews_hiring",
+            description=text[:300],
+            tags=["hackernews", "hiring", "community"],
+            is_remote=True,
+        ))
+    log.info(f"Hacker News Hiring: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 5. GitHub Security Issues [Hiring] ───────────────────────
+def _fetch_github_security_jobs() -> list:
+    """GitHub search API — open issues tagged [Hiring] in security orgs."""
+    jobs = []
+    seen = set()
+    endpoints = [
+        "https://api.github.com/search/issues?q=%5BHiring%5D+cybersecurity+is%3Aopen&sort=created&order=desc&per_page=20",
+        "https://api.github.com/search/issues?q=%5BHiring%5D+%22security+engineer%22+is%3Aopen&sort=created&order=desc&per_page=20",
+        "https://api.github.com/search/issues?q=%5BHiring%5D+%22SOC+analyst%22+is%3Aopen&sort=created&order=desc&per_page=10",
     ]
-    # Use CISA's structured data endpoint
-    url = "https://www.usajobs.gov/api/search/v2/ap?Keyword=cybersecurity+information+security&ResultsPerPage=25&SortField=DatePosted&SortDirection=Desc"
-    data = get_json(url, headers={**_H, "Host": "data.usajobs.gov"})
-    if data:
-        items = data.get("SearchResult", {}).get("SearchResultItems", [])
-        for item in items:
-            matched = item.get("MatchedObjectDescriptor", {})
-            title   = matched.get("PositionTitle", "")
-            link    = matched.get("PositionURI", "")
-            dept    = matched.get("DepartmentName", "")
+    headers = {**_H, "Accept": "application/vnd.github+json"}
+    for url in endpoints:
+        data = get_json(url, headers=headers)
+        if not data or "items" not in data:
+            continue
+        for item in data.get("items", []):
+            title = item.get("title", "").strip()
+            link  = item.get("html_url", "")
+            body  = (item.get("body") or "")[:300]
             if not title or not link or link in seen:
+                continue
+            if not _is_sec(title + " " + body):
                 continue
             seen.add(link)
             jobs.append(Job(
-                title=title, company=dept or "US Gov",
-                location="USA (Remote eligible)", url=link,
-                source="usajobs_cisa", tags=["government", "usa", "cisa"],
-                description=matched.get("QualificationSummary", "")[:200],
+                title=title, company="GitHub Community",
+                location="Remote / Worldwide", url=link,
+                source="github_jobs", description=body,
+                tags=["github", "community", "remote"],
+                is_remote=True,
             ))
-    log.info(f"CISA/USAJobs: {len(jobs)} jobs")
+    log.info(f"GitHub Security Jobs: {len(jobs)} jobs")
     return jobs
 
 
-# ── 11. Egyptian University & Tech Hub Job Boards ─────────────
-def _fetch_egypt_tech_hubs() -> list:
-    """
-    Egypt-specific tech hubs, accelerators, and university career portals
-    that post cybersecurity internships & grad roles:
-    - ITI (Information Technology Institute) — DEPI & regular tracks
-    - AUC (American Univ Cairo) career portal JSON-LD
-    - Flat6Labs Cairo — startup jobs
-    - RiseUp Egypt — Egypt's largest startup ecosystem
-    """
+# ── 6. Telegram Public Channels ──────────────────────────────
+def _fetch_telegram_public_channels() -> list:
+    """Scrape public Telegram channel previews for cybersec job posts."""
     jobs = []
     seen = set()
-
-    sources = [
-        # ITI DEPI program page
-        {
-            "url": "https://iti.gov.eg/iti/openingTraining",
-            "company": "ITI Egypt",
-            "location": "Egypt",
-            "tags": ["iti", "egypt", "government", "depi", "internship"],
-            "source": "iti_egypt",
-        },
-        # NTI courses/jobs
-        {
-            "url": "https://www.nti.sci.eg/training",
-            "company": "NTI Egypt",
-            "location": "Egypt",
-            "tags": ["nti", "egypt", "government", "training"],
-            "source": "nti_egypt",
-        },
+    channels = [
+        ("https://t.me/s/CyberJobsEgypt",  "CyberJobsEgypt", "Egypt",              ["egypt", "cybersecurity"]),
+        ("https://t.me/s/ITjobsEgypt",     "ITJobsEgypt",    "Egypt",              ["egypt", "it"]),
+        ("https://t.me/s/cybersecjobs",    "CyberSecJobs",   "Remote / Worldwide", ["cybersecurity", "remote"]),
+        ("https://t.me/s/Gulf_Jobs_IT",    "GulfJobsIT",     "Gulf",               ["gulf", "it"]),
+        ("https://t.me/s/ITjobsGCC",       "ITJobsGCC",      "Gulf",               ["gulf", "gcc"]),
     ]
-
-    for s in sources:
-        html = get_text(s["url"], headers=_H)
+    for ch_url, company, location, tags in channels:
+        html = get_text(ch_url, headers=_H)
         if not html:
             continue
-        # Extract JSON-LD job postings
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
+        for msg in re.findall(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+            html, re.DOTALL
         ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "") or s["url"]
-                    if not title or job_url in seen:
-                        continue
-                    if not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    jobs.append(Job(
-                        title=title, company=s["company"],
-                        location=s["location"], url=job_url,
-                        source=s["source"], tags=s["tags"],
-                    ))
-            except Exception:
+            text = re.sub(r'<[^>]+>', ' ', msg).strip()
+            text = re.sub(r'\s+', ' ', text)
+            if len(text) < 20 or not _is_sec(text):
                 continue
-
-        # Also do keyword-based title extraction from headings
-        for m in re.finditer(
-            r'<h[23][^>]*>([^<]{15,120})</h[23]>', html, re.IGNORECASE
-        ):
-            title = re.sub(r'\s+', ' ', m.group(1)).strip()
-            if _is_sec(title) and title not in seen:
-                seen.add(title)
-                jobs.append(Job(
-                    title=title, company=s["company"],
-                    location=s["location"], url=s["url"],
-                    source=s["source"], tags=s["tags"],
-                ))
-
-    log.info(f"Egypt Tech Hubs: {len(jobs)} jobs")
+            first_line = text.split('\n')[0][:120].strip()
+            if not first_line or first_line in seen:
+                continue
+            seen.add(first_line)
+            url_match = re.search(r'https?://[^\s<>"]+', msg)
+            job_url   = url_match.group(0) if url_match else ch_url
+            jobs.append(Job(
+                title=first_line, company=company,
+                location=location, url=job_url,
+                source="telegram_channel", description=text[:300],
+                tags=tags,
+            ))
+    log.info(f"Telegram Public Channels: {len(jobs)} jobs")
     return jobs
 
 
-
-# ── 13. InfoSec Twitter/X Job Threads (via Nitter RSS) ────────
+# ── 7. Nitter RSS (Twitter/X alternative, confirmed working) ─
 def _fetch_nitter_security_jobs() -> list:
-    """
-    Monitor cybersecurity hiring accounts via Nitter RSS (Twitter alternative frontend).
-    Targets known InfoSec recruiters & community accounts.
-    """
+    """Nitter RSS — only the confirmed-working instance from logs."""
     jobs = []
     seen = set()
-
+    # Only the instance that returned 6 jobs in the log
     nitter_feeds = [
-        # Known infosec job/hiring Twitter accounts via Nitter RSS
-        ("https://nitter.net/CyberSecJobs/rss",      "CyberSecJobs",      "Remote",  ["twitter", "cybersec", "remote"]),
-        ("https://nitter.net/infosecjobs/rss",        "InfoSecJobs",       "Remote",  ["twitter", "infosec", "remote"]),
-        ("https://nitter.net/SecurityJobs/rss",       "SecurityJobs",      "Remote",  ["twitter", "security", "remote"]),
-        ("https://nitter.poast.org/SecurityJobs/rss", "SecurityJobs (PO)", "Remote",  ["twitter", "security"]),
+        ("https://nitter.net/CyberSecJobs/rss",       "CyberSecJobs",  "Remote", ["twitter", "cybersec"]),
+        ("https://nitter.privacydev.net/infosecjobs/rss", "InfoSecJobs", "Remote", ["twitter", "infosec"]),
+        ("https://nitter.1d4.us/SecurityJobs/rss",    "SecurityJobs",  "Remote", ["twitter", "security"]),
     ]
-
     for feed_url, company, location, tags in nitter_feeds:
         xml_text = get_text(feed_url, headers=_H)
         if not xml_text:
@@ -1436,139 +398,141 @@ def _fetch_nitter_security_jobs() -> list:
             if job.url not in seen:
                 seen.add(job.url)
                 jobs.append(job)
-
     log.info(f"Nitter/Twitter Security Jobs: {len(jobs)} jobs")
     return jobs
 
 
-# ── 14. Arab Company LinkedIn Alumni Hiring Posts ─────────────
-def _fetch_arabic_startup_jobs() -> list:
+# ── 8. InfoSec Jobs board ─────────────────────────────────────
+def _fetch_infosec_jobs() -> list:
     """
-    Scrape startup & tech accelerator job boards in Egypt & Gulf.
-    Uses JSON APIs from Flat6Labs, AUC Venture Lab, Wamda.
+    InfoSec-Jobs.com — cybersecurity-only job board.
+    Uses RSS + JSON-LD.
     """
     jobs = []
     seen = set()
-
-    # Wamda — MENA startup ecosystem job board RSS/API
-    wamda_url = "https://www.wamda.com/jobs?sector=technology&country=egypt"
-    html = get_text(wamda_url, headers=_H)
-    if html:
-        for m in re.finditer(
-            r'<a[^>]+href="(/jobs/[^"]+)"[^>]*>\s*<[^>]+>([^<]{10,100})</[^>]+>',
-            html, re.DOTALL
-        ):
-            href, title = m.group(1), re.sub(r'\s+', ' ', m.group(2)).strip()
-            if not _is_sec(title) or href in seen:
-                continue
-            seen.add(href)
-            jobs.append(Job(
-                title=title, company="Wamda MENA",
-                location="Egypt / Gulf", url="https://www.wamda.com" + href,
-                source="wamda", tags=["mena", "startup", "egypt", "gulf"],
-            ))
-
-    # Eventtus / Bosta / EgyTech — Egyptian startup portals
-    egypt_startup_feeds = [
-        ("https://www.egytech.net/jobs/feed", "EgyTech", "Egypt", ["egypt", "tech"]),
+    feeds = [
+        "https://infosec-jobs.com/feed/",
+        "https://www.infosec-jobs.com/rss/",
     ]
-    for feed_url, company, location, tags in egypt_startup_feeds:
-        xml_text = get_text(feed_url, headers=_H)
-        if xml_text:
-            results = _parse_rss(xml_text, company=company, source="egypt_startups",
-                                 location=location, tags=tags)
-            for job in results:
-                if job.url not in seen:
-                    seen.add(job.url)
-                    jobs.append(job)
+    for url in feeds:
+        xml = get_text(url, headers=_H)
+        if not xml:
+            continue
+        for j in _parse_rss(xml, "InfoSec Jobs", "infosec_jobs",
+                             "Remote / Worldwide", ["infosec_jobs", "cybersecurity", "remote"],
+                             is_remote=True):
+            if j.url not in seen:
+                seen.add(j.url)
+                jobs.append(j)
 
-    log.info(f"Arabic Startup Jobs: {len(jobs)} jobs")
+    # Also try their search pages
+    searches = [
+        "https://infosec-jobs.com/?s=soc+analyst",
+        "https://infosec-jobs.com/?s=penetration+tester",
+        "https://infosec-jobs.com/?s=security+engineer",
+    ]
+    for url in searches:
+        html = get_text(url, headers=_H)
+        if not html:
+            continue
+        for j in _extract_jsonld_jobs(html, url, "infosec_jobs",
+                                       "Remote / Worldwide", ["infosec_jobs"]):
+            if j.url not in seen:
+                seen.add(j.url)
+                jobs.append(j)
+
+    log.info(f"InfoSec Jobs: {len(jobs)} jobs")
     return jobs
 
 
-# ── 15. CTF & Bug Bounty → Career Pipeline ───────────────────
-def _fetch_bugbounty_careers() -> list:
+# ── 9. CISA / USAJobs API ────────────────────────────────────
+def _fetch_cisa_jobs() -> list:
+    """USAJobs API filtered to cybersecurity — reliable government source."""
+    jobs = []
+    seen = set()
+    url  = (
+        "https://data.usajobs.gov/api/search?"
+        "Keyword=cybersecurity+information+security"
+        "&ResultsPerPage=25&SortField=DatePosted&SortDirection=Desc"
+    )
+    headers = {
+        **_H,
+        "Host": "data.usajobs.gov",
+        "User-Agent": "cybersec-jobs-bot/23 (contact: bot@example.com)",
+    }
+    data = get_json(url, headers=headers)
+    if data:
+        items = data.get("SearchResult", {}).get("SearchResultItems", [])
+        for item in items:
+            matched = item.get("MatchedObjectDescriptor", {})
+            title   = matched.get("PositionTitle", "")
+            link    = matched.get("PositionURI", "")
+            dept    = matched.get("DepartmentName", "US Government")
+            if not title or not link or link in seen:
+                continue
+            seen.add(link)
+            jobs.append(Job(
+                title=title, company=dept,
+                location="USA (Remote eligible)",
+                url=link, source="usajobs_cisa",
+                tags=["government", "usa", "cisa"],
+                description=matched.get("QualificationSummary", "")[:200],
+            ))
+    log.info(f"CISA/USAJobs: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 10. ITI Egypt (keyword scrape, NTI removed) ──────────────
+def _fetch_iti_egypt() -> list:
     """
-    Bug bounty platforms that also list full-time security positions:
-    - HackerOne jobs board
-    - Bugcrowd talent marketplace
-    - Intigriti jobs
-    These are highly cybersec-specific and often missed by general boards.
+    ITI Egypt — scrape training & job opening pages.
+    NTI removed (HTTP 404). ITI only.
     """
     jobs = []
     seen = set()
-
-    platforms = [
-        {
-            "url": "https://www.hackerone.com/jobs",
-            "source": "hackerone_jobs",
-            "company_fallback": "HackerOne Partner",
-            "tags": ["hackerone", "bugbounty", "cybersecurity"],
-            "location": "Remote / Worldwide",
-        },
-        {
-            "url": "https://www.intigriti.com/researchers/resources/job-board",
-            "source": "intigriti_jobs",
-            "company_fallback": "Intigriti Partner",
-            "tags": ["intigriti", "bugbounty", "europe"],
-            "location": "Remote / Europe",
-        },
+    sources = [
+        ("https://iti.gov.eg/iti/openingTraining", "ITI Egypt", ["iti", "egypt", "depi"]),
+        ("https://mcit.gov.eg/en/Services",        "MCIT Egypt", ["mcit", "egypt", "government"]),
     ]
-
-    for p in platforms:
-        html = get_text(p["url"], headers=_H)
+    for url, company, tags in sources:
+        html = get_text(url, headers=_H)
         if not html:
             continue
-        for block in re.findall(
-            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                data  = json.loads(block.strip())
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if item.get("@type") != "JobPosting":
-                        continue
-                    title   = item.get("title", "").strip()
-                    job_url = item.get("url", "") or p["url"]
-                    if not title or job_url in seen:
-                        continue
-                    seen.add(job_url)
-                    org     = item.get("hiringOrganization", {})
-                    company = (org.get("name", "") if isinstance(org, dict) else "") or p["company_fallback"]
-                    jobs.append(Job(
-                        title=title, company=company,
-                        location=p["location"], url=job_url,
-                        source=p["source"], tags=p["tags"],
-                        description=item.get("description", "")[:300],
-                    ))
-            except Exception:
-                continue
-
-    log.info(f"Bug Bounty Careers: {len(jobs)} jobs")
+        # JSON-LD
+        for j in _extract_jsonld_jobs(html, url, "iti_egypt", "Egypt", tags):
+            if j.url not in seen and _is_sec(j.title):
+                seen.add(j.url)
+                j.company = company
+                jobs.append(j)
+        # Heading-based keyword extraction
+        for m in re.finditer(r'<h[23][^>]*>([^<]{15,120})</h[23]>', html, re.IGNORECASE):
+            title = re.sub(r'\s+', ' ', m.group(1)).strip()
+            if _is_sec(title) and title not in seen:
+                seen.add(title)
+                jobs.append(Job(
+                    title=title, company=company,
+                    location="Egypt", url=url,
+                    source="iti_egypt", tags=tags,
+                ))
+    log.info(f"ITI Egypt: {len(jobs)} jobs")
     return jobs
 
 
 # ── Main aggregator ───────────────────────────────────────────
 def fetch_new_sources() -> list:
-    """Aggregate all new v17 sources."""
+    """Aggregate all v23 new sources (dead sources removed)."""
     all_jobs = []
     fetchers = [
-        ("Bayt",                    _fetch_bayt),
-        ("Wellfound",               _fetch_wellfound),
-        ("Dice",                    _fetch_dice),
-        ("DrJobPro",                _fetch_drjobpro),
-        ("Laimoon",                 _fetch_laimoon),
-        ("Reddit r/netsec",         _fetch_reddit_netsec),
+        ("Bayt HTML",               _fetch_bayt),
         ("Greenhouse Cybersec",     _fetch_greenhouse_cybersec),
-        ("Jobzella",                _fetch_jobzella),
-        # ── v17 Creative New Sources ──
-        ("Egypt Tech Hubs",         _fetch_egypt_tech_hubs),
+        ("Reddit Cybersecurity",    _fetch_reddit_cybersecurity),
+        ("Hacker News Hiring",      _fetch_hackernews_hiring),
+        ("GitHub Security Jobs",    _fetch_github_security_jobs),
+        ("Telegram Channels",       _fetch_telegram_public_channels),
         ("Nitter Security Jobs",    _fetch_nitter_security_jobs),
-        ("Arabic Startup Jobs",     _fetch_arabic_startup_jobs),
-        ("Bug Bounty Careers",      _fetch_bugbounty_careers),
-        # USAJobs/CISA (good for domain signal, optional)
-        # ("CISA USAJobs",          _fetch_cisa_jobs),
+        ("InfoSec Jobs",            _fetch_infosec_jobs),
+        ("CISA USAJobs",            _fetch_cisa_jobs),
+        ("ITI Egypt",               _fetch_iti_egypt),
     ]
     for name, fn in fetchers:
         try:
