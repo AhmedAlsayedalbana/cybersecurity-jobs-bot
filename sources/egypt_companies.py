@@ -376,14 +376,16 @@ def _fetch_gov_training_programs():
 
 
 def fetch_egypt_companies():
-    """Fetch from expanded Egyptian company sources."""
+    """Fetch from expanded Egyptian company sources.
+    Removed: DrJobPro (HTTP 404), Akhtaboot (0 jobs), Gov Training (0 jobs).
+    """
     all_jobs = []
     for fetcher in [
         _fetch_linkedin_eg_security_companies,
-        _fetch_drjobpro_egypt,
-        _fetch_akhtaboot_egypt,
+        # _fetch_drjobpro_egypt,        # HTTP 404 — disabled
+        # _fetch_akhtaboot_egypt,       # 0 jobs — disabled
         _fetch_egypt_internships,
-        _fetch_gov_training_programs,
+        # _fetch_gov_training_programs, # 0 jobs — disabled
     ]:
         try:
             all_jobs.extend(fetcher())
