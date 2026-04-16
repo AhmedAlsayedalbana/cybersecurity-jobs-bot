@@ -279,13 +279,15 @@ def _fetch_naukrigulf():
 
 
 def fetch_gulf_expanded():
-    """Fetch from expanded Gulf sources."""
+    """Fetch from expanded Gulf sources.
+    Removed: NaukriGulf (read timeout on all requests), Akhtaboot (0 jobs).
+    """
     all_jobs = []
     for fetcher in [
         _fetch_linkedin_gulf_expanded,
         _fetch_gulf_internships,
-        _fetch_akhtaboot_gulf,
-        _fetch_naukrigulf,
+        # _fetch_akhtaboot_gulf,  # 0 jobs confirmed — disabled
+        # _fetch_naukrigulf,      # read timeout on all requests — disabled
     ]:
         try:
             all_jobs.extend(fetcher())
