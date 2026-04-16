@@ -23,79 +23,38 @@ DETAIL_URL  = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
 # ── Egypt — All Governorates (HIGHEST PRIORITY) ──
 EGYPT_SEARCHES = [
-    # Cairo & surroundings
-    {"keywords": "cybersecurity",        "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "SOC analyst",          "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "penetration tester",   "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security engineer",    "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "information security", "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "junior security",      "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security intern",      "location": "Cairo, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "cybersecurity",        "location": "Giza, Egypt",                 "f_TPR": "r86400"},
-    {"keywords": "security analyst",     "location": "New Cairo, Egypt",            "f_TPR": "r86400"},
-    # Alexandria
-    {"keywords": "cybersecurity",        "location": "Alexandria, Egypt",           "f_TPR": "r86400"},
-    {"keywords": "security engineer",    "location": "Alexandria, Egypt",           "f_TPR": "r86400"},
-    {"keywords": "SOC analyst",          "location": "Alexandria, Egypt",           "f_TPR": "r86400"},
-    # Delta & Canal
-    {"keywords": "cybersecurity",        "location": "Mansoura, Egypt",             "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Tanta, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Zagazig, Egypt",              "f_TPR": "r86400"},
-    {"keywords": "cybersecurity",        "location": "Port Said, Egypt",            "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Suez, Egypt",                 "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Ismailia, Egypt",             "f_TPR": "r86400"},
-    # Upper Egypt
-    {"keywords": "security",             "location": "Assiut, Egypt",               "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Beni Suef, Egypt",            "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Minya, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Sohag, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Luxor, Egypt",                "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Aswan, Egypt",                "f_TPR": "r86400"},
-    # New Cities
-    {"keywords": "cybersecurity",        "location": "6th of October City, Egypt",  "f_TPR": "r86400"},
-    {"keywords": "cybersecurity",        "location": "10th of Ramadan City, Egypt", "f_TPR": "r86400"},
-    # Broad Egypt — more roles
-    {"keywords": "network security",     "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "GRC analyst",          "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "DFIR",                 "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "malware analyst",      "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "threat intelligence",  "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "cloud security",       "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "devsecops",            "location": "Egypt",                       "f_TPR": "r86400"},
-    {"keywords": "security trainee",     "location": "Egypt",                       "f_TPR": "r86400"},
+    # Cairo — core roles only (city-level granularity handled by egypt_alt.py)
+    {"keywords": "cybersecurity",        "location": "Cairo, Egypt",   "f_TPR": "r86400"},
+    {"keywords": "SOC analyst",          "location": "Cairo, Egypt",   "f_TPR": "r86400"},
+    {"keywords": "penetration tester",   "location": "Cairo, Egypt",   "f_TPR": "r86400"},
+    {"keywords": "security engineer",    "location": "Cairo, Egypt",   "f_TPR": "r86400"},
+    {"keywords": "security intern",      "location": "Cairo, Egypt",   "f_TPR": "r86400"},
+    # Broad Egypt — roles not covered by city searches
+    {"keywords": "cybersecurity",        "location": "Egypt",          "f_TPR": "r86400"},
+    {"keywords": "GRC analyst",          "location": "Egypt",          "f_TPR": "r86400"},
+    {"keywords": "DFIR",                 "location": "Egypt",          "f_TPR": "r86400"},
+    {"keywords": "threat intelligence",  "location": "Egypt",          "f_TPR": "r86400"},
+    {"keywords": "cloud security",       "location": "Egypt",          "f_TPR": "r86400"},
+    {"keywords": "security trainee",     "location": "Egypt",          "f_TPR": "r86400"},
 ]
 
-# ── Gulf — Full Coverage (SECOND PRIORITY) ──
+# ── Gulf — Core Coverage (SECOND PRIORITY) ──
 GULF_SEARCHES = [
     # Saudi Arabia
-    {"keywords": "cybersecurity",        "location": "Riyadh, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "SOC analyst",          "location": "Riyadh, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "security engineer",    "location": "Riyadh, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "penetration tester",   "location": "Riyadh, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "GRC analyst",          "location": "Riyadh, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "junior security",      "location": "Saudi Arabia",                     "f_TPR": "r86400"},
-    {"keywords": "cybersecurity",        "location": "Jeddah, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "security",             "location": "Dammam, Saudi Arabia",             "f_TPR": "r86400"},
-    {"keywords": "information security", "location": "Saudi Arabia",                     "f_TPR": "r86400"},
-    {"keywords": "cloud security",       "location": "Saudi Arabia",                     "f_TPR": "r86400"},
-    {"keywords": "threat intelligence",  "location": "Saudi Arabia",                     "f_TPR": "r86400"},
+    {"keywords": "cybersecurity",        "location": "Riyadh, Saudi Arabia",            "f_TPR": "r86400"},
+    {"keywords": "SOC analyst",          "location": "Saudi Arabia",                    "f_TPR": "r86400"},
+    {"keywords": "penetration tester",   "location": "Saudi Arabia",                    "f_TPR": "r86400"},
+    {"keywords": "GRC analyst",          "location": "Saudi Arabia",                    "f_TPR": "r86400"},
+    {"keywords": "junior security",      "location": "Saudi Arabia",                    "f_TPR": "r86400"},
+    {"keywords": "information security", "location": "Saudi Arabia",                    "f_TPR": "r86400"},
     # UAE
-    {"keywords": "cybersecurity",        "location": "Dubai, United Arab Emirates",      "f_TPR": "r86400"},
-    {"keywords": "SOC analyst",          "location": "Dubai, United Arab Emirates",      "f_TPR": "r86400"},
-    {"keywords": "security engineer",    "location": "Dubai, United Arab Emirates",      "f_TPR": "r86400"},
-    {"keywords": "penetration tester",   "location": "Dubai, United Arab Emirates",      "f_TPR": "r86400"},
-    {"keywords": "cybersecurity",        "location": "Abu Dhabi, United Arab Emirates",  "f_TPR": "r86400"},
-    {"keywords": "security analyst",     "location": "Sharjah, United Arab Emirates",   "f_TPR": "r86400"},
-    {"keywords": "junior security",      "location": "United Arab Emirates",             "f_TPR": "r86400"},
-    {"keywords": "cloud security",       "location": "United Arab Emirates",             "f_TPR": "r86400"},
-    # Qatar
+    {"keywords": "cybersecurity",        "location": "Dubai, United Arab Emirates",     "f_TPR": "r86400"},
+    {"keywords": "SOC analyst",          "location": "United Arab Emirates",            "f_TPR": "r86400"},
+    {"keywords": "security engineer",    "location": "United Arab Emirates",            "f_TPR": "r86400"},
+    {"keywords": "junior security",      "location": "United Arab Emirates",            "f_TPR": "r86400"},
+    # Qatar, Kuwait, Bahrain, Oman
     {"keywords": "cybersecurity",        "location": "Doha, Qatar",                     "f_TPR": "r86400"},
-    {"keywords": "SOC analyst",          "location": "Qatar",                           "f_TPR": "r86400"},
-    {"keywords": "security engineer",    "location": "Qatar",                           "f_TPR": "r86400"},
-    # Kuwait
     {"keywords": "cybersecurity",        "location": "Kuwait City, Kuwait",             "f_TPR": "r86400"},
-    {"keywords": "security analyst",     "location": "Kuwait",                         "f_TPR": "r86400"},
-    # Bahrain & Oman
     {"keywords": "cybersecurity",        "location": "Manama, Bahrain",                 "f_TPR": "r86400"},
     {"keywords": "cybersecurity",        "location": "Muscat, Oman",                   "f_TPR": "r86400"},
 ]
@@ -112,59 +71,38 @@ REMOTE_SEARCHES = [
     {"keywords": "red team",                      "f_WT": "2", "f_TPR": "r86400"},
 ]
 
-# ── Extra Egypt searches — doubles coverage creatively ────────
+# ── Extra Egypt searches — unique value only ────────
 EGYPT_EXTRA_SEARCHES = [
     # Arabic keywords — catches local HR posts
     {"keywords": "أمن معلومات",               "location": "Egypt",        "f_TPR": "r604800"},
     {"keywords": "أمن سيبراني",               "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "محلل أمن",                  "location": "Egypt",        "f_TPR": "r604800"},
     {"keywords": "اختبار اختراق",             "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "مهندس أمن",                 "location": "Egypt",        "f_TPR": "r604800"},
-    # Specific job functions not covered above
-    {"keywords": "security operations center", "location": "Egypt",        "f_TPR": "r604800"},
+    # Specific roles not in core list
     {"keywords": "vulnerability assessment",   "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "risk analyst",               "location": "Egypt",        "f_TPR": "r604800"},
     {"keywords": "compliance analyst",         "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "cyber analyst",              "location": "Cairo, Egypt", "f_TPR": "r604800"},
     {"keywords": "appsec",                     "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "security architect",         "location": "Egypt",        "f_TPR": "r604800"},
-    {"keywords": "CISO",                       "location": "Egypt",        "f_TPR": "r604800"},
-    # Internship / fresh grad — very important for Egyptian audience
+    # Internship / fresh grad
     {"keywords": "cybersecurity internship",   "location": "Egypt",        "f_TPR": "r2592000"},
-    {"keywords": "security graduate program",  "location": "Egypt",        "f_TPR": "r2592000"},
     {"keywords": "IT security fresh graduate", "location": "Egypt",        "f_TPR": "r2592000"},
-    # Known big employers in Egypt
-    {"keywords": "cybersecurity",              "location": "Smart Village, Egypt",    "f_TPR": "r604800"},
-    {"keywords": "security",                   "location": "Maadi, Egypt",            "f_TPR": "r604800"},
-    {"keywords": "security",                   "location": "Heliopolis, Egypt",       "f_TPR": "r604800"},
+    # Key employer hubs
+    {"keywords": "cybersecurity",              "location": "Smart Village, Egypt", "f_TPR": "r604800"},
     {"keywords": "cybersecurity",              "location": "New Administrative Capital, Egypt", "f_TPR": "r604800"},
 ]
 
-# ── Extra Gulf searches — doubles coverage creatively ─────────
+# ── Extra Gulf searches — unique value only ─────────
 GULF_EXTRA_SEARCHES = [
     # Arabic keywords Gulf
     {"keywords": "أمن سيبراني",               "location": "Saudi Arabia",         "f_TPR": "r604800"},
     {"keywords": "أمن معلومات",               "location": "Saudi Arabia",         "f_TPR": "r604800"},
     {"keywords": "أمن سيبراني",               "location": "United Arab Emirates", "f_TPR": "r604800"},
-    # Additional roles
-    {"keywords": "security operations center", "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    # Specific roles
     {"keywords": "vulnerability management",   "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "compliance analyst",         "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "security architect",         "location": "Saudi Arabia",         "f_TPR": "r604800"},
     {"keywords": "appsec",                     "location": "United Arab Emirates", "f_TPR": "r604800"},
     {"keywords": "red team",                   "location": "Saudi Arabia",         "f_TPR": "r604800"},
-    {"keywords": "CISO",                       "location": "Saudi Arabia",         "f_TPR": "r604800"},
     {"keywords": "devsecops",                  "location": "United Arab Emirates", "f_TPR": "r604800"},
-    # Key Saudi government/Vision2030 tech hubs
-    {"keywords": "cybersecurity",              "location": "NEOM, Saudi Arabia",   "f_TPR": "r604800"},
-    {"keywords": "cybersecurity",              "location": "Dhahran, Saudi Arabia","f_TPR": "r604800"},
-    {"keywords": "security engineer",          "location": "Khobar, Saudi Arabia", "f_TPR": "r604800"},
     # Internship Gulf
     {"keywords": "cybersecurity internship",   "location": "Saudi Arabia",         "f_TPR": "r2592000"},
     {"keywords": "security trainee",           "location": "United Arab Emirates", "f_TPR": "r2592000"},
-    # Company-level — high-value Gulf employers
-    {"keywords": "security",                   "location": "Aramco, Saudi Arabia", "f_TPR": "r604800"},
-    {"keywords": "cybersecurity",              "location": "Abu Dhabi, United Arab Emirates", "f_TPR": "r604800"},
 ]
 
 # Combined in priority order: Egypt → Egypt Extra → Gulf → Gulf Extra → Remote
@@ -198,10 +136,13 @@ def _fetch_with_retry(url, params=None, max_retries=3) -> str | None:
 def fetch_linkedin() -> list[Job]:
     """
     Fetch cybersecurity jobs from LinkedIn guest API.
-    V21: doubled search queries, raised failure threshold 2→6,
-    retry per request, 5 job IDs per search (was 3).
+    V23: trimmed search list (107→52 queries), added 8-minute wall-clock
+    budget to prevent GitHub Actions timeout.
     """
     import random
+    BUDGET_SECONDS = 8 * 60  # hard ceiling: 8 minutes for LinkedIn
+    _start = time.time()
+
     jobs = []
     seen_ids: set[str] = set()
     consecutive_failures = 0
@@ -210,6 +151,10 @@ def fetch_linkedin() -> list[Job]:
     MAX_TOTAL = 12
 
     for search in SEARCHES:
+        if time.time() - _start > BUDGET_SECONDS:
+            log.warning(f"LinkedIn: 8-minute budget exhausted after {len(jobs)} jobs — stopping early.")
+            break
+
         if total_failures >= MAX_TOTAL:
             log.warning("LinkedIn: hit max total failures — stopping.")
             break
