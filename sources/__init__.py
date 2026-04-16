@@ -73,7 +73,7 @@ ALL_FETCHERS = [
     # ── 2. Gulf 🌙 ────────────────────────────────────────────
     ("Gov Gulf",             fetch_gov_gulf),
     ("Gulf Expanded",        fetch_gulf_expanded),
-    ("Gulf Boards",          fetch_gulf_boards),
+    # ("Gulf Boards",        fetch_gulf_boards),  # Monster Gulf: always 0 — disabled
 
     # ── 3. Cybersec boards ────────────────────────────────────
     ("CyberSec Boards",      fetch_cybersec_boards),
@@ -104,8 +104,8 @@ ALL_FETCHERS = [
     ("Reed",                 fetch_reed),
     # ("JSearch",            fetch_jsearch),  # Uncomment if RAPIDAPI_KEY set
 
-    # ── 9. Freelance ──────────────────────────────────────────
-    ("Freelance",            fetch_freelance),
+    # ── 9. Freelance — disabled (Mostaql/Khamsat/Truelancer all return 0)
+    # ("Freelance",          fetch_freelance),
 
     # ── 10. New Sources v25 ───────────────────────────────────
     ("New Sources v25",      fetch_new_sources),
