@@ -13,7 +13,7 @@ from config import SEEN_JOBS_FILE
 log = logging.getLogger(__name__)
 
 # Memory limit: 7 days
-MEMORY_DAYS = 3
+MEMORY_DAYS = 7
 
 def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
     """
@@ -122,11 +122,13 @@ def deduplicate_sent(sent_urls: set, jobs: list[Job], seen_dict: dict) -> dict:
     """Mark actually-sent jobs (by URL) as seen — prevents re-send next run."""
     import hashlib
     now_iso = datetime.now().isoformat()
+    sent_url_set = set(sent_urls)
     for job in jobs:
-        if job.url in sent_urls:
+        if job.url in sent_url_set:
             seen_dict[job.unique_id] = now_iso
             url_id = getattr(job, 'url_id', '')
             if url_id:
                 seen_dict[url_id] = now_iso
             raw_url_key = "url:" + hashlib.md5(job.url.encode()).hexdigest()
             seen_dict[raw_url_key] = now_iso
+    return seen_dict
