@@ -2,7 +2,7 @@ name: Cybersecurity Jobs Bot V5
 
 on:
   schedule:
-    - cron: "0 */2 * * *"       # Every 2 hour
+    - cron: "0 */3 * * *"       # Every 3 hours
   workflow_dispatch:       # Manual trigger
 
 permissions:
@@ -54,6 +54,7 @@ jobs:
           TOPIC_SECENG:        ${{ secrets.TOPIC_SECENG }}
           TOPIC_GULF:          ${{ secrets.TOPIC_GULF }}
           TOPIC_INTERNSHIPS:   ${{ secrets.TOPIC_INTERNSHIPS }}
+          TOPIC_NETWORKSEC:    ${{ secrets.TOPIC_NETWORKSEC }}
 
           # API Keys
           SERPAPI_KEY:         ${{ secrets.SERPAPI_KEY }}
