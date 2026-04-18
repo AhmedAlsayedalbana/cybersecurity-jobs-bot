@@ -150,7 +150,7 @@ GOV_TIMEOUT = 8
 
 # ── Per-domain last request time tracker (rate spacing) ───────
 _domain_last_req: dict = {}
-_LINKEDIN_MIN_INTERVAL = 2.0
+_LINKEDIN_MIN_INTERVAL = 4.0   # v28: raised from 2.0 — reduces rate-limit hits
 
 
 def _get_domain(url: str) -> str:
@@ -168,7 +168,7 @@ def _throttle_domain(url: str):
         last = _domain_last_req.get(domain, 0)
         elapsed = now - last
         if elapsed < _LINKEDIN_MIN_INTERVAL:
-            wait = _LINKEDIN_MIN_INTERVAL - elapsed + random.uniform(0.5, 1.5)
+            wait = _LINKEDIN_MIN_INTERVAL - elapsed + random.uniform(1.0, 3.0)
             time.sleep(wait)
     _domain_last_req[domain] = time.time()
 
