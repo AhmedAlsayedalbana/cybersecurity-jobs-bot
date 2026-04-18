@@ -162,21 +162,22 @@ def main():
                 " | 🌍 " + str(rem_count)
             )
 
-            # 7. Send — telegram_sender handles 10-per-channel logic
+            # 7. Send — telegram_sender handles per-channel logic
             if final_pool:
-                log.info("📨 Sending to Telegram (10 per channel)...")
-                sent_count = send_jobs(final_pool)
-                sent_urls  = set()   # send_jobs handles dedup internally
+                log.info("📨 Sending to Telegram (5 per channel)...")
+                sent_count, sent_urls = send_jobs(final_pool)
                 stats["sent"] = sent_count
                 log.info("✅ Total sent: " + str(sent_count))
             else:
                 log.info("ℹ️ No qualifying jobs this run.")
                 sent_urls = set()
 
-            # 8. Mark seen — only jobs that were actually sent
-            seen = mark_as_seen(new_jobs, seen)  # mark all fetched as seen (prevents re-fetch)
+            # 8. Mark seen — ONLY jobs that were actually sent get marked.
+            # Jobs that were fetched but not sent (low score, not selected) remain
+            # eligible for future runs so they get another chance.
             if sent_urls:
-                seen = deduplicate_sent(sent_urls, final_pool, seen)  # also mark sent URLs
+                seen = deduplicate_sent(sent_urls, final_pool, seen)
+                log.info("💾 Marked " + str(len(sent_urls)) + " sent job URLs as seen.")
 
     except Exception as e:
         log.exception("❌ Error: " + str(e))
