@@ -68,7 +68,7 @@ CHANNELS = {
         "keywords": [
             "cloud security", "cloud security engineer", "cloud security architect",
             "aws security", "azure security", "gcp security",
-            "infrastructure security", "network security engineer", "firewall engineer",
+            "infrastructure security",
             "zero trust", "identity access management", "iam engineer",
             "kubernetes security", "container security", "cspm", "cnapp",
             "wiz", "prisma cloud", "cloud native security",
@@ -96,6 +96,25 @@ CHANNELS = {
             "security automation", "cryptographer", "cryptography engineer",
             "pki engineer", "iam developer", "security platform engineer",
             "security tools developer", "python security",
+        ],
+    },
+    "networksec": {
+        "thread_env": "TOPIC_NETWORKSEC",
+        "name": "🌐 Network Security Engineer",
+        "keywords": [
+            "network security engineer", "network security analyst",
+            "network security architect", "network security manager",
+            "network security specialist", "network security consultant",
+            "firewall engineer", "firewall administrator", "firewall analyst",
+            "ids engineer", "ips engineer", "ids/ips", "intrusion detection",
+            "intrusion prevention", "network defense", "perimeter security",
+            "vpn engineer", "vpn administrator", "sdwan security", "sd-wan security",
+            "palo alto networks", "fortinet engineer", "cisco security engineer",
+            "checkpoint engineer", "juniper security",
+            "network access control", "nac engineer", "packet analysis",
+            "network forensics", "traffic analysis",
+            "ddos protection", "ddos mitigation", "waf engineer",
+            "web application firewall",
         ],
     },
     "gulf": {
@@ -341,9 +360,9 @@ SOURCE_DISPLAY = {
 
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
-MAX_JOBS_PER_RUN = 200  # v16
-SCORE_THRESHOLD  = 12   # V21: raised from 8 — Egypt=12, Gulf=9+tech pass; weak global jobs always blocked
-MAX_JOBS_PER_CHANNEL = 10  # Max jobs sent per channel per run
+MAX_JOBS_PER_RUN = 200
+SCORE_THRESHOLD  = 10   # V28: lowered from 12 to compensate for reduced location bonus
+MAX_JOBS_PER_CHANNEL = 5   # Max jobs sent per channel per run (v28: reduced from 10)
 REQUEST_TIMEOUT  = 10
 SEED_MODE_ENV    = "SEED_MODE"
 
