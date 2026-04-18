@@ -160,8 +160,8 @@ def fetch_linkedin_hiring() -> list[Job]:
             log.warning("LinkedIn #Hiring: max failures reached — stopping.")
             break
         if consecutive_failures >= MAX_CONSECUTIVE:
-            log.warning(f"LinkedIn #Hiring: {consecutive_failures} consecutive failures — waiting 30s.")
-            time.sleep(30)
+            log.warning(f"LinkedIn #Hiring: {consecutive_failures} consecutive failures — waiting 15s.")
+            time.sleep(15)   # was 30s
             consecutive_failures = 0
 
         params = {
@@ -182,7 +182,7 @@ def fetch_linkedin_hiring() -> list[Job]:
         if not html or len(html) < 200:
             consecutive_failures += 1
             total_failures += 1
-            wait = min(8 * consecutive_failures, 40)
+            wait = min(5 * consecutive_failures, 20)   # was min(8*n, 40)
             log.debug(f"LinkedIn #Hiring: empty for '{search.get('keywords')}' — waiting {wait}s")
             time.sleep(wait)
             continue
