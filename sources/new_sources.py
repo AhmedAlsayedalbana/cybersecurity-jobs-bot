@@ -139,8 +139,8 @@ def _fetch_greenhouse_cybersec() -> list:
     """Greenhouse boards — only slugs confirmed to work from logs."""
     jobs = []
     seen = set()
-    # Confirmed working from logs (404s removed: wiz-2, snyk, lacework, drata, vanta,
-    # crowdstrike, sentinelone, paloaltonetworks, rapid7, tenable, qualys, darktrace, illumio, vectra)
+    # Only confirmed-working slugs from logs (v25 run):
+    # 404s removed: cyberark, paloaltonetworks2, fortinet, proofpoint, varonis, secureworks, trellix
     BOARDS = [
         ("Bugcrowd",          "bugcrowd"),
         ("Huntress",          "huntress"),
@@ -152,14 +152,7 @@ def _fetch_greenhouse_cybersec() -> list:
         ("Datadog",           "datadog"),
         ("MongoDB",           "mongodb"),
         ("Elastic",           "elastic"),
-        ("CyberArk",          "cyberark"),
-        ("Palo Alto Networks","paloaltonetworks2"),
-        ("Fortinet",          "fortinet"),
         ("Zscaler",           "zscaler"),
-        ("Proofpoint",        "proofpoint"),
-        ("Varonis",           "varonis"),
-        ("Secureworks",       "secureworks"),
-        ("Trellix",           "trellix"),
     ]
     SEC_TITLES = [
         "security", "cyber", "soc", "pentest", "threat", "vulnerability",
@@ -339,10 +332,10 @@ def _fetch_nitter_security_jobs() -> list:
     jobs = []
     seen = set()
     feeds = [
-        ("https://nitter.net/CyberSecJobs/rss",           "CyberSecJobs",  "Remote"),
-        ("https://nitter.privacydev.net/infosecjobs/rss", "InfoSecJobs",   "Remote"),
-        ("https://nitter.1d4.us/SecurityJobs/rss",        "SecurityJobs",  "Remote"),
-        ("https://nitter.poast.org/CyberSecJobs/rss",     "CyberSecJobs2", "Remote"),
+        # Only nitter.net confirmed working — others dead (connection refused / DNS fail / 403)
+        ("https://nitter.net/CyberSecJobs/rss",  "CyberSecJobs", "Remote"),
+        ("https://nitter.net/infosecjobs/rss",   "InfoSecJobs",  "Remote"),
+        ("https://nitter.net/SecurityJobs/rss",  "SecurityJobs", "Remote"),
     ]
     for feed_url, company, location in feeds:
         xml = get_text(feed_url, headers=_H)
@@ -422,15 +415,15 @@ def fetch_new_sources() -> list:
     _start = time.time()
     all_jobs = []
     fetchers = [
-        ("Bayt HTML",           _fetch_bayt),
+        # Bayt removed (HTTP 403 always)
+        # InfoSec-Jobs removed (HTTP 404)
+        # CISA/USAJobs removed (HTTP 401 — needs auth header)
         ("Greenhouse Cybersec", _fetch_greenhouse_cybersec),
         ("Reddit (RSS)",        _fetch_reddit_cybersecurity),
         ("HN Hiring",           _fetch_hackernews_hiring),
         ("GitHub Hiring",       _fetch_github_security_jobs),
         ("Telegram Channels",   _fetch_telegram_public_channels),
         ("Nitter",              _fetch_nitter_security_jobs),
-        ("InfoSec Jobs",        _fetch_infosec_jobs),
-        ("CISA USAJobs",        _fetch_cisa_jobs),
     ]
     for name, fn in fetchers:
         if time.time() - _start > BUDGET_SECONDS:
