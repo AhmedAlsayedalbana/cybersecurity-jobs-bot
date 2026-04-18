@@ -94,7 +94,8 @@ def _fetch_greenhouse_api(slug: str, company_name: str) -> list:
 # GREENHOUSE — Confirmed working slugs only (404s removed)
 # ══════════════════════════════════════════════════════════════
 
-# Tier 1A — Big Tech (removed: snowflake 404, digitalocean 404)
+# Tier 1A — Big Tech (confirmed working from v25 logs: 274 jobs)
+# Removed: snowflake (404), digitalocean (404)
 GREENHOUSE_TIER1 = [
     ("stripe",       "Stripe"),
     ("airbnb",       "Airbnb"),
@@ -116,7 +117,7 @@ GREENHOUSE_TIER1 = [
     ("fastly",       "Fastly"),
 ]
 
-# Tier 1B — SaaS/Dev Tools (removed: docker, sentry, segment, zapier, plaid, ramp, rippling, deel)
+# Tier 1B — SaaS (confirmed working, 404s removed: docker, sentry, segment, zapier, plaid, ramp, rippling, deel)
 GREENHOUSE_SAAS = [
     ("gitlab",      "GitLab"),
     ("postman",     "Postman"),
@@ -128,23 +129,21 @@ GREENHOUSE_SAAS = [
     ("intercom",    "Intercom"),
     ("mercury",     "Mercury"),
     ("algolia",     "Algolia"),
+    ("hashicorp",   "HashiCorp"),
+    ("okta",        "Okta"),
+    ("1password",   "1Password"),
+    ("bitwarden",   "Bitwarden"),
 ]
 
-# Tier 1C — AI/Security (removed: wiz-2, snyk, lacework, drata, vanta,
-#   crowdstrike, sentinelone, paloaltonetworks, rapid7, tenable, qualys, darktrace, illumio, vectra)
+# Tier 1C — AI/Security (confirmed working from v25 logs: 31 jobs)
+# Removed 404s: cyberark, proofpoint, varonis, secureworks, fortinet, trellix
 GREENHOUSE_AI_SEC = [
     ("abnormalsecurity", "Abnormal Security"),
     ("orca",             "Orca Security"),
     ("huntress",         "Huntress"),
     ("axonius",          "Axonius"),
     ("exabeam",          "Exabeam"),
-    ("cyberark",         "CyberArk"),
-    ("proofpoint",       "Proofpoint"),
-    ("varonis",          "Varonis"),
-    ("secureworks",      "Secureworks"),
     ("zscaler",          "Zscaler"),
-    ("fortinet",         "Fortinet"),
-    ("trellix",          "Trellix"),
 ]
 
 
