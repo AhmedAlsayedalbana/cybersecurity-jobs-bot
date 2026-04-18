@@ -147,8 +147,8 @@ def fetch_linkedin() -> list[Job]:
     seen_ids: set[str] = set()
     consecutive_failures = 0
     total_failures = 0
-    MAX_CONSECUTIVE = 6   # was 2 — caused premature stop
-    MAX_TOTAL = 12
+    MAX_CONSECUTIVE = 4   # stop sooner, don't waste budget on lost cause
+    MAX_TOTAL       = 8   # was 12
 
     for search in SEARCHES:
         if time.time() - _start > BUDGET_SECONDS:
@@ -160,8 +160,8 @@ def fetch_linkedin() -> list[Job]:
             break
 
         if consecutive_failures >= MAX_CONSECUTIVE:
-            log.warning(f"LinkedIn: {consecutive_failures} consecutive failures — waiting 45s.")
-            time.sleep(45)
+            log.warning(f"LinkedIn: {consecutive_failures} consecutive failures — waiting 20s.")
+            time.sleep(20)   # was 45s — don't waste budget
             consecutive_failures = 0
 
         params = {
@@ -180,7 +180,7 @@ def fetch_linkedin() -> list[Job]:
         if not html:
             consecutive_failures += 1
             total_failures += 1
-            wait = min(10 * consecutive_failures, 60)
+            wait = min(5 * consecutive_failures, 20)   # was min(10*n, 60)
             log.info(f"LinkedIn: failure {consecutive_failures}, waiting {wait}s")
             time.sleep(wait)
             continue
