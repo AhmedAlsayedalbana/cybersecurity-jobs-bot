@@ -1,4 +1,106 @@
 """
+Google Jobs — SerpAPI + HTML fallback.
+Expanded: more Egypt + Gulf + government searches.
+"""
+
+import logging
+import re
+import json
+import os
+from models import Job
+from sources.http_utils import get_text, get_json
+
+log = logging.getLogger(__name__)
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    ),
+}
+
+GOOGLE_JOBS_SEARCHES = [
+    # Egypt — broad + specific
+    {"q": "cybersecurity jobs Egypt",            "location": "Egypt",                       "gl": "eg"},
+    {"q": "SOC analyst jobs Cairo",              "location": "Cairo, Egypt",                "gl": "eg"},
+    {"q": "penetration tester jobs Egypt",       "location": "Egypt",                       "gl": "eg"},
+    {"q": "security engineer jobs Egypt",        "location": "Egypt",                       "gl": "eg"},
+    {"q": "junior cybersecurity jobs Egypt",     "location": "Egypt",                       "gl": "eg"},
+    {"q": "information security jobs Egypt",     "location": "Egypt",                       "gl": "eg"},
+    {"q": "GRC analyst jobs Egypt",              "location": "Egypt",                       "gl": "eg"},
+    {"q": "network security jobs Alexandria",    "location": "Alexandria, Egypt",            "gl": "eg"},
+    {"q": "وظائف أمن معلومات مصر",               "location": "Egypt",                       "gl": "eg"},
+    {"q": "وظائف أمن سيبراني القاهرة",           "location": "Cairo, Egypt",                "gl": "eg"},
+    # Saudi Arabia
+    {"q": "cybersecurity jobs Saudi Arabia",     "location": "Riyadh, Saudi Arabia",        "gl": "sa"},
+    {"q": "SOC analyst Riyadh",                  "location": "Riyadh, Saudi Arabia",        "gl": "sa"},
+    {"q": "security engineer Jeddah",            "location": "Jeddah, Saudi Arabia",        "gl": "sa"},
+    {"q": "وظائف أمن سيبراني الرياض",            "location": "Riyadh, Saudi Arabia",        "gl": "sa"},
+    # UAE
+    {"q": "cybersecurity jobs Dubai",            "location": "Dubai, United Arab Emirates", "gl": "ae"},
+    {"q": "security analyst Abu Dhabi",          "location": "Abu Dhabi, United Arab Emirates","gl": "ae"},
+    {"q": "SOC analyst Dubai",                   "location": "Dubai, United Arab Emirates", "gl": "ae"},
+    # Other Gulf
+    {"q": "cybersecurity jobs Qatar",            "location": "Doha, Qatar",                 "gl": "qa"},
+    {"q": "security engineer Kuwait",            "location": "Kuwait City, Kuwait",         "gl": "kw"},
+    # Remote / Global
+    {"q": "remote cybersecurity jobs Arabic",    "location": "",                            "gl": "us"},
+]
+
+
+def _fetch_via_serpapi():
+    if not SERPAPI_KEY:
+        return []
+    jobs = []
+    seen_urls = set()
+    _first_done = False
+    for search in GOOGLE_JOBS_SEARCHES:
+        params = {
+            "engine": "google_jobs",
+            "q": search["q"],
+            "location": search.get("location", ""),
+            "api_key": SERPAPI_KEY,
+            "hl": "en",
+            "gl": search.get("gl", "us"),
+        }
+        data = get_json("https://serpapi.com/search", params=params, headers=HEADERS)
+        if not _first_done:
+            _first_done = True
+            if not data or "jobs_results" not in data:
+                log.warning("SerpAPI: first request failed — skipping")
+                break
+        if not data or "jobs_results" not in data:
+            continue
+        for item in data["jobs_results"]:
+            url_job = ""
+            for link in item.get("related_links", []):
+                url_job = link.get("link", "")
+                if url_job:
+                    break
+            if not url_job:
+                url_job = ("https://www.google.com/search?q="
+                           + search["q"].replace(" ", "+") + "&ibp=htl;jobs")
+            if url_job in seen_urls:
+                continue
+            seen_urls.add(url_job)
+            jobs.append(Job(
+                title=item.get("title", ""),
+                company=item.get("company_name", ""),
+                location=item.get("location", search.get("location", "")),
+                url=url_job,
+                source="google_jobs",
+                description=(item.get("description") or "")[:300],
+                tags=["google_jobs", search.get("gl", "")],
+                is_remote="remote" in item.get("title", "").lower(),
+            ))
+    log.info(f"Google Jobs (SerpAPI): {len(jobs)} jobs")
+    return jobs
+
+
+def fetch_google_jobs() -> list:
+    return _fetch_via_serpapi()
+"""
 Google Jobs scraper — uses SerpAPI or direct scraping fallback.
 Catches jobs from small sites that have no API or RSS feed.
 Focused on Egypt & Gulf cybersecurity roles.
