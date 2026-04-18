@@ -97,9 +97,6 @@ def _fetch_via_serpapi():
     log.info(f"Google Jobs (SerpAPI): {len(jobs)} jobs")
     return jobs
 
-
-def fetch_google_jobs() -> list:
-    return _fetch_via_serpapi()
 """
 Google Jobs scraper — uses SerpAPI or direct scraping fallback.
 Catches jobs from small sites that have no API or RSS feed.
