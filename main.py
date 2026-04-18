@@ -165,7 +165,8 @@ def main():
             # 7. Send — telegram_sender handles 10-per-channel logic
             if final_pool:
                 log.info("📨 Sending to Telegram (10 per channel)...")
-                sent_count, sent_urls = send_jobs(final_pool)
+                sent_count = send_jobs(final_pool)
+                sent_urls  = set()   # send_jobs handles dedup internally
                 stats["sent"] = sent_count
                 log.info("✅ Total sent: " + str(sent_count))
             else:
