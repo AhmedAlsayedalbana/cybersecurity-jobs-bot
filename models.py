@@ -104,23 +104,51 @@ def _is_remote(job: "Job") -> bool:
 
 # Expanded CORE_ROLES for better detection
 CORE_ROLES = [
-    "soc analyst", "soc engineer", "security engineer", "security operations engineer",
-    "penetration tester", "pentester", "pentest",
-    "appsec", "application security", "cloud security",
-    "incident response", "incident responder",
-    "threat intelligence", "threat hunter", "threat hunting", "threat analyst",
+    # SOC / Security Operations
+    "soc analyst", "soc engineer", "security operations analyst",
+    "security operations engineer", "security operations center",
+    # Engineers
+    "security engineer", "security software engineer", "cybersecurity engineer",
+    "information security engineer", "network security engineer",
+    "security infrastructure engineer", "security systems engineer",
+    "security systems reliability engineer", "security platform engineer",
+    "infrastructure security", "platform security",
+    # Offensive
+    "penetration tester", "pentester", "pentest", "pen tester",
+    "red team", "red teamer", "ethical hacker", "offensive security",
+    "bug bounty", "exploit", "vulnerability researcher",
+    # Defensive / Detection
+    "detection engineer", "blue team", "threat hunter", "threat hunting",
+    "threat intelligence", "threat analyst", "threat researcher",
     "cyber threat intelligence", "cti analyst",
-    "dfir", "digital forensics",
-    "security architect", "ciso", "grc", "compliance analyst", "security analyst",
-    "vulnerability", "ethical hacker", "blue team", "red team", "devsecops",
-    "forensics", "malware", "cyber security", "cybersecurity", "infosec",
-    "information security", "detection engineer", "security operations",
-    "red teamer", "offensive security", "bug bounty", "exploit",
-    "iam engineer", "identity access", "pki engineer", "cryptograph",
+    "incident response", "incident responder", "dfir", "digital forensics", "forensics",
+    "malware", "malware analyst", "reverse engineer",
+    # AppSec / Cloud
+    "appsec", "application security", "cloud security",
+    "devsecops", "dev sec ops", "secure code", "sast", "dast",
+    "container security", "kubernetes security",
+    # GRC / Compliance
+    "security architect", "ciso", "grc", "compliance analyst",
+    "security analyst", "security auditor", "it auditor", "cyber auditor",
+    "data protection officer", "privacy officer",
+    # IAM / Crypto
+    "iam engineer", "identity access", "identity and access",
+    "pki engineer", "cryptograph", "zero trust",
+    # Generalist
+    "cyber security", "cybersecurity", "infosec", "information security",
     "security consultant", "security specialist", "security officer",
     "security administrator", "security manager", "security lead",
+    "security program manager", "security researcher",
+    "security director", "head of security", "vp of security",
+    "chief security officer", "chief information security",
+    # Monitoring / SIEM
+    "siem", "soar", "security monitoring",
+    # Network
+    "network security", "firewall engineer",
+    "vulnerability", "vulnerability management",
 ]
 
+# Excluded jobs are logged at DEBUG level only to reduce log noise
 WEAK_TERMS = ["security", "cyber", "protection", "defense", "analyst"]
 
 def _word_match(keyword: str, text: str) -> bool:
@@ -151,7 +179,7 @@ def is_cybersec_job(job: "Job") -> bool:
             # Don't exclude if a core security term is also in the title
             if any(role in title_lower for role in ["security", "cyber", "soc", "pentest"]):
                 continue
-            logger.info(f"Job excluded (Blacklisted keyword in title): {job.title}")
+            logger.debug(f"Job excluded (Blacklisted keyword in title): {job.title}")
             return False
 
     # Layer 1: Core Roles (Highest confidence)
@@ -174,7 +202,7 @@ def is_cybersec_job(job: "Job") -> bool:
             if any(term in title_lower for term in ["security", "cyber"]):
                 return True
 
-    logger.info(f"Job excluded (No strong cyber context): {job.title}")
+    logger.debug(f"Job excluded (No strong cyber context): {job.title}")
     return False
 
 
