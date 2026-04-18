@@ -1,10 +1,17 @@
 """
-Job data model and filtering logic.
-Cybersecurity-only filtering with smart geo rules:
-  - Egypt: all jobs (onsite + remote) — HIGHEST PRIORITY
+Job data model and filtering logic — v27
+
+Geo rules:
+  - Egypt:  all jobs pass (onsite + remote)
   - Remote: pass
-  - Gulf (KSA/UAE/etc): pass
-  - Rest of world: remote only
+  - Gulf:   pass
+  - Rest:   remote only
+
+v27 IMPROVEMENTS:
+  - Title fast-path: if title contains a security pattern → pass immediately
+    (fixes false negatives for "Security Program Manager", "Security Assurance Analyst" etc.)
+  - linkedin_hiring source is lenient (posts have minimal context)
+  - Egypt/Gulf: any "security" or "cyber" in title = pass
 """
 
 from dataclasses import dataclass, field
@@ -12,12 +19,12 @@ from typing import Optional
 from datetime import datetime
 import config
 import logging
+import re
 
-# Setup logging
 logger = logging.getLogger(__name__)
 
+
 def _flatten_tags(tags) -> str:
-    """Safely flatten tags to a string."""
     if not tags:
         return ""
     flat = []
@@ -42,28 +49,24 @@ class Job:
     job_type: str = ""
     tags: list = field(default_factory=list)
     is_remote: bool = False
-    original_source: str = ""  # for aggregators like JSearch
+    original_source: str = ""
     posted_date: Optional[datetime] = None
     description: str = ""
 
     @property
     def unique_id(self) -> str:
-        """Dedup key: normalized title + company."""
-        title_norm = self.title.lower().strip()
+        title_norm   = self.title.lower().strip()
         company_norm = self.company.lower().strip()
         for noise in ["inc", "inc.", "ltd", "ltd.", "llc", "corp",
-                      "corporation", "co.", "company", "gmbh", "ag",
-                      "sa", "pvt"]:
+                      "corporation", "co.", "company", "gmbh", "ag", "sa", "pvt"]:
             company_norm = company_norm.replace(noise, "").strip()
         return f"{title_norm}|{company_norm}"
 
     @property
     def url_id(self) -> str:
-        """Secondary dedup key based on URL."""
         if self.url:
             clean = self.url.split("?utm")[0].split("&utm")[0]
-            clean = clean.rstrip("/").lower()
-            return clean
+            return clean.rstrip("/").lower()
         return ""
 
     @property
@@ -81,17 +84,15 @@ class Job:
         return config.DEFAULT_EMOJI
 
 
-# ─── Geo helpers ─────────────────────────────────────────────
+# ── Geo helpers ───────────────────────────────────────────────
 
 def _is_in_egypt(location: str) -> bool:
     loc = location.lower().strip()
     return any(p in loc for p in config.EGYPT_PATTERNS)
 
-
 def _is_in_gulf(location: str) -> bool:
     loc = location.lower().strip()
     return any(p in loc for p in config.GULF_PATTERNS)
-
 
 def _is_remote(job: "Job") -> bool:
     if job.is_remote:
@@ -100,64 +101,59 @@ def _is_remote(job: "Job") -> bool:
     return any(p in combined for p in config.REMOTE_PATTERNS)
 
 
-# ─── Keyword helpers ─────────────────────────────────────────
+# ── Classification patterns ───────────────────────────────────
 
-# Expanded CORE_ROLES for better detection
-CORE_ROLES = [
-    # SOC / Security Operations
-    "soc analyst", "soc engineer", "security operations analyst",
-    "security operations engineer", "security operations center",
-    # Engineers
-    "security engineer", "security software engineer", "cybersecurity engineer",
-    "information security engineer", "network security engineer",
-    "security infrastructure engineer", "security systems engineer",
-    "security systems reliability engineer", "security platform engineer",
-    "infrastructure security", "platform security",
-    # Offensive
-    "penetration tester", "pentester", "pentest", "pen tester",
-    "red team", "red teamer", "ethical hacker", "offensive security",
-    "bug bounty", "exploit", "vulnerability researcher",
-    # Defensive / Detection
-    "detection engineer", "blue team", "threat hunter", "threat hunting",
-    "threat intelligence", "threat analyst", "threat researcher",
-    "cyber threat intelligence", "cti analyst",
-    "incident response", "incident responder", "dfir", "digital forensics", "forensics",
-    "malware", "malware analyst", "reverse engineer",
-    # AppSec / Cloud
-    "appsec", "application security", "cloud security",
-    "devsecops", "dev sec ops", "secure code", "sast", "dast",
-    "container security", "kubernetes security",
-    # GRC / Compliance
-    "security architect", "ciso", "grc", "compliance analyst",
-    "security analyst", "security auditor", "it auditor", "cyber auditor",
-    "data protection officer", "privacy officer",
-    # IAM / Crypto
-    "iam engineer", "identity access", "identity and access",
-    "pki engineer", "cryptograph", "zero trust",
-    # Generalist
-    "cyber security", "cybersecurity", "infosec", "information security",
-    "security consultant", "security specialist", "security officer",
-    "security administrator", "security manager", "security lead",
-    "security program manager", "security researcher",
-    "security director", "head of security", "vp of security",
-    "chief security officer", "chief information security",
-    # Monitoring / SIEM
-    "siem", "soar", "security monitoring",
-    # Network
-    "network security", "firewall engineer",
-    "vulnerability", "vulnerability management",
+# If the JOB TITLE ALONE contains one of these → it's definitely a cyber job.
+# No description needed. Fixes false negatives for titles with no tags/description.
+SECURITY_TITLE_PATTERNS = [
+    "security analyst", "security engineer", "security specialist",
+    "security consultant", "security manager", "security architect",
+    "security officer", "security administrator", "security lead",
+    "security researcher", "security operations", "security auditor",
+    "security assurance", "security program", "security governance",
+    "cybersecurity", "cyber security", "infosec", "information security",
+    "soc analyst", "soc engineer", "soc manager", "soc lead", "soc specialist",
+    "penetration tester", "pen tester", "pentester", "pentest",
+    "ethical hacker", "bug bounty", "red team", "blue team",
+    "threat analyst", "threat hunter", "threat intelligence",
+    "incident response", "incident responder", "dfir",
+    "malware analyst", "malware researcher",
+    "grc analyst", "grc specialist", "grc manager", "grc consultant",
+    "appsec", "application security", "devsecops",
+    "cloud security", "network security engineer",
+    "vulnerability analyst", "vulnerability researcher", "vulnerability manager",
+    "digital forensics", "forensic analyst", "detection engineer",
+    # Arabic
+    "أمن معلومات", "أمن سيبراني", "اختبار اختراق", "أمن شبكات",
+    "محلل أمن", "مهندس أمن", "متخصص أمن",
 ]
 
-# Excluded jobs are logged at DEBUG level only to reduce log noise
-WEAK_TERMS = ["security", "cyber", "protection", "defense", "analyst"]
+# Core roles — checked against full text (title + description + tags)
+CORE_ROLES = [
+    "soc analyst", "soc engineer", "security operations engineer",
+    "security operations analyst", "security operations center",
+    "penetration tester", "pentester", "pentest",
+    "appsec", "application security", "cloud security",
+    "incident response", "incident responder",
+    "threat intelligence", "threat hunter", "threat hunting", "threat analyst",
+    "cyber threat intelligence", "cti analyst",
+    "dfir", "digital forensics",
+    "security architect", "ciso", "grc", "compliance analyst",
+    "vulnerability", "ethical hacker", "blue team", "red team", "devsecops",
+    "forensics", "malware", "cyber security", "cybersecurity", "infosec",
+    "information security", "detection engineer", "security operations",
+    "offensive security", "bug bounty", "exploit",
+    "iam engineer", "identity access", "pki engineer", "cryptograph",
+    "security consultant", "security specialist", "security officer",
+    "security administrator", "security manager", "security lead",
+    "security analyst", "security engineer", "security researcher",
+    "security auditor", "it auditor", "data protection officer",
+]
+
+WEAK_TERMS = ["security", "cyber", "protection", "defense"]
+
 
 def _word_match(keyword: str, text: str) -> bool:
-    """
-    Match keyword safely:
-    - Multi-word phrases: simple substring (already specific enough)
-    - Single words: word-boundary match to prevent 'hr' matching inside 'threat'
-    """
-    import re
     kw = keyword.lower().strip()
     if " " in kw:
         return kw in text
@@ -165,85 +161,72 @@ def _word_match(keyword: str, text: str) -> bool:
 
 
 def is_cybersec_job(job: "Job") -> bool:
-    """
-    Return True if job is a Cybersecurity role.
-    Uses word-boundary matching on exclude keywords to prevent false positives
-    (e.g. 'hr' must not match inside 'threat').
-    """
+    title_lower = job.title.lower().strip()
     text = f"{job.title} {job.description} {_flatten_tags(job.tags)}".lower()
-    title_lower = job.title.lower()
 
-    # Title-only exclusion — word-boundary aware
+    # Step 0: Title blacklist
     for kw in config.EXCLUDE_KEYWORDS:
         if _word_match(kw, title_lower):
-            # Don't exclude if a core security term is also in the title
-            if any(role in title_lower for role in ["security", "cyber", "soc", "pentest"]):
+            if any(role in title_lower for role in ["security", "cyber", "soc", "pentest", "infosec"]):
                 continue
-            logger.debug(f"Job excluded (Blacklisted keyword in title): {job.title}")
+            logger.info(f"Job excluded (Blacklisted keyword in title): {job.title}")
             return False
 
-    # Layer 1: Core Roles (Highest confidence)
+    # Step 1: Title fast-path (no description needed)
+    for pattern in SECURITY_TITLE_PATTERNS:
+        if pattern in title_lower:
+            return True
+
+    # Step 2: Core roles in full text
     if any(role in text for role in CORE_ROLES):
         return True
 
-    # Layer 2: Weak signals with technical context
+    # Step 3: Weak signals + technical context
     if any(term in text for term in WEAK_TERMS):
         strong_context = [
             "siem", "soc", "edr", "xdr", "pentest", "vulnerability", "firewall",
-            "ids/ips", "threat", "splunk", "qradar", "sentinel", "crowdstrike",
-            "defender", "wireshark", "metasploit", "burp", "owasp", "iso 27001",
-            "nist", "cis", "iam", "pki", "encryption", "hardening"
+            "ids", "ips", "threat", "splunk", "qradar", "sentinel",
+            "crowdstrike", "defender", "wireshark", "metasploit", "burp", "owasp",
+            "iso 27001", "nist", "cis", "iam", "pki", "encryption",
+            "hardening", "zero trust", "cspm", "cnapp", "devsecops", "appsec",
+            "malware", "forensic", "dfir", "incident", "phishing",
         ]
         if any(ctx in text for ctx in strong_context):
             return True
 
-        # If it's in Egypt or Gulf, be less strict
+        # Egypt/Gulf: any "security" or "cyber" in title = pass (local market)
         if _is_in_egypt(job.location) or _is_in_gulf(job.location):
-            if any(term in title_lower for term in ["security", "cyber"]):
+            if any(term in title_lower for term in ["security", "cyber", "حماية", "أمن"]):
                 return True
 
-    logger.debug(f"Job excluded (No strong cyber context): {job.title}")
+        # linkedin_hiring: short posts with minimal context — be lenient
+        if job.source == "linkedin_hiring":
+            if any(term in title_lower for term in ["security", "cyber", "soc", "grc"]):
+                return True
+
+    logger.info(f"Job excluded (No strong cyber context): {job.title}")
     return False
 
 
 def passes_geo_filter(job: "Job") -> bool:
-    """
-    Geo-filtering:
-    - Egypt → ALWAYS pass
-    - Remote-only sources → auto-pass
-    - linkedin_hiring → always pass (location often undetected in canonical titles)
-    - Remote job → pass
-    - Gulf → pass
-    - Onsite outside Egypt/Gulf → reject
-    """
     remote_only_sources = {
         "remotive", "remoteok", "wwr", "workingnomads", "findwork", "reed",
         "himalayas", "jobicy", "arbeitnow",
     }
-
     if _is_in_egypt(job.location):
         return True
-
     if job.source in remote_only_sources:
         return True
-
-    # #Hiring posts: always pass — location extraction is unreliable for these
     if job.source == "linkedin_hiring":
-        return True
-
+        return True  # location unreliable for hiring posts
     if _is_remote(job):
         return True
-
     if _is_in_gulf(job.location):
         return True
-
     return False
 
 
 def filter_jobs(jobs: list["Job"]) -> list["Job"]:
-    """
-    Apply all filters.
-    """
     filtered = []
     for job in jobs:
         if not job.title or not job.url:
@@ -253,6 +236,5 @@ def filter_jobs(jobs: list["Job"]) -> list["Job"]:
         if not passes_geo_filter(job):
             continue
         filtered.append(job)
-    
     logger.info(f"Filtered {len(jobs)} jobs down to {len(filtered)}")
     return filtered
