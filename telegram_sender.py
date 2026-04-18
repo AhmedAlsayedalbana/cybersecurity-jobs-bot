@@ -206,7 +206,7 @@ def send_jobs(jobs):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
 
-    return total_sent
+    return total_sent, global_sent_urls
 
 
 # ─────────────────────────────────────────────────────────────
