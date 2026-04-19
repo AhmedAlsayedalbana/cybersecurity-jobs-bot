@@ -68,72 +68,64 @@ def _channel_priority(ch_key: str) -> int:
 
 def route_job(job):
     """
-    Route a job to channels.
+    Route a job to channels — v29 model:
 
-    Rules (v28):
-    - A job is routed to ALL matching channels it qualifies for.
-    - BUT at the topic level, if a job matches a high-priority topic AND a lower-priority
-      one (e.g. 'network security engineer' matches both networksec AND seceng),
-      the lower-priority match is dropped to avoid duplicates.
-    - GEO channels (egypt, gulf, remote) are independent from topic channels.
-    - A job CAN appear in one GEO channel + one TOPIC channel max.
+    GEO channels  (egypt / gulf / remote): based on location only.
+    TOPIC channels (soc / grc / pentest / ...): based on keywords only.
+
+    A job CAN and SHOULD appear in BOTH a geo channel AND a topic channel.
+    Example: "GRC Analyst in Cairo" → egypt + grc ✅
+
+    Within topic channels, if a job matches multiple topics, it goes to the
+    HIGHEST-priority (most specific) one only to avoid topic channel flooding.
+    Within geo channels, a job goes to exactly one geo channel.
     """
     tags_str   = _flatten_tags(job.tags)
     searchable = (job.title + " " + job.company + " " + tags_str + " " + job.description).lower()
 
-    geo_match   = []
-    topic_match = []
+    # ── Geo routing (mutually exclusive) ─────────────────────
+    geo_result = []
+    if _is_egypt_job(job):
+        geo_result = ["egypt"]
+    elif _is_gulf_job(job):
+        geo_result = ["gulf"]
+    elif _is_remote_job(job):
+        geo_result = ["remote"]
 
-    GEO_CHANNELS = {"egypt", "gulf", "remote"}
-
+    # ── Topic routing (keyword-based) ────────────────────────
+    topic_matches = []
     for key, ch in CHANNELS.items():
-        match_type = ch.get("match", "")
+        if ch.get("match"):          # skip geo channels
+            continue
+        if "keywords" not in ch:
+            continue
+        if any(kw.lower() in searchable for kw in ch["keywords"]):
+            topic_matches.append(key)
 
-        if match_type == "GEO_EGYPT":
-            if _is_egypt_job(job):
-                geo_match.append(key)
-
-        elif match_type == "GEO_GULF":
-            if _is_gulf_job(job) and not _is_egypt_job(job):
-                geo_match.append(key)
-
-        elif match_type == "REMOTE":
-            if _is_remote_job(job) and not _is_egypt_job(job) and not _is_gulf_job(job):
-                geo_match.append(key)
-
-        elif "keywords" in ch:
-            if any(kw.lower() in searchable for kw in ch["keywords"]):
-                topic_match.append(key)
-
-    # Among topic channels: keep only the highest-priority match(es).
-    # If multiple channels share the same priority level, keep all of them.
-    if topic_match:
-        best_priority = min(_channel_priority(k) for k in topic_match)
-        topic_match   = [k for k in topic_match if _channel_priority(k) == best_priority]
-
-    # A job goes to at most 1 geo + 1 topic channel.
-    # Geo: pick the first match (egypt > gulf > remote by send_order).
-    geo_result   = geo_match[:1]
-    topic_result = topic_match[:1]
+    # Among topic channels, keep only highest-priority match
+    topic_result = []
+    if topic_matches:
+        best = min(_channel_priority(k) for k in topic_matches)
+        top  = [k for k in topic_matches if _channel_priority(k) == best]
+        topic_result = top[:1]
 
     return geo_result + topic_result
 
 
 def send_jobs(jobs):
     """
-    Send jobs to Telegram channels.
-    Each channel gets up to MAX_JOBS_PER_CHANNEL (5) jobs per run.
+    Send jobs to Telegram channels — v29 rules:
 
-    v28 Rules:
-    - STRICT global dedup: once a job URL is sent to ANY channel, it is NEVER
-      sent again to any other channel in the same run.
-    - Each job appears in at most 1 geo channel + 1 topic channel (enforced by route_job).
-    - Jobs are sorted by score desc before sending — highest score sent first.
-    - Within a channel, no duplicate URLs.
+    - A job appears in at most 1 GEO channel + at most 1 TOPIC channel.
+    - GEO channels are deduped among themselves (no job in both egypt & gulf).
+    - TOPIC channels are deduped among themselves (no job in both soc & grc).
+    - A job CAN appear in one geo + one topic (e.g. egypt + grc).
+    - Jobs sorted by score desc — best jobs go first.
+    - Each channel: max MAX_JOBS_PER_CHANNEL (5) jobs per run.
     """
     from scoring import score_job
 
-    total_sent = 0
+    total_sent      = 0
     channel_summary = {}
 
     GEO_CHANNELS   = ["egypt", "gulf", "remote"]
@@ -146,18 +138,19 @@ def send_jobs(jobs):
     if missing:
         log.warning(f"⚠️  Missing thread IDs for: {', '.join(missing)} — skipping those")
 
-    # Sort all jobs by score descending so best jobs go first
+    # Sort jobs by score
     jobs_scored = sorted(jobs, key=lambda j: -score_job(j))
 
-    # Build per-channel queues (already filtered to best topic match by route_job)
+    # Build per-channel queues
     channel_queues = {key: [] for key in CHANNELS.keys()}
     for job in jobs_scored:
         for ch_key in route_job(job):
             if ch_key in channel_queues:
                 channel_queues[ch_key].append(job)
 
-    limit = MAX_JOBS_PER_CHANNEL
-    global_sent_urls = set()   # STRICT: no URL sent twice across all channels
+    limit          = MAX_JOBS_PER_CHANNEL
+    geo_sent_urls  = set()    # dedup within geo channels only
+    topic_sent_urls = set()   # dedup within topic channels only
 
     for ch_key in send_order:
         ch_jobs   = channel_queues.get(ch_key, [])
@@ -166,7 +159,8 @@ def send_jobs(jobs):
         if not thread_id:
             continue
 
-        ch_name = CHANNELS.get(ch_key, {}).get("name", ch_key)
+        ch_name  = CHANNELS.get(ch_key, {}).get("name", ch_key)
+        is_geo   = ch_key in GEO_CHANNELS
 
         if not ch_jobs:
             log.info(f"📭 [{ch_key}] {ch_name}: 0 matching jobs this run")
@@ -178,16 +172,23 @@ def send_jobs(jobs):
         for job in ch_jobs:
             if sent_this_ch >= limit:
                 break
-            if job.url in global_sent_urls:   # already sent somewhere — skip
+
+            # Dedup within same channel type only
+            if is_geo and job.url in geo_sent_urls:
+                continue
+            if not is_geo and job.url in topic_sent_urls:
                 continue
 
             message = format_job_message(job)
             success = _send_to_topic(message, thread_id)
 
             if success:
-                sent_this_ch     += 1
-                total_sent       += 1
-                global_sent_urls.add(job.url)
+                sent_this_ch += 1
+                total_sent   += 1
+                if is_geo:
+                    geo_sent_urls.add(job.url)
+                else:
+                    topic_sent_urls.add(job.url)
                 log.info(f"  ✅ [{ch_key}] {sent_this_ch}/{limit} — {job.title[:50]}")
 
             time.sleep(TELEGRAM_SEND_DELAY)
@@ -206,7 +207,8 @@ def send_jobs(jobs):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
 
-    return total_sent, global_sent_urls
+    # Return both count and all URLs sent (geo + topic combined) for dedup
+    return total_sent, geo_sent_urls | topic_sent_urls
 
 
 # ─────────────────────────────────────────────────────────────
