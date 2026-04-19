@@ -50,8 +50,6 @@ BIG_TECH_GREENHOUSE = [
     ("fastly",       "Fastly"),
     # v30 additions
     ("hubspot",      "HubSpot"),
-    ("zendesk",      "Zendesk"),
-    ("box",          "Box"),
     ("twitch",       "Twitch"),
     ("elastic",      "Elastic"),
     ("databricks",   "Databricks"),
