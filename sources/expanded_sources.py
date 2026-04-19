@@ -152,10 +152,7 @@ GREENHOUSE_TIER1 = [
     ("twitch",        "Twitch"),
     ("duolingo",      "Duolingo"),
     ("hubspot",       "HubSpot"),
-    ("zendesk",       "Zendesk"),
-    ("box",           "Box"),
-    ("yelp",          "Yelp"),
-]
+            ]
 
 # Tier 1B — SaaS
 GREENHOUSE_SAAS = [
@@ -169,15 +166,11 @@ GREENHOUSE_SAAS = [
     ("intercom",      "Intercom"),
     ("mercury",       "Mercury"),
     ("algolia",       "Algolia"),
-    ("hashicorp",     "HashiCorp"),
-    ("okta",          "Okta"),
-    ("1password",     "1Password"),
-    ("bitwarden",     "Bitwarden"),
+        ("okta",          "Okta"),
+        ("bitwarden",     "Bitwarden"),
     ("netlify",       "Netlify"),
-    ("notion",        "Notion"),
-    ("airtable",      "Airtable"),
-    ("miro",          "Miro"),
-]
+        ("airtable",      "Airtable"),
+    ]
 
 # Tier 1C — Cybersecurity focused
 GREENHOUSE_AI_SEC = [
@@ -187,15 +180,8 @@ GREENHOUSE_AI_SEC = [
     ("axonius",          "Axonius"),
     ("exabeam",          "Exabeam"),
     ("zscaler",          "Zscaler"),
-    ("lacework",         "Lacework"),
-    ("aquasecurity",     "Aqua Security"),
-    ("sysdig",           "Sysdig"),
-    ("snyk",             "Snyk"),
-    ("semgrep",          "Semgrep"),
-    ("wiz",              "Wiz"),
-    ("torq",             "Torq"),
-    ("devo",             "Devo"),
-]
+                            ("torq",             "Torq"),
+    ]
 
 # Tier 1D — Lever API (major security vendors)
 LEVER_COMPANIES = [
