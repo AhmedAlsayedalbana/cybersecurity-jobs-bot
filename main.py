@@ -14,7 +14,7 @@ from sources import ALL_FETCHERS
 from models import filter_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent
 from telegram_sender import send_jobs
-from scoring import score_job
+from scoring import score_job_int as score_job
 from classifier import classify_location
 
 logging.basicConfig(
