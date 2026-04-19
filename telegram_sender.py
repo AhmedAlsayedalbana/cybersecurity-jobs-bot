@@ -148,9 +148,9 @@ def send_jobs(jobs):
             if ch_key in channel_queues:
                 channel_queues[ch_key].append(job)
 
-    limit          = MAX_JOBS_PER_CHANNEL
-    geo_sent_urls  = set()    # dedup within geo channels only
-    topic_sent_urls = set()   # dedup within topic channels only
+    limit           = MAX_JOBS_PER_CHANNEL
+    geo_sent_urls   = set()   # tracks URLs sent to GEO channels
+    all_sent_urls   = set()   # GLOBAL dedup — no URL sent twice across ALL channels
 
     for ch_key in send_order:
         ch_jobs   = channel_queues.get(ch_key, [])
@@ -173,22 +173,19 @@ def send_jobs(jobs):
             if sent_this_ch >= limit:
                 break
 
-            # Dedup within same channel type only
-            if is_geo and job.url in geo_sent_urls:
-                continue
-            if not is_geo and job.url in topic_sent_urls:
+            # Global dedup — never send the same URL twice across any channel
+            if job.url in all_sent_urls:
                 continue
 
             message = format_job_message(job)
             success = _send_to_topic(message, thread_id)
 
             if success:
-                sent_this_ch += 1
-                total_sent   += 1
+                sent_this_ch   += 1
+                total_sent     += 1
+                all_sent_urls.add(job.url)
                 if is_geo:
                     geo_sent_urls.add(job.url)
-                else:
-                    topic_sent_urls.add(job.url)
                 log.info(f"  ✅ [{ch_key}] {sent_this_ch}/{limit} — {job.title[:50]}")
 
             time.sleep(TELEGRAM_SEND_DELAY)
@@ -207,8 +204,8 @@ def send_jobs(jobs):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
 
-    # Return both count and all URLs sent (geo + topic combined) for dedup
-    return total_sent, geo_sent_urls | topic_sent_urls
+    # Return count + all sent URLs for seen_jobs dedup
+    return total_sent, all_sent_urls
 
 
 # ─────────────────────────────────────────────────────────────
