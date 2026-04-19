@@ -114,7 +114,7 @@ def _extract_jsonld_jobs(html: str, fallback_url: str, source: str,
 
 # ── 1. Greenhouse Cybersec ────────────────────────────────────
 def _fetch_greenhouse_cybersec() -> list:
-    """Greenhouse boards — confirmed-working slugs only."""
+    """Greenhouse boards — cybersecurity companies confirmed working."""
     jobs = []
     seen = set()
     BOARDS = [
@@ -129,8 +129,16 @@ def _fetch_greenhouse_cybersec() -> list:
         ("MongoDB",           "mongodb"),
         ("Elastic",           "elastic"),
         ("Zscaler",           "zscaler"),
-        # 404 confirmed removed: cyberark, paloaltonetworks2, fortinet,
-        # proofpoint, varonis, secureworks, trellix, hashicorp, 1password
+        # v30 additions
+        ("Snyk",              "snyk"),
+        ("Wiz",               "wiz"),
+        ("Aqua Security",     "aquasecurity"),
+        ("Sysdig",            "sysdig"),
+        ("Semgrep",           "semgrep"),
+        ("Devo",              "devo"),
+        ("GitLab",            "gitlab"),
+        ("Okta",              "okta"),
+        ("Bitwarden",         "bitwarden"),
     ]
     SEC_TITLES = [
         "security", "cyber", "soc", "pentest", "threat", "vulnerability",
@@ -324,23 +332,54 @@ def _fetch_akhtaboot() -> list:
     return jobs
 
 
-# ── 7. Forasna Egypt ──────────────────────────────────────────
+# ── 7. Forasna Egypt (HTTP 404 — kept as stub, skips gracefully) ─
 def _fetch_forasna() -> list:
+    return []   # disabled — HTTP 404 on all endpoints confirmed
+
+
+# ── 8. InfoSec-Jobs.com — cybersecurity specialized board ─────
+def _fetch_infosec_jobs() -> list:
+    """infosec-jobs.com — 100% cybersecurity focused, has RSS feed."""
     jobs = []
     seen = set()
     feeds = [
-        "https://www.forasna.com/rss/jobs/information-technology",
-        "https://www.forasna.com/rss/jobs/it-and-cyber-security",
+        ("https://infosec-jobs.com/feed/", "Remote / Worldwide"),
+        ("https://infosec-jobs.com/?s=soc+analyst", "Remote / Worldwide"),
+        ("https://infosec-jobs.com/?s=penetration+tester", "Remote / Worldwide"),
+        ("https://infosec-jobs.com/?s=security+engineer", "Remote / Worldwide"),
     ]
-    for url in feeds:
+    # Try RSS first (fastest)
+    xml = get_text(feeds[0][0], headers=_H)
+    if xml:
+        for j in _parse_rss(xml, "InfoSec-Jobs", "infosec_jobs", "Remote / Worldwide",
+                             ["infosec_jobs", "remote"]):
+            if j.url not in seen and _is_sec(j.title):
+                seen.add(j.url)
+                jobs.append(j)
+    log.info(f"InfoSec-Jobs.com: {len(jobs)} jobs")
+    return jobs
+
+
+# ── 9. Cybersecurity-specific job boards via RSS ──────────────
+def _fetch_cybersec_rss() -> list:
+    """Additional cybersecurity RSS feeds."""
+    jobs = []
+    seen = set()
+    feeds = [
+        ("https://www.cybersecjobs.com/rss/jobs",                    "CyberSecJobs",    "Remote / Worldwide"),
+        ("https://securityjobs.net/rss/cybersecurity-jobs",          "SecurityJobs.net", "Remote / Worldwide"),
+    ]
+    for url, company, location in feeds:
         xml = get_text(url, headers=_H)
         if not xml:
             continue
-        for j in _parse_rss(xml, "Forasna", "forasna", "Egypt", ["forasna", "egypt"]):
-            if j.url not in seen:
+        for j in _parse_rss(xml, company, company.lower().replace(".", "").replace(" ", "_"),
+                             location, [company.lower(), "cybersec"]):
+            if j.url not in seen and _is_sec(j.title):
                 seen.add(j.url)
                 jobs.append(j)
-    log.info(f"Forasna: {len(jobs)} jobs")
+        time.sleep(0.5)
+    log.info(f"CyberSec RSS boards: {len(jobs)} jobs")
     return jobs
 
 
@@ -356,8 +395,9 @@ def fetch_new_sources() -> list:
         ("GitHub Hiring",       _fetch_github_security_jobs),
         ("Telegram Channels",   _fetch_telegram_public_channels),
         ("Nitter",              _fetch_nitter_security_jobs),
+        ("InfoSec-Jobs",        _fetch_infosec_jobs),        # new ✅
+        ("CyberSec RSS",        _fetch_cybersec_rss),        # new ✅
         ("Akhtaboot",           _fetch_akhtaboot),
-        ("Forasna",             _fetch_forasna),
     ]
     for name, fn in fetchers:
         if time.time() - _start > BUDGET_SECONDS:
@@ -366,6 +406,8 @@ def fetch_new_sources() -> list:
         try:
             results = fn()
             all_jobs.extend(results)
+            if results:
+                log.info(f"new_sources: {name}: {len(results)} jobs")
         except Exception as e:
             log.warning(f"new_sources: {name} failed: {e}")
     return all_jobs
