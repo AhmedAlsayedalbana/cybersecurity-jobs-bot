@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 JOBS_API   = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
-BUDGET_SECS = 8 * 60
+BUDGET_SECS = 3 * 60  # v28: reduced from 8min — LinkedIn blocks anyway
 
 ROLE_MAP = [
     (["soc analyst", "security operations analyst"],           "SOC Analyst"),
