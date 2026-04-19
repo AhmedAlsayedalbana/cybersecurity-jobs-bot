@@ -33,8 +33,17 @@ _SOURCE_LOCAL = {
     "linkedin_egypt_companies", "linkedin_gulf_companies",
 }
 _SOURCE_CYBERSEC = {
-    "bugcrowd", "hackerone", "infosec_jobs", "cybersecjobs", "clearancejobs",
-    "isaca", "isc2",
+    "bugcrowd", "hackerone", "infosec_jobs", "infosec_jobs.com",
+    "cybersecjobs", "clearancejobs", "isaca", "isc2",
+    "infosec_jobs", "cybersec_rss", "securityjobs",
+}
+# Top-tier companies — jobs from these get a quality boost
+_PREMIUM_COMPANIES = {
+    "crowdstrike", "palo alto networks", "sentinelone", "zscaler",
+    "cloudflare", "okta", "datadog", "rapid7", "tenable", "qualys",
+    "abnormal security", "huntress", "axonius", "wiz", "snyk",
+    "recorded future", "darktrace", "vectra ai", "illumio",
+    "google", "microsoft", "amazon", "meta", "apple",
 }
 
 _CLEARANCE_REQUIRED = [
@@ -167,9 +176,16 @@ def score_job(job: Job) -> int:
         score += 2
     elif src in _SOURCE_CYBERSEC:
         score += 1
+    elif src in ("greenhouse_expanded", "greenhouse_cybersec", "lever_expanded"):
+        score += 1   # direct career pages = verified listings
     elif src == "linkedin":
         if any(t in tags_text for t in ["egypt", "gulf", "saudi", "uae"]):
             score += 1
+
+    # Premium company bonus (+2) — top security vendors
+    company_lower = (job.company or "").lower()
+    if any(c in company_lower for c in _PREMIUM_COMPANIES):
+        score += 2
 
     # ── 5. Entry-level support ────────────────────────────────
     entry_kw = [
