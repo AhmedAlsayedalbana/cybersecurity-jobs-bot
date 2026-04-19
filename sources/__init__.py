@@ -61,7 +61,7 @@ ALL_FETCHERS = [
     ("Egypt Companies",      fetch_egypt_companies),  # 120+ Egyptian company pages
 
     # ── 2. Arab Boards (Egypt + Gulf) ────────────────────────
-    ("Arab Boards",          fetch_arab_boards),      # Bayt + Akhtaboot + Tanqeeb + DrJobPro
+    # Arab Boards: all dead (Bayt 403, Tanqeeb 403, DrJobPro 404) — stub      # Bayt + Akhtaboot + Tanqeeb + DrJobPro
 
     # ── 3. Gulf 🌙 ────────────────────────────────────────────
     ("Gov Gulf",             fetch_gov_gulf),         # STC, TDRA, Etisalat + LinkedIn Gulf
