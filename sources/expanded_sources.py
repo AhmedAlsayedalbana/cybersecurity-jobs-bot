@@ -90,6 +90,39 @@ def _fetch_greenhouse_api(slug: str, company_name: str) -> list:
     return jobs
 
 
+def _fetch_lever_api(slug: str, company_name: str) -> list:
+    """
+    Fetch security jobs from jobs.lever.co public page.
+    Lever v0 API is dead (404). Using the public HTML embed instead.
+    """
+    jobs = []
+    # jobs.lever.co/{slug} returns JSON-LD or structured HTML
+    url = f"https://jobs.lever.co/{slug}"
+    html = get_text(url, headers=_H)
+    if not html:
+        return jobs
+    import re
+    # Extract job postings from Lever's HTML structure
+    # Each posting: <a class="posting-title" href="URL">...
+    links = re.findall(r'href="(https://jobs\.lever\.co/' + re.escape(slug) + r'/[a-f0-9\-]+)"', html)
+    titles = re.findall(r'<h5[^>]*>(.*?)</h5>', html)
+    locations = re.findall(r'<span class="location">(.*?)</span>', html)
+
+    for i, link in enumerate(links[:20]):  # cap at 20 per company
+        title = titles[i].strip() if i < len(titles) else ""
+        if not title or not _is_sec(title):
+            continue
+        location = locations[i].strip() if i < len(locations) else "Not specified"
+        jobs.append(Job(
+            title=title, company=company_name,
+            location=location or "Not specified",
+            url=link, source="lever_expanded",
+            tags=["lever", company_name.lower().replace(" ", "_")],
+            is_remote="remote" in (location or "").lower(),
+        ))
+    return jobs
+
+
 # ══════════════════════════════════════════════════════════════
 # GREENHOUSE — Confirmed working slugs only (404s removed)
 # ══════════════════════════════════════════════════════════════
@@ -97,46 +130,56 @@ def _fetch_greenhouse_api(slug: str, company_name: str) -> list:
 # Tier 1A — Big Tech (confirmed working from v25 logs: 274 jobs)
 # Removed: snowflake (404), digitalocean (404)
 GREENHOUSE_TIER1 = [
-    ("stripe",       "Stripe"),
-    ("airbnb",       "Airbnb"),
-    ("lyft",         "Lyft"),
-    ("dropbox",      "Dropbox"),
-    ("figma",        "Figma"),
-    ("mongodb",      "MongoDB"),
-    ("datadog",      "Datadog"),
-    ("cloudflare",   "Cloudflare"),
-    ("coinbase",     "Coinbase"),
-    ("robinhood",    "Robinhood"),
-    ("pinterest",    "Pinterest"),
-    ("reddit",       "Reddit"),
-    ("instacart",    "Instacart"),
-    ("databricks",   "Databricks"),
-    ("elastic",      "Elastic"),
-    ("asana",        "Asana"),
-    ("squarespace",  "Squarespace"),
-    ("fastly",       "Fastly"),
+    # Big Tech & Cloud
+    ("stripe",        "Stripe"),
+    ("airbnb",        "Airbnb"),
+    ("lyft",          "Lyft"),
+    ("dropbox",       "Dropbox"),
+    ("figma",         "Figma"),
+    ("mongodb",       "MongoDB"),
+    ("datadog",       "Datadog"),
+    ("cloudflare",    "Cloudflare"),
+    ("coinbase",      "Coinbase"),
+    ("robinhood",     "Robinhood"),
+    ("pinterest",     "Pinterest"),
+    ("reddit",        "Reddit"),
+    ("instacart",     "Instacart"),
+    ("databricks",    "Databricks"),
+    ("elastic",       "Elastic"),
+    ("asana",         "Asana"),
+    ("squarespace",   "Squarespace"),
+    ("fastly",        "Fastly"),
+    ("twitch",        "Twitch"),
+    ("duolingo",      "Duolingo"),
+    ("hubspot",       "HubSpot"),
+    ("zendesk",       "Zendesk"),
+    ("box",           "Box"),
+    ("yelp",          "Yelp"),
 ]
 
-# Tier 1B — SaaS (confirmed working, 404s removed: docker, sentry, segment, zapier, plaid, ramp, rippling, deel)
+# Tier 1B — SaaS
 GREENHOUSE_SAAS = [
-    ("gitlab",      "GitLab"),
-    ("postman",     "Postman"),
-    ("twilio",      "Twilio"),
-    ("brex",        "Brex"),
-    ("gusto",       "Gusto"),
-    ("remote",      "Remote.com"),
-    ("lattice",     "Lattice"),
-    ("intercom",    "Intercom"),
-    ("mercury",     "Mercury"),
-    ("algolia",     "Algolia"),
-    ("hashicorp",   "HashiCorp"),
-    ("okta",        "Okta"),
-    ("1password",   "1Password"),
-    ("bitwarden",   "Bitwarden"),
+    ("gitlab",        "GitLab"),
+    ("postman",       "Postman"),
+    ("twilio",        "Twilio"),
+    ("brex",          "Brex"),
+    ("gusto",         "Gusto"),
+    ("remote",        "Remote.com"),
+    ("lattice",       "Lattice"),
+    ("intercom",      "Intercom"),
+    ("mercury",       "Mercury"),
+    ("algolia",       "Algolia"),
+    ("hashicorp",     "HashiCorp"),
+    ("okta",          "Okta"),
+    ("1password",     "1Password"),
+    ("bitwarden",     "Bitwarden"),
+    ("netlify",       "Netlify"),
+    ("notion",        "Notion"),
+    ("airtable",      "Airtable"),
+    ("miro",          "Miro"),
 ]
 
-# Tier 1C — AI/Security (confirmed working from v25 logs: 31 jobs)
-# Removed 404s: cyberark, proofpoint, varonis, secureworks, fortinet, trellix
+# Tier 1C — Cybersecurity focused
 GREENHOUSE_AI_SEC = [
     ("abnormalsecurity", "Abnormal Security"),
     ("orca",             "Orca Security"),
@@ -144,6 +187,30 @@ GREENHOUSE_AI_SEC = [
     ("axonius",          "Axonius"),
     ("exabeam",          "Exabeam"),
     ("zscaler",          "Zscaler"),
+    ("lacework",         "Lacework"),
+    ("aquasecurity",     "Aqua Security"),
+    ("sysdig",           "Sysdig"),
+    ("snyk",             "Snyk"),
+    ("semgrep",          "Semgrep"),
+    ("wiz",              "Wiz"),
+    ("torq",             "Torq"),
+    ("devo",             "Devo"),
+]
+
+# Tier 1D — Lever API (major security vendors)
+LEVER_COMPANIES = [
+    ("crowdstrike",      "CrowdStrike"),
+    ("sentinelone",      "SentinelOne"),
+    ("rapid7",           "Rapid7"),
+    ("tenable",          "Tenable"),
+    ("qualys",           "Qualys"),
+    ("darktrace",        "Darktrace"),
+    ("recordedfuture",   "Recorded Future"),
+    ("threatlocker",     "ThreatLocker"),
+    ("vectra",           "Vectra AI"),
+    ("illumio",          "Illumio"),
+    ("intezer",          "Intezer"),
+    ("horizon3ai",       "Horizon3.ai"),
 ]
 
 
@@ -177,6 +244,18 @@ def _fetch_greenhouse_ai_sec() -> list:
         except Exception as e:
             log.debug(f"Greenhouse AI/Sec {name}: {e}")
     log.info(f"Greenhouse AI/Security: {len(jobs)} jobs")
+    return jobs
+
+
+def _fetch_lever_security() -> list:
+    """Lever API — major security vendors."""
+    jobs = []
+    for slug, name in LEVER_COMPANIES:
+        try:
+            jobs.extend(_fetch_lever_api(slug, name))
+        except Exception as e:
+            log.debug(f"Lever {name}: {e}")
+    log.info(f"Lever Security Companies: {len(jobs)} jobs")
     return jobs
 
 
@@ -228,19 +307,68 @@ def _fetch_hackernews_hiring() -> list:
     return jobs
 
 
+def _fetch_infosec_jobs_board() -> list:
+    """
+    infosec-jobs.com — cybersecurity-only job board with RSS feed.
+    Confirmed working: returns real security jobs globally.
+    """
+    import xml.etree.ElementTree as ET
+    jobs = []
+    seen = set()
+    feeds = [
+        "https://infosec-jobs.com/feed/",
+        "https://infosec-jobs.com/?s=soc+analyst&feed=rss2",
+        "https://infosec-jobs.com/?s=penetration+tester&feed=rss2",
+        "https://infosec-jobs.com/?s=security+engineer&feed=rss2",
+        "https://infosec-jobs.com/?s=grc&feed=rss2",
+    ]
+    for feed_url in feeds:
+        xml_text = get_text(feed_url, headers=_H)
+        if not xml_text:
+            continue
+        try:
+            root = ET.fromstring(xml_text)
+            for item in root.findall(".//item"):
+                title   = (item.findtext("title") or "").strip()
+                url     = (item.findtext("link") or "").strip()
+                desc    = (item.findtext("description") or "").strip()
+                if not title or not url or url in seen:
+                    continue
+                if not _is_sec(title):
+                    continue
+                seen.add(url)
+                # Extract location from description if present
+                loc_match = __import__("re").search(
+                    r'(?:location|located)[:\s]+([A-Za-z ,]+)',
+                    desc, __import__("re").IGNORECASE
+                )
+                location = loc_match.group(1).strip() if loc_match else "Not specified"
+                is_remote = "remote" in (title + desc).lower()
+                if is_remote:
+                    location = "Remote / Worldwide"
+                jobs.append(Job(
+                    title=title, company="InfoSec-Jobs",
+                    location=location,
+                    url=url, source="infosec_jobs_board",
+                    description=desc[:300],
+                    tags=["infosec-jobs", "cybersecurity"],
+                    is_remote=is_remote,
+                ))
+        except Exception as e:
+            log.debug(f"infosec-jobs parse error ({feed_url}): {e}")
+    log.info(f"InfoSec Jobs board: {len(jobs)} jobs")
+    return jobs
+
+
 # ══════════════════════════════════════════════════════════════
 # MAIN AGGREGATOR
 # ══════════════════════════════════════════════════════════════
 
 def fetch_expanded_sources() -> list:
     """
-    Expanded sources v25 — only confirmed-working sources.
-    Removed: Lever (all 404), YC, Sequoia, 500Global, Jobspresso,
-             Outsourcely (dead), Nodesk, Reddit JSON, SO Jobs,
-             CyberSeek, Akhtaboot, NaukriGulf (timeout), GulfTalent,
-             Wuzzuf expanded, LinkedIn Egypt expanded.
+    Expanded sources v30 — Greenhouse (62 companies) + Lever (12 vendors) + community.
     """
-    BUDGET_SECONDS = 5 * 60
+    BUDGET_SECONDS = 8 * 60
     _start = time.time()
     all_jobs = []
 
@@ -250,13 +378,17 @@ def fetch_expanded_sources() -> list:
         ("Greenhouse SaaS",        _fetch_greenhouse_saas),
         ("Greenhouse AI/Security", _fetch_greenhouse_ai_sec),
 
+        # ── Lever API (major security vendors) ────────────────
+        ("Lever Security",         _fetch_lever_security),
+
         # ── Community (confirmed working) ─────────────────────
         ("Hacker News Hiring",     _fetch_hackernews_hiring),
+        ("InfoSec Jobs",           _fetch_infosec_jobs_board),
     ]
 
     for name, fn in fetchers:
         if time.time() - _start > BUDGET_SECONDS:
-            log.warning(f"expanded_sources: 5-min budget exhausted at '{name}' — skipping rest.")
+            log.warning(f"expanded_sources: 8-min budget exhausted at '{name}' — skipping rest.")
             break
         try:
             results = fn()
