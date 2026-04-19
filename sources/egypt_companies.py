@@ -140,31 +140,77 @@ LINKEDIN_EG_SECURITY_COMPANIES = [
     ("MaxAB",                            "maxab"),
     ("Cartona",                          "cartona"),
     ("Dsquares",                         "dsquares"),
+    # ── More Cybersecurity Specialists ──────────────────────
+    ("Securemisr",                       "securemisr"),
+    ("Giza Systems",                     "giza-systems"),
+    ("E-Finance",                        "e-finance"),
+    ("Pioneers Holding",                 "pioneers-holding"),
+    ("Si Electronics",                   "si-electronics"),
+    ("Arab Advisors Group",              "arab-advisors-group"),
+    ("Cybergate Egypt",                  "cybergate"),
+    ("Trend Micro Egypt",                "trend-micro"),
+    # ── More Public Sector ───────────────────────────────────
+    ("Central Bank of Egypt",            "central-bank-of-egypt"),
+    ("CERT-EG / ECC",                    "egypt-computer-emergency-readiness-team"),
+    ("Egyptian Customs Authority",       "egyptian-customs-authority"),
+    ("Egyptian Military Production",     "ministry-of-military-production-egypt"),
+    ("MCDR Egypt",                       "mcdr"),
+    ("EDA Egypt",                        "egyptian-drug-authority"),
+    # ── More Banks ───────────────────────────────────────────
+    ("Misr Insurance",                   "misr-insurance"),
+    ("Egyptian Gulf Bank",               "egyptian-gulf-bank"),
+    ("Attijariwafa Bank Egypt",          "attijariwafa-bank"),
+    ("QNB Egypt",                        "qnb-egypt"),
+    # ── More IT Companies ────────────────────────────────────
+    ("Ejada Systems",                    "ejada"),
+    ("Systems Ltd Egypt",                "systems-ltd"),
+    ("Mobisoft",                         "mobisoft"),
+    ("SilverKey Technologies",           "silverkey-technologies"),
+    ("Etisalat Misr Cybersecurity",      "etisalat-misr"),
+    ("Vodafone Egypt Security",          "vodafone-egypt"),
+    # ── Insurance & Healthcare ───────────────────────────────
+    ("Allianz Egypt",                    "allianz-egypt"),
+    ("Bupa Egypt",                       "bupa-egypt"),
+    # ── Media & E-commerce ───────────────────────────────────
+    ("Jumia Egypt",                      "jumia"),
+    ("Amazon Egypt",                     "amazon"),
+    ("OLX Egypt",                        "olx-egypt"),
 ]
 
+# Search keywords for LinkedIn company pages
+_COMPANY_KW = ["cybersecurity", "information security", "SOC", "security engineer"]
+
 def _fetch_linkedin_eg_security_companies():
+    """
+    Fetch security jobs from Egyptian company LinkedIn pages.
+    Uses http_utils.get_text() so the shared LinkedIn session + CSRF token is used.
+    Searches with multiple keywords per company for better coverage.
+    """
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     for company_name, slug in LINKEDIN_EG_SECURITY_COMPANIES:
-        url = f"{base}?keywords=security&f_C={slug}&start=0&count=10"
-        html = get_text(url, headers={**_H, "Accept": "text/html,application/xhtml+xml"})
-        if not html:
-            continue
-        job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-        titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
-        for i, title in enumerate(titles):
-            title = title.strip()
-            if not title or title in seen or not _is_sec(title):
+        for kw in _COMPANY_KW[:2]:  # 2 keywords max per company to stay under rate limits
+            import urllib.parse as _up
+            url = f"{base}?keywords={_up.quote(kw)}&f_C={slug}&start=0&count=10&f_TPR=r604800"
+            html = get_text(url)   # use shared session — no custom headers
+            if not html:
                 continue
-            seen.add(title)
-            job_id = job_ids[i] if i < len(job_ids) else ""
-            jobs.append(Job(
-                title=title, company=company_name, location="Egypt",
-                url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else url,
-                source="linkedin", tags=["linkedin", "egypt", "security-company"],
-            ))
-        time.sleep(0.8)
+            job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+            titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+            for i, title in enumerate(titles):
+                title = title.strip()
+                if not title or title in seen or not _is_sec(title):
+                    continue
+                seen.add(title)
+                job_id = job_ids[i] if i < len(job_ids) else ""
+                jobs.append(Job(
+                    title=title, company=company_name, location="Egypt",
+                    url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else url,
+                    source="linkedin_egypt_companies",
+                    tags=["linkedin", "egypt", "security-company"],
+                ))
+            time.sleep(0.6)
     log.info(f"LinkedIn EG Security Companies: {len(jobs)} jobs")
     return jobs
 
