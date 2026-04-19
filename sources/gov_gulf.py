@@ -180,10 +180,16 @@ LINKEDIN_GULF_COMPANIES = [
 ]
 
 def _fetch_gulf_linkedin_companies():
+    import time as _t
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+    budget = 90
+    t0 = _t.time()
     for company_name, slug in LINKEDIN_GULF_COMPANIES:
+        if _t.time() - t0 > budget:
+            log.warning("gov_gulf/companies: 90s budget hit — stopping early")
+            break
         url  = f"{base}?keywords=cybersecurity&f_C={slug}&start=0&count=10"
         html = get_text(url, headers={**HEADERS, "Accept": "text/html,application/xhtml+xml"})
         if not html:
