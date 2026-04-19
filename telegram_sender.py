@@ -139,7 +139,7 @@ def send_jobs(jobs):
         log.warning(f"⚠️  Missing thread IDs for: {', '.join(missing)} — skipping those")
 
     # Sort jobs by score
-    jobs_scored = sorted(jobs, key=lambda j: -score_job(j))
+    jobs_scored = sorted(jobs, key=lambda j: -score_job_int(j))
 
     # Build per-channel queues
     channel_queues = {key: [] for key in CHANNELS.keys()}
@@ -230,22 +230,65 @@ def _detect_level(text):
     return "Open"
 
 def _detect_domain(text):
-    if any(k in text for k in ["soc", "security operations", "blue team", "dfir", "siem"]):
+    """
+    Classify job domain. Uses word-boundary matching to reduce false positives.
+    KEY RULE: title signals beat description signals.
+    Network Security checked BEFORE GRC to avoid "nist" in desc hijacking network roles.
+    """
+    import re as _re
+    def has(kws):
+        return any(_re.search(r'\b' + _re.escape(k) + r'\b', text) for k in kws)
+
+    # Most-specific title signals first
+    if has(["soc analyst", "soc engineer", "soc manager", "security operations center",
+            "security operations", "blue team", "threat detection", "security monitoring",
+            "siem analyst", "threat hunter", "cyber defense"]):
         return "SOC / Blue Team"
-    if any(k in text for k in ["pentest", "penetration", "red team", "ethical hack", "bug bounty", "offensive"]):
+    if has(["pentest", "penetration test", "penetration tester", "red team",
+            "ethical hack", "bug bounty", "offensive security", "exploit"]):
         return "Penetration Testing / Red Team"
-    if any(k in text for k in ["cloud security", "aws security", "azure security", "gcp security"]):
+    if has(["cloud security", "aws security", "azure security", "gcp security",
+            "cloud native security", "cspm", "cnapp", "kubernetes security"]):
         return "Cloud Security"
-    if any(k in text for k in ["appsec", "application security", "devsecops", "sast", "dast"]):
+    if has(["appsec", "application security", "devsecops", "sast", "dast", "owasp",
+            "secure code", "product security"]):
         return "AppSec / DevSecOps"
-    if any(k in text for k in ["grc", "compliance", "iso 27001", "auditor", "risk"]):
-        return "GRC / Compliance"
-    if any(k in text for k in ["dfir", "forensic", "malware", "reverse engineering"]):
+    if has(["dfir", "digital forensics", "malware analyst", "malware analysis",
+            "reverse engineer", "incident response analyst", "incident response engineer"]):
         return "DFIR / Forensics"
-    if any(k in text for k in ["network security", "firewall", "ids", "ips", "zero trust"]):
+    # Network Security BEFORE GRC — "nist" keyword in description shouldn't override
+    if has(["network security engineer", "network security analyst", "network security manager",
+            "firewall engineer", "firewall administrator", "firewall specialist",
+            "network defense", "waf engineer", "ddos", "vpn engineer",
+            "zero trust", "palo alto", "fortinet", "cisco security",
+            "intrusion detection", "intrusion prevention", "ids engineer", "ips engineer"]):
         return "Network Security"
-    if any(k in text for k in ["training", "program", "track", "course", "scholarship"]):
+    # GRC — only when title/tags actually indicate it
+    if has(["grc analyst", "grc manager", "grc engineer", "compliance analyst",
+            "compliance manager", "risk analyst", "risk manager", "security auditor",
+            "it auditor", "iso 27001 lead", "nist framework", "data protection officer",
+            "governance risk", "pci dss analyst", "gdpr officer"]):
+        return "GRC / Compliance"
+    if has(["ciso", "security manager", "security director", "security lead",
+            "head of security", "vp security", "chief security",
+            "cybersecurity manager", "cybersecurity director"]):
+        return "Security Management"
+    if has(["security architect", "security architecture"]):
+        return "Security Architecture"
+    if has(["iam engineer", "identity access management", "pki engineer", "privileged access"]):
+        return "IAM / Identity Security"
+    if has(["security internship", "security trainee", "junior security", "security graduate",
+            "internship cybersecurity", "scholarship security", "bootcamp security"]):
         return "Training / Program"
+    # Broad fallbacks — only reached when no specific domain matched
+    if has(["soc", "siem", "splunk", "qradar", "sentinel"]):
+        return "SOC / Blue Team"
+    if has(["network security", "firewall"]):
+        return "Network Security"
+    if has(["threat intel", "threat intelligence", "cti"]):
+        return "DFIR / Forensics"
+    if has(["grc", "iso 27001", "compliance", "nist", "auditor"]):
+        return "GRC / Compliance"
     return "Cybersecurity"
 
 def _detect_location_flag(job):
@@ -320,6 +363,9 @@ def _domain_emoji(domain: str) -> str:
         "GRC / Compliance":              "📋",
         "DFIR / Forensics":              "🔬",
         "Network Security":              "🌐",
+        "Security Management":           "👔",
+        "Security Architecture":         "🏗️",
+        "IAM / Identity Security":       "🔑",
         "Training / Program":            "🎓",
         "Cybersecurity":                 "🔐",
     }
@@ -330,8 +376,8 @@ def _level_emoji(level: str) -> str:
 
 
 def format_job_message(job):
-    from scoring import score_job
-    score = score_job(job)
+    from scoring import score_job_int
+    score = score_job_int(job)
 
     text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
 
@@ -344,8 +390,20 @@ def format_job_message(job):
     title   = _escape(job.title)
     company = _escape(job.company) if job.company else "Unknown"
     source  = _escape(getattr(job, "display_source", None) or job.source or "")
+    # For hiring posts, show the original raw job title (HR's exact wording) as subtext
+    hiring_context = _escape(hiring_poster) if hiring_poster else ""
 
-    is_hiring_post = job.source == "linkedin_hiring"
+    is_hiring_post = getattr(job, "source", "") == "linkedin_hiring"
+    # For #Hiring posts: original_source contains "HR Name — Job Title" or "#Hiring — raw title"
+    hiring_poster = ""
+    if is_hiring_post:
+        orig = getattr(job, "original_source", "") or ""
+        # Extract the HR/poster part if available (format: "#Hiring — <raw_title>")
+        # We show the original raw title as context
+        if orig.startswith("#Hiring — ") or orig.startswith("#Hiring —"):
+            raw = orig.replace("#Hiring — ", "").replace("#Hiring —", "").strip()
+            if raw and raw.lower() != job.title.lower():
+                hiring_poster = raw
     is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
     d_emoji = _domain_emoji(domain)
@@ -397,8 +455,9 @@ def format_job_message(job):
 
     # ── Source ────────────────────────────────────────────────
     if is_hiring_post:
-        raw_label = _escape(job.original_source or "")
-        lines.append(f"📢  <i>{'Posted via: ' + raw_label if raw_label else 'Via LinkedIn #Hiring'}</i>")
+        lines.append(f"📢  <i>Via: LinkedIn #Hiring</i>")
+        if hiring_context:
+            lines.append(f"📝  <i>Original: {hiring_context}</i>")
     elif source:
         lines.append(f"🌐  <i>Source: {source}</i>")
 
