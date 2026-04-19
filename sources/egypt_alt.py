@@ -1,15 +1,15 @@
 """
-Egypt Sources — v26
+Egypt Sources — v27 FAST
 
-CONFIRMED WORKING:
-  ✅ LinkedIn Egypt keyword search
-  ✅ LinkedIn Egypt private sector companies (expanded)
-  ✅ LinkedIn Egypt by governorate (expanded keywords)
-  ✅ LinkedIn Egypt public sector & government
-  ✅ Wuzzuf HTML scrape
+KEY FIX: Added per-fetcher TIME BUDGET to prevent LinkedIn rate-limit hangs.
+The old version had no budget → 63+ LinkedIn requests → bot hangs 30+ minutes.
 
-REMOVED (dead):
-  ❌ Bayt RSS (403), Naukrigulf Egypt (timeout), Forasna (404), Tanqeeb (403)
+Budgets:
+  _fetch_linkedin_egypt_search   → 90s max
+  _fetch_linkedin_eg_private     → 120s max
+  _fetch_linkedin_eg_gov         → 60s max
+  _fetch_linkedin_by_governorate → 60s max  (4 govs × 3 kw only)
+  _fetch_wuzzuf                  → 30s max
 """
 
 import logging
@@ -40,17 +40,16 @@ SEC_KW = [
     "forensic", "threat", "vulnerability", "appsec", "red team", "blue team",
     "security architect", "security manager", "security officer", "ciso",
     "infosec", "incident response", "security operations",
-    "أمن معلومات", "أمن سيبراني", "اختبار اختراق",
+    "امن معلومات", "امن سيبراني", "اختبار اختراق",
 ]
 
 def _is_sec(t): return any(k in t.lower() for k in SEC_KW)
 
 def _li_jobs_from_html(html, location, source_tag):
-    """Extract jobs from LinkedIn guest search HTML."""
     jobs = []
-    job_ids  = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-    titles   = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
-    companies= re.findall(r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>\s*([^<]+)', html)
+    job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+    titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+    companies = re.findall(r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>\s*([^<]+)', html)
     for i, title in enumerate(titles):
         title = title.strip()
         if not title or not _is_sec(title):
@@ -65,19 +64,27 @@ def _li_jobs_from_html(html, location, source_tag):
     return jobs
 
 
-# ── 1. LinkedIn Egypt — keyword search (broad) ───────────────
+# ── 1. LinkedIn Egypt keyword search (trimmed to 8 high-value queries) ──
 EGYPT_SEARCH_KEYWORDS = [
-    "cybersecurity", "information security", "SOC analyst",
-    "penetration tester", "security engineer", "network security",
-    "cloud security", "devsecops", "GRC analyst", "malware analyst",
-    "security architect", "CISO", "incident response",
-    "أمن معلومات", "أمن سيبراني",
+    "cybersecurity Egypt",
+    "information security Egypt",
+    "SOC analyst Egypt",
+    "penetration tester Egypt",
+    "security engineer Egypt",
+    "GRC analyst Egypt",
+    "امن معلومات مصر",
+    "امن سيبراني مصر",
 ]
 
 def _fetch_linkedin_egypt_search():
     jobs = []
     seen = set()
+    budget = 90
+    t0 = time.time()
     for kw in EGYPT_SEARCH_KEYWORDS:
+        if time.time() - t0 > budget:
+            log.warning("egypt_alt/search: 90s budget hit — stopping early")
+            break
         params = (
             f"?keywords={urllib.parse.quote(kw)}"
             "&location=Egypt&start=0&count=10&f_TPR=r604800&sortBy=DD"
@@ -89,133 +96,123 @@ def _fetch_linkedin_egypt_search():
             if j.url not in seen:
                 seen.add(j.url)
                 jobs.append(j)
-        time.sleep(0.5)
     log.info(f"LinkedIn Egypt Search: {len(jobs)} jobs")
     return jobs
 
 
-# ── 2. LinkedIn Egypt — private sector companies (expanded) ──
+# ── 2. LinkedIn Egypt private sector companies ───────────────
 LINKEDIN_EG_PRIVATE = [
-    # Banks & Finance
     ("CIB Egypt",                      "cib-egypt"),
     ("QNB Al Ahli",                    "qnb-alahli"),
     ("NBE",                            "national-bank-of-egypt"),
     ("Banque Misr",                    "banque-misr"),
     ("Banque du Caire",                "banque-du-caire"),
     ("HSBC Egypt",                     "hsbc"),
-    ("Arab African International Bank","arab-african-international-bank"),
-    ("Abu Dhabi Islamic Bank Egypt",   "adib-egypt"),
     ("Fawry",                          "fawry"),
     ("Paymob",                         "paymob"),
     ("Khazna",                         "khazna-data-associates"),
     ("ValU",                           "valu-egypt"),
-    # Telecom
     ("Vodafone Egypt",                 "vodafone-egypt"),
     ("Orange Egypt",                   "orange-egypt"),
     ("WE Telecom",                     "telecom-egypt"),
     ("Etisalat Misr",                  "etisalatmisr"),
-    # Tech Companies
     ("Raya IT",                        "raya-information-technology"),
     ("Link Development",               "link-development"),
     ("ITWORX",                         "itworx"),
     ("Instabug",                       "instabug"),
     ("Halan",                          "halan"),
     ("Synapse Analytics",              "synapse-analytics"),
-    ("Dsquares",                       "dsquares"),
-    ("SilverKey Technologies",         "silverkey-technologies"),
     ("Siemens Egypt",                  "siemens"),
     ("IBM Egypt",                      "ibm"),
     ("Microsoft Egypt",                "microsoft"),
-    ("Dell Egypt",                     "dell-technologies"),
     ("Cisco Egypt",                    "cisco"),
-    ("HP Egypt",                       "hp"),
-    # Big 4 consulting
+    ("Accenture Egypt",                "accenture"),
     ("Deloitte Egypt",                 "deloitte"),
     ("KPMG Egypt",                     "kpmg"),
     ("PwC Egypt",                      "pwc"),
     ("EY Egypt",                       "ey"),
-    ("Accenture Egypt",                "accenture"),
-    # Cybersecurity specific
     ("Help AG Egypt",                  "help-ag"),
-    ("NCC Group Egypt",                "ncc-group"),
     ("Xceed",                          "xceed"),
 ]
 
 def _fetch_linkedin_eg_private():
     jobs = []
     seen = set()
+    budget = 120
+    t0 = time.time()
     for company_name, slug in LINKEDIN_EG_PRIVATE:
+        if time.time() - t0 > budget:
+            log.warning("egypt_alt/private: 120s budget hit — stopping early")
+            break
         url = f"{JOBS_API}?keywords=security&f_C={slug}&start=0&count=10"
         html = get_text(url, headers=_H)
         if not html:
-            time.sleep(0.3)
             continue
         for j in _li_jobs_from_html(html, "Egypt", "private-sector"):
             j.company = company_name
             if j.url not in seen:
                 seen.add(j.url)
                 jobs.append(j)
-        time.sleep(0.6)
     log.info(f"LinkedIn Egypt Private: {len(jobs)} jobs")
     return jobs
 
 
-# ── 3. LinkedIn Egypt — government & public sector ───────────
+# ── 3. LinkedIn Egypt government & public sector ─────────────
 LINKEDIN_EG_GOV = [
-    ("MCIT Egypt",              "mcit-egypt"),
-    ("NTRA Egypt",              "national-telecom-regulatory-authority"),
-    ("EG-CERT",                 "eg-cert"),
-    ("Central Bank of Egypt",   "central-bank-of-egypt"),
-    ("ITI Egypt",               "information-technology-institute"),
-    ("Egyptian Armed Forces",   "egyptian-armed-forces"),
-    ("Ministry of Interior EG", "ministry-of-interior-egypt"),
-    ("ISOC Egypt",              "internet-society"),
-    ("ITIDA",                   "itida"),
+    ("MCIT Egypt",            "mcit-egypt"),
+    ("NTRA Egypt",            "national-telecom-regulatory-authority"),
+    ("EG-CERT",               "eg-cert"),
+    ("Central Bank of Egypt", "central-bank-of-egypt"),
+    ("ITI Egypt",             "information-technology-institute"),
+    ("ITIDA",                 "itida"),
 ]
 
 def _fetch_linkedin_eg_gov():
     jobs = []
     seen = set()
+    budget = 60
+    t0 = time.time()
     for company_name, slug in LINKEDIN_EG_GOV:
+        if time.time() - t0 > budget:
+            log.warning("egypt_alt/gov: 60s budget hit — stopping early")
+            break
         url = f"{JOBS_API}?keywords=security&f_C={slug}&start=0&count=10"
         html = get_text(url, headers=_H)
         if not html:
-            time.sleep(0.3)
             continue
         for j in _li_jobs_from_html(html, "Egypt", "public-sector"):
             j.company = company_name
             if j.url not in seen:
                 seen.add(j.url)
                 jobs.append(j)
-        time.sleep(0.6)
     log.info(f"LinkedIn Egypt Gov: {len(jobs)} jobs")
     return jobs
 
 
-# ── 4. LinkedIn by Egyptian Governorates (expanded keywords) ──
-TECH_HUB_GOVERNORATES = [
+# ── 4. LinkedIn by Egyptian Governorates (trimmed 4 × 3 = 12 requests) ──
+TOP_GOVERNORATES = [
     "Cairo, Egypt",
-    "Alexandria, Egypt",
-    "Giza, Egypt",
     "New Cairo, Egypt",
-    "6th of October City, Egypt",
     "New Administrative Capital, Egypt",
-    "Qalyubia, Egypt",
-    "Mansoura, Egypt",
-    "Tanta, Egypt",
+    "Giza, Egypt",
 ]
 
 GOVERNORATE_KEYWORDS = [
-    "cybersecurity", "information security", "security analyst",
-    "SOC analyst", "network security", "penetration tester",
-    "أمن معلومات",
+    "cybersecurity",
+    "information security",
+    "SOC analyst",
 ]
 
 def _fetch_linkedin_by_governorate():
     jobs = []
     seen = set()
-    for gov in TECH_HUB_GOVERNORATES:
+    budget = 60
+    t0 = time.time()
+    for gov in TOP_GOVERNORATES:
         for kw in GOVERNORATE_KEYWORDS:
+            if time.time() - t0 > budget:
+                log.warning("egypt_alt/governorate: 60s budget hit — stopping early")
+                break
             params = (
                 f"?keywords={urllib.parse.quote(kw)}"
                 f"&location={urllib.parse.quote(gov)}"
@@ -228,7 +225,6 @@ def _fetch_linkedin_by_governorate():
                 if j.url not in seen:
                     seen.add(j.url)
                     jobs.append(j)
-            time.sleep(0.4)
     log.info(f"LinkedIn Egypt Governorates: {len(jobs)} jobs")
     return jobs
 
@@ -236,19 +232,22 @@ def _fetch_linkedin_by_governorate():
 # ── 5. Wuzzuf HTML scrape ────────────────────────────────────
 WUZZUF_QUERIES = [
     "cybersecurity", "information security", "SOC analyst",
-    "penetration tester", "security engineer", "network security",
-    "GRC", "CISO", "devsecops", "cloud security", "أمن معلومات",
+    "penetration tester", "security engineer", "GRC", "امن معلومات",
 ]
 
 def _fetch_wuzzuf():
     jobs = []
     seen = set()
+    budget = 30
+    t0 = time.time()
     for q in WUZZUF_QUERIES:
+        if time.time() - t0 > budget:
+            log.warning("egypt_alt/wuzzuf: 30s budget hit — stopping early")
+            break
         url  = f"https://wuzzuf.net/search/jobs/?q={urllib.parse.quote(q)}&a=hpb"
         html = get_text(url, headers=_H)
         if not html:
             continue
-        # Try Next.js JSON blob
         m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
         if m:
             try:
@@ -269,19 +268,19 @@ def _fetch_wuzzuf():
                     ))
             except Exception:
                 pass
-        time.sleep(0.5)
     log.info(f"Wuzzuf Egypt: {len(jobs)} jobs")
     return jobs
 
 
 def fetch_egypt_alt() -> list:
+    """Fetch from Egypt alternative sources. Each sub-fetcher has a time budget."""
     all_jobs = []
     for fn in [
-        _fetch_linkedin_egypt_search,
-        _fetch_linkedin_eg_private,
-        _fetch_linkedin_eg_gov,
-        _fetch_linkedin_by_governorate,
-        _fetch_wuzzuf,
+        _fetch_linkedin_egypt_search,    # 90s budget
+        _fetch_linkedin_eg_private,      # 120s budget
+        _fetch_linkedin_eg_gov,          # 60s budget
+        _fetch_linkedin_by_governorate,  # 60s budget (trimmed)
+        _fetch_wuzzuf,                   # 30s budget
     ]:
         try:
             all_jobs.extend(fn())
