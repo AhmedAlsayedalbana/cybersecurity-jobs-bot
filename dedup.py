@@ -1,6 +1,12 @@
 """
 Deduplication: tracks seen job IDs to avoid re-sending.
-Weekly Memory: keeps history for 7 days.
+
+v28 FIXES:
+  - MEMORY_DAYS: 7 → 3 (faster expiry, less bloat)
+  - Removed triple-key (unique_id + url_id + url:md5) → now dual-key (unique_id + url_id)
+    The md5 key was the main cause of bloat: each job stored 3 keys instead of 2
+  - Added smart_expire(): if new_jobs == 0, expire everything older than 1 day
+    This prevents the "seen everything, send nothing" deadlock
 """
 
 import json
@@ -12,28 +18,21 @@ from config import SEEN_JOBS_FILE
 
 log = logging.getLogger(__name__)
 
-# Memory limit: 7 days
-MEMORY_DAYS = 7
+MEMORY_DAYS = 3  # was 7 — faster expiry, prevents "seen everything" deadlock
+
 
 def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
-    """
-    Load previously seen job IDs with timestamps.
-    Returns a dict {job_id: timestamp_iso}.
-    """
+    """Load previously seen job IDs with timestamps. Returns {job_id: timestamp_iso}."""
     if not os.path.exists(path):
         log.info("No seen_jobs file found — starting fresh.")
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            
-        # Support legacy format (list) or new format (dict)
         if isinstance(data, list):
-            # Migrate old list format to dict with current timestamp
             now_iso = datetime.now().isoformat()
             log.info(f"Migrating {len(data)} legacy IDs to timestamped format.")
             return {jid: now_iso for jid in data}
-            
         log.info(f"Loaded {len(data)} seen job IDs.")
         return data
     except (json.JSONDecodeError, IOError) as e:
@@ -42,23 +41,16 @@ def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
 
 
 def save_seen_ids(seen_dict: dict, path: str = SEEN_JOBS_FILE) -> None:
-    """
-    Save seen job IDs to JSON file, removing entries older than 7 days.
-    """
-    now = datetime.now()
+    """Save seen job IDs, removing entries older than MEMORY_DAYS."""
+    now    = datetime.now()
     cutoff = now - timedelta(days=MEMORY_DAYS)
-    
-    # Cleanup old entries
     cleaned = {}
     for jid, ts_iso in seen_dict.items():
         try:
-            ts = datetime.fromisoformat(ts_iso)
-            if ts > cutoff:
+            if datetime.fromisoformat(ts_iso) > cutoff:
                 cleaned[jid] = ts_iso
         except (ValueError, TypeError):
-            # If timestamp is invalid, keep it but update it
             cleaned[jid] = now.isoformat()
-
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cleaned, f, ensure_ascii=False, indent=2)
@@ -67,35 +59,45 @@ def save_seen_ids(seen_dict: dict, path: str = SEEN_JOBS_FILE) -> None:
         log.error(f"Error saving seen_jobs: {e}")
 
 
+def smart_expire(seen_dict: dict, new_jobs_count: int) -> dict:
+    """
+    If new_jobs == 0 after dedup, we're stuck in a 'seen everything' deadlock.
+    Force-expire entries older than 1 day so next run gets fresh jobs.
+    This happens when the same job pool repeats across consecutive runs.
+    """
+    if new_jobs_count > 0:
+        return seen_dict  # No deadlock — no action needed
+
+    cutoff = datetime.now() - timedelta(days=1)
+    before = len(seen_dict)
+    freed = {jid: ts for jid, ts in seen_dict.items()
+             if datetime.fromisoformat(ts) > cutoff}
+    freed_count = before - len(freed)
+    if freed_count > 0:
+        log.warning(f"smart_expire: 0 new jobs detected — freed {freed_count} seen IDs (>1 day old). Next run will re-check them.")
+    return freed
+
+
 def deduplicate(jobs: list[Job], seen_dict: dict) -> list[Job]:
     """
-    Return only jobs whose unique_id is NOT in seen_dict.
-    Deduplicates by BOTH title+company AND URL to catch cross-source dupes.
+    Return only jobs not already in seen_dict.
+    Uses dual-key dedup: title+company AND url_id.
     """
-    import hashlib
     new_jobs = []
-    batch_ids = set()
+    batch_ids: set[str] = set()
 
     for job in jobs:
-        uid = job.unique_id
-        url_id = getattr(job, 'url_id', '')
-        raw_url_key = ("url:" + hashlib.md5(job.url.encode()).hexdigest()) if job.url else ""
+        uid    = job.unique_id
+        url_id = getattr(job, "url_id", "")
 
-        # Check title+company dedup
         if uid in seen_dict or uid in batch_ids:
             continue
-        # Check URL dedup
         if url_id and (url_id in seen_dict or url_id in batch_ids):
-            continue
-        # Check raw URL dedup
-        if raw_url_key and (raw_url_key in seen_dict or raw_url_key in batch_ids):
             continue
 
         batch_ids.add(uid)
         if url_id:
             batch_ids.add(url_id)
-        if raw_url_key:
-            batch_ids.add(raw_url_key)
         new_jobs.append(job)
 
     log.info(f"Dedup: {len(jobs)} total → {len(new_jobs)} new jobs.")
@@ -103,32 +105,24 @@ def deduplicate(jobs: list[Job], seen_dict: dict) -> list[Job]:
 
 
 def mark_as_seen(jobs: list[Job], seen_dict: dict) -> dict:
-    """Add both unique_id and url_id to the seen dict with current timestamp."""
+    """Add unique_id and url_id to seen dict with current timestamp."""
     now_iso = datetime.now().isoformat()
     for job in jobs:
         seen_dict[job.unique_id] = now_iso
-        url_id = getattr(job, 'url_id', '')
+        url_id = getattr(job, "url_id", "")
         if url_id:
             seen_dict[url_id] = now_iso
-        # Also store the raw URL to prevent cross-source duplicates
-        if job.url:
-            import hashlib
-            raw_url_key = "url:" + hashlib.md5(job.url.encode()).hexdigest()
-            seen_dict[raw_url_key] = now_iso
     return seen_dict
 
 
 def deduplicate_sent(sent_urls: set, jobs: list[Job], seen_dict: dict) -> dict:
-    """Mark actually-sent jobs (by URL) as seen — prevents re-send next run."""
-    import hashlib
-    now_iso = datetime.now().isoformat()
+    """Mark actually-sent jobs as seen. Only called with jobs that were sent."""
+    now_iso     = datetime.now().isoformat()
     sent_url_set = set(sent_urls)
     for job in jobs:
         if job.url in sent_url_set:
             seen_dict[job.unique_id] = now_iso
-            url_id = getattr(job, 'url_id', '')
+            url_id = getattr(job, "url_id", "")
             if url_id:
                 seen_dict[url_id] = now_iso
-            raw_url_key = "url:" + hashlib.md5(job.url.encode()).hexdigest()
-            seen_dict[raw_url_key] = now_iso
     return seen_dict
