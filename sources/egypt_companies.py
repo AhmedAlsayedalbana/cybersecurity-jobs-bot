@@ -183,13 +183,18 @@ _COMPANY_KW = ["cybersecurity", "information security", "SOC", "security enginee
 def _fetch_linkedin_eg_security_companies():
     """
     Fetch security jobs from Egyptian company LinkedIn pages.
-    Uses http_utils.get_text() so the shared LinkedIn session + CSRF token is used.
-    Searches with multiple keywords per company for better coverage.
+    v28 FIX: Added 150s time budget — 115 companies x 2kw was unlimited before.
     """
+    import time as _time2
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+    budget = 150
+    t0 = _time2.time()
     for company_name, slug in LINKEDIN_EG_SECURITY_COMPANIES:
+        if _time2.time() - t0 > budget:
+            log.warning("egypt_companies/linkedin: 150s budget hit — stopping early")
+            break
         for kw in _COMPANY_KW[:2]:  # 2 keywords max per company to stay under rate limits
             import urllib.parse as _up
             url = f"{base}?keywords={_up.quote(kw)}&f_C={slug}&start=0&count=10&f_TPR=r604800"
