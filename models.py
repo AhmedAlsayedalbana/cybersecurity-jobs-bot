@@ -123,9 +123,17 @@ SECURITY_TITLE_PATTERNS = [
     "cloud security", "network security engineer",
     "vulnerability analyst", "vulnerability researcher", "vulnerability manager",
     "digital forensics", "forensic analyst", "detection engineer",
-    # Arabic
+    # Detection & Response
+    "detection & response", "detection and response",
+    "detection & mitigation", "endpoint detection",
+    "edr engineer", "edr analyst",
+    # Identity & Access
+    "identity and access management", "iam analyst", "iam specialist",
+    "sailpoint", "privileged access", "access management",
+    # Arabic — expanded
     "أمن معلومات", "أمن سيبراني", "اختبار اختراق", "أمن شبكات",
     "محلل أمن", "مهندس أمن", "متخصص أمن",
+    "هوية الأمن", "الأمن السيبراني", "إدارة هوية",
 ]
 
 # Core roles — checked against full text (title + description + tags)
