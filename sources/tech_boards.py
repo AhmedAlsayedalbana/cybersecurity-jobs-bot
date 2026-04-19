@@ -48,6 +48,15 @@ BIG_TECH_GREENHOUSE = [
     ("datadog",      "Datadog"),
     ("cloudflare",   "Cloudflare"),
     ("fastly",       "Fastly"),
+    # v30 additions
+    ("hubspot",      "HubSpot"),
+    ("zendesk",      "Zendesk"),
+    ("box",          "Box"),
+    ("twitch",       "Twitch"),
+    ("elastic",      "Elastic"),
+    ("databricks",   "Databricks"),
+    ("gitlab",       "GitLab"),
+    ("okta",         "Okta"),
 ]
 
 def _fetch_big_tech_greenhouse():
