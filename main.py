@@ -14,7 +14,7 @@ from sources import ALL_FETCHERS
 from models import filter_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent
 from telegram_sender import send_jobs
-from scoring import score_job_int as score_job
+from scoring import score_job_int as score_job, diversity_rerank
 from classifier import classify_location
 
 logging.basicConfig(
@@ -106,6 +106,13 @@ def main():
 
             for t in [tier1, tier2, tier3, tier4, tier5]:
                 t.sort(key=lambda x: -x[1])
+
+            # Diversity rerank — prevents one company/title flooding each tier
+            tier1 = diversity_rerank(tier1)
+            tier2 = diversity_rerank(tier2)
+            tier3 = diversity_rerank(tier3)
+            tier4 = diversity_rerank(tier4)
+            tier5 = diversity_rerank(tier5)
 
             log.info(
                 "📊 Tiers — EG-Target:" + str(len(tier1)) +
