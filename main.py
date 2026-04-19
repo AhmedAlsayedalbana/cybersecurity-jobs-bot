@@ -12,7 +12,7 @@ from datetime import datetime
 import config
 from sources import ALL_FETCHERS
 from models import filter_jobs
-from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent
+from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent, smart_expire
 from telegram_sender import send_jobs
 from scoring import score_job_int as score_job, diversity_rerank
 from classifier import classify_location
@@ -68,6 +68,14 @@ def main():
         new_jobs = deduplicate(filtered, seen)
         stats["new"] = len(new_jobs)
         log.info("✨ New jobs: " + str(stats["new"]))
+
+        # Smart expire: if 0 new jobs, free old seen IDs to prevent deadlock
+        seen = smart_expire(seen, len(new_jobs))
+        if len(new_jobs) == 0:
+            new_jobs = deduplicate(filtered, seen)
+            stats["new"] = len(new_jobs)
+            if new_jobs:
+                log.info(f"✨ After smart_expire: {len(new_jobs)} new jobs recovered.")
 
         if is_seed:
             log.info("🌱 Seed: marking " + str(len(new_jobs)) + " jobs seen")
