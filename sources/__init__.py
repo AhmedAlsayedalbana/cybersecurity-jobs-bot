@@ -39,7 +39,7 @@ from sources.cybersec_boards  import fetch_cybersec_boards
 from sources.linkedin         import fetch_linkedin
 from sources.linkedin_hiring  import fetch_linkedin_hiring
 from sources.linkedin_posts   import fetch_linkedin_posts    # v31 NEW
-from sources.arab_boards      import fetch_arab_boards       # v31 NEW
+# arab_boards: all dead (Bayt 403, Tanqeeb 403, DrJobPro 404) — removed
 from sources.google_jobs      import fetch_google_jobs
 from sources.tech_boards      import fetch_tech_boards
 from sources.remotive         import fetch_remotive
@@ -56,47 +56,44 @@ from sources.expanded_sources import fetch_expanded_sources
 
 ALL_FETCHERS = [
     # ── 1. Egypt 🇪🇬 (highest priority) ──────────────────────
-    ("Gov Egypt",            fetch_gov_egypt),       # LinkedIn Egypt gov + companies
-    ("Egypt Alt",            fetch_egypt_alt),        # Wuzzuf + LinkedIn governorates
-    ("Egypt Companies",      fetch_egypt_companies),  # 120+ Egyptian company pages
+    ("Gov Egypt",            fetch_gov_egypt),
+    ("Egypt Alt",            fetch_egypt_alt),
+    ("Egypt Companies",      fetch_egypt_companies),
 
-    # ── 2. Arab Boards (Egypt + Gulf) ────────────────────────
-    # Arab Boards: all dead (Bayt 403, Tanqeeb 403, DrJobPro 404) — stub      # Bayt + Akhtaboot + Tanqeeb + DrJobPro
+    # ── 2. Gulf 🌙 ────────────────────────────────────────────
+    ("Gov Gulf",             fetch_gov_gulf),
+    ("Gulf Expanded",        fetch_gulf_expanded),
 
-    # ── 3. Gulf 🌙 ────────────────────────────────────────────
-    ("Gov Gulf",             fetch_gov_gulf),         # STC, TDRA, Etisalat + LinkedIn Gulf
-    ("Gulf Expanded",        fetch_gulf_expanded),    # 40+ Gulf companies
-
-    # ── 4. Cybersec-specific boards ──────────────────────────
-    ("CyberSec Boards",      fetch_cybersec_boards),  # Bugcrowd + BuiltIn
-
-    # ── 5. LinkedIn (global + #Hiring + HR posts) ────────────
+    # ── 3. LinkedIn (PRIORITY — best quality regional jobs) ───
     ("LinkedIn",             fetch_linkedin),
-    ("LinkedIn #Hiring",     fetch_linkedin_hiring),  # Job listings tagged with hiring
-    ("LinkedIn Posts",       fetch_linkedin_posts),   # HR-style "we are hiring" posts
+    ("LinkedIn #Hiring",     fetch_linkedin_hiring),
+    ("LinkedIn Posts",       fetch_linkedin_posts),
 
-    # ── 6. Google Jobs + Wuzzuf + Forasna ────────────────────
-    ("Google Jobs",          fetch_google_jobs),      # SerpAPI + Wuzzuf + Forasna direct
+    # ── 4. Cybersec boards ───────────────────────────────────
+    ("CyberSec Boards",      fetch_cybersec_boards),
 
-    # ── 7. Tech boards ───────────────────────────────────────
-    ("Tech Boards",          fetch_tech_boards),      # Big Tech Greenhouse
+    # ── 5. Google Jobs ────────────────────────────────────────
+    ("Google Jobs",          fetch_google_jobs),
 
-    # ── 8. Remote job boards ─────────────────────────────────
+    # ── 6. Tech boards ───────────────────────────────────────
+    ("Tech Boards",          fetch_tech_boards),
+
+    # ── 7. Remote job boards ─────────────────────────────────
     ("Remotive",             fetch_remotive),
     ("RemoteOK",             fetch_remoteok),
     ("Arbeitnow",            fetch_arbeitnow),
     ("WWR",                  fetch_wwr),
     ("Working Nomads",       fetch_workingnomads),
 
-    # ── 9. API-based (need keys — silently skip if unset) ─────
+    # ── 8. API-based (need keys) ──────────────────────────────
     ("Adzuna",               fetch_adzuna),
     ("Jooble",               fetch_jooble),
     ("Findwork",             fetch_findwork),
     ("Reed",                 fetch_reed),
 
-    # ── 10. Creative v27 Sources ──────────────────────────────
-    ("New Sources v27",      fetch_new_sources),      # Greenhouse cybersec, Telegram, GitHub, Nitter
+    # ── 9. Creative Sources ───────────────────────────────────
+    ("New Sources v27",      fetch_new_sources),
 
-    # ── 11. Expanded Sources v27 🚀 ──────────────────────────
+    # ── 10. Expanded Sources 🚀 ───────────────────────────────
     ("Expanded Sources v27", fetch_expanded_sources), # 50+ Greenhouse/Lever, YC, HN Hiring, MENA+
 ]
