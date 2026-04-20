@@ -365,11 +365,11 @@ def fetch_expanded_sources() -> list:
         ("Greenhouse AI/Security", _fetch_greenhouse_ai_sec),
 
         # ── Lever API (major security vendors) ────────────────
-        ("Lever Security",         _fetch_lever_security),
+        # Lever: all 404 confirmed in logs — removed
 
         # ── Community (confirmed working) ─────────────────────
         ("Hacker News Hiring",     _fetch_hackernews_hiring),
-        ("InfoSec Jobs",           _fetch_infosec_jobs_board),
+        # InfoSec-jobs.com: HTTP 404 confirmed — removed
     ]
 
     for name, fn in fetchers:
