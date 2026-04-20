@@ -52,7 +52,7 @@ WEIGHTS = {
     "src_local":     2,
     "src_cybersec":  1,
     "src_direct":    1,
-    "src_li_reg":    1,
+    "src_li_reg":    2,    # v31: raised — LinkedIn is high-quality regional source
 
     # Company
     "premium_co":    2,
@@ -323,10 +323,9 @@ def score_job(job: Job) -> Tuple[int, List[str]]:
     elif src in _SOURCE_DIRECT:
         score += WEIGHTS["src_direct"]
         reasons.append(f"+{WEIGHTS['src_direct']} direct page")
-    elif src in ("linkedin", "linkedin_hiring"):
-        if any(t in tags for t in ["egypt", "gulf", "saudi", "uae"]):
-            score += WEIGHTS["src_li_reg"]
-            reasons.append(f"+{WEIGHTS['src_li_reg']} linkedin regional")
+    elif src in ("linkedin", "linkedin_hiring", "linkedin_posts", "linkedin_hr"):
+        score += WEIGHTS["src_li_reg"]
+        reasons.append(f"+{WEIGHTS['src_li_reg']} linkedin source")
 
     company_lower = (job.company or "").lower()
     if any(c in company_lower for c in _PREMIUM_COMPANIES):
