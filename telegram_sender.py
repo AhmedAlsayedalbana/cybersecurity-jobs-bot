@@ -388,8 +388,6 @@ def format_job_message(job):
     company = _escape(job.company) if job.company else "Unknown"
     source  = _escape(getattr(job, "display_source", None) or job.source or "")
     # For hiring posts, show the original raw job title (HR's exact wording) as subtext
-    hiring_context = _escape(hiring_poster) if hiring_poster else ""
-
     is_hiring_post = getattr(job, "source", "") == "linkedin_hiring"
     # For #Hiring posts: original_source contains "HR Name — Job Title" or "#Hiring — raw title"
     hiring_poster = ""
@@ -401,6 +399,7 @@ def format_job_message(job):
             raw = orig.replace("#Hiring — ", "").replace("#Hiring —", "").strip()
             if raw and raw.lower() != job.title.lower():
                 hiring_poster = raw
+    hiring_context = _escape(hiring_poster) if hiring_poster else ""
     is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
 
     d_emoji = _domain_emoji(domain)
