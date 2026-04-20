@@ -123,7 +123,7 @@ def send_jobs(jobs):
     - Jobs sorted by score desc — best jobs go first.
     - Each channel: max MAX_JOBS_PER_CHANNEL (5) jobs per run.
     """
-    from scoring import score_job
+    from scoring import score_job_int, score_job
 
     total_sent      = 0
     channel_summary = {}
