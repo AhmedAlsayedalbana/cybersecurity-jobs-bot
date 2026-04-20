@@ -361,7 +361,7 @@ SOURCE_DISPLAY = {
 # ─── Misc ─────────────────────────────────────────────────────
 SEEN_JOBS_FILE   = "seen_jobs.json"
 MAX_JOBS_PER_RUN = 200
-SCORE_THRESHOLD  = 10   # V28: lowered from 12 to compensate for reduced location bonus
+SCORE_THRESHOLD  = 9    # V31: lowered to 9 — captures more LinkedIn posts (egypt+tech = 10+, remote+tech = 6+)
 MAX_JOBS_PER_CHANNEL = 5   # Max jobs sent per channel per run (v28: reduced from 10)
 REQUEST_TIMEOUT  = 10
 SEED_MODE_ENV    = "SEED_MODE"
