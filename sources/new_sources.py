@@ -130,15 +130,10 @@ def _fetch_greenhouse_cybersec() -> list:
         ("Elastic",           "elastic"),
         ("Zscaler",           "zscaler"),
         # v30 additions
-        ("Snyk",              "snyk"),
-        ("Wiz",               "wiz"),
-        ("Aqua Security",     "aquasecurity"),
-        ("Sysdig",            "sysdig"),
-        ("Semgrep",           "semgrep"),
-        ("Devo",              "devo"),
         ("GitLab",            "gitlab"),
         ("Okta",              "okta"),
         ("Bitwarden",         "bitwarden"),
+        # Removed 404s: snyk, wiz, aquasecurity, sysdig, semgrep, devo
     ]
     SEC_TITLES = [
         "security", "cyber", "soc", "pentest", "threat", "vulnerability",
