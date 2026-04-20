@@ -207,9 +207,9 @@ def is_cybersec_job(job: "Job") -> bool:
             if any(term in title_lower for term in ["security", "cyber", "حماية", "أمن"]):
                 return True
 
-        # linkedin_hiring: short posts with minimal context — be lenient
-        if job.source == "linkedin_hiring":
-            if any(term in title_lower for term in ["security", "cyber", "soc", "grc"]):
+        # LinkedIn sources: short posts with minimal context — be lenient
+        if job.source in ("linkedin_hiring", "linkedin_posts", "linkedin_hr", "linkedin"):
+            if any(term in title_lower for term in ["security", "cyber", "soc", "grc", "network security"]):
                 return True
 
     logger.info(f"Job excluded (No strong cyber context): {job.title}")
