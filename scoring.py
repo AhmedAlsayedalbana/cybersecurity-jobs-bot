@@ -35,7 +35,7 @@ WEIGHTS = {
     # Location
     "egypt":         8,
     "gulf":          6,
-    "remote":        4,
+    "remote":        5,
     "global":        1,
     "hybrid_bonus":  1,
 
@@ -45,8 +45,8 @@ WEIGHTS = {
 
     # Freshness — Bayesian decay: 6 * exp(-age_h / 72)
     "fresh_peak":    6,
-    "fresh_halflife": 72,   # hours at which score halves (≈3 days)
-    "fresh_floor":   -4,    # never worse than this
+    "fresh_halflife": 48,   # v32: tighter decay — 48h halflife (was 72h)
+    "fresh_floor":   -8,    # v32: stronger old-job penalty (was -4)
 
     # Source
     "src_local":     2,
@@ -195,20 +195,47 @@ def phrase_match(phrase: str, text: str) -> bool:
 
 def _freshness_score(posted_date) -> Tuple[int, str]:
     """
-    Bayesian decay from V32-Enterprise: score = 6 * exp(-age_hours / 72).
-    Smooth curve instead of hard steps — job 3h old gets ~5.9, 72h gets ~2.2, 7d gets ~0.
-    Floor at WEIGHTS['fresh_floor'] so very old jobs still get penalised but not infinitely.
+    Freshness scoring — smooth Bayesian decay + hard stale penalties.
+
+    Age → score:
+      0–6h   → +6  (brand new)
+      1d     → +4
+      2d     → +2
+      3d     → +1
+      5d     →  0  (neutral)
+      7d     → -4  (stale — reduces below threshold for borderline jobs)
+      10d+   → -8  (very stale — effectively blocked)
+
+    Jobs with no posted_date get 0 (neutral — unknown age).
     """
     if not posted_date:
         return 0, ""
     age_h = (datetime.now() - posted_date).total_seconds() / 3600
-    raw   = WEIGHTS["fresh_peak"] * math.exp(-age_h / WEIGHTS["fresh_halflife"])
-    score = max(WEIGHTS["fresh_floor"], round(raw))
+
+    # Bayesian decay component (positive freshness bonus)
+    decay_raw = WEIGHTS["fresh_peak"] * math.exp(-age_h / WEIGHTS["fresh_halflife"])
+    decay_pts = round(decay_raw)  # +6 → +0 as age increases
+
+    # Hard stale penalty (negative — kicks in after 5 days)
+    if age_h > 10 * 24:       # > 10 days
+        penalty = WEIGHTS["fresh_floor"]   # -8
+    elif age_h > 7 * 24:      # > 7 days
+        penalty = -6
+    elif age_h > 5 * 24:      # > 5 days
+        penalty = -4
+    else:
+        penalty = 0
+
+    score = decay_pts + penalty
+
     if score > 0:
-        return score, f"+{score} fresh"
+        label = f"+{score} fresh ({int(age_h)}h old)"
     elif score < 0:
-        return score, f"{score} stale"
-    return 0, ""
+        label = f"{score} stale ({int(age_h//24)}d old)"
+    else:
+        label = ""
+
+    return score, label
 
 
 # =========================================================
