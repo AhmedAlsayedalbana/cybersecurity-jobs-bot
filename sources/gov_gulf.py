@@ -184,7 +184,7 @@ def _fetch_gulf_linkedin_companies():
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    budget = 90
+    budget = 150  # v32: raised 90→150s
     t0 = _t.time()
     for company_name, slug in LINKEDIN_GULF_COMPANIES:
         if _t.time() - t0 > budget:
