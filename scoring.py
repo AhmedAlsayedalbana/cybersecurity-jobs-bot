@@ -1,527 +1,474 @@
 """
-Telegram message formatting and multi-topic sending.
-KEY FEATURE: 10 jobs per channel per run, no duplicates across channels.
-Format: matches reference telegram_sender exactly.
+Job scoring and ranking system — V32
+
+Built on V31, merges the best ideas from V32-Enterprise:
+  ✅ phrase_match()        — flexible regex: handles "cloud-security", "cloud/security", spaces
+  ✅ Bayesian freshness    — 6 * exp(-age_hours / 72), smooth decay instead of hard steps
+  ✅ diversity_rerank()    — prevents one company/title dominating the feed
+  ✅ WEIGHTS dict          — single place to tune all numbers
+  ✅ Context weighting     — title ×2, tags ×1.5, description ×1
+  ✅ Entry-level gate      — boost only when score >= ENTRY_MIN_SCORE
+  ✅ score_job() returns   — (int, list[str]) for full explainability
+  ✅ score_job_int()       — backward-compat wrapper for main.py / telegram_sender.py
+
+NOT merged from V32-Enterprise (would break the project):
+  ❌ Job dataclass         — project uses models.Job with extra fields
+  ❌ classify_location()   — project uses classifier.py with full Arabic patterns
+  ❌ Remote double-add     — V32 added +5 AND +2 regardless of location logic
+  ❌ seen_duplicates       — belongs in dedup.py, not the scorer
 """
 
-import time
-import logging
-import requests
-from datetime import datetime, timedelta
 from models import Job, _flatten_tags
-from config import (
-    TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, TELEGRAM_SEND_DELAY,
-    CHANNELS, get_topic_thread_id,
-    EGYPT_PATTERNS, GULF_PATTERNS, REMOTE_PATTERNS,
-    MAX_JOBS_PER_CHANNEL,
-)
+from classifier import classify_location
+from datetime import datetime
+from typing import List, Tuple
+import logging
+import math
+import re
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+# =========================================================
+# WEIGHTS — single place to tune everything
+# =========================================================
+WEIGHTS = {
+    # Location
+    "egypt":         8,
+    "gulf":          6,
+    "remote":        5,
+    "global":        1,
+    "hybrid_bonus":  1,
+
+    # Tech
+    "tech_cap":      10,
+    "tech_global":   0.5,   # multiplier for global-onsite jobs
+
+    # Freshness — Bayesian decay: 6 * exp(-age_h / 72)
+    "fresh_peak":    6,
+    "fresh_halflife": 48,   # v32: tighter decay — 48h halflife (was 72h)
+    "fresh_floor":   -8,    # v32: stronger old-job penalty (was -4)
+
+    # Source
+    "src_local":     2,
+    "src_cybersec":  1,
+    "src_direct":    1,
+    "src_li_reg":    2,    # v31: raised — LinkedIn is high-quality regional source
+
+    # Company
+    "premium_co":    2,
+
+    # Entry-level
+    "entry_boost":   3,
+    "entry_min":     8,     # gate: only boost if already >= this
+
+    # Penalties
+    "non_cyber":    -20,
+    "clearance":    -15,
+    "weak_title":    -8,
+    "support_gen":   -4,
+    "guard_title":   -8,
+    "short_title":   -8,
+    "no_url":       -10,
+    "global_onsite": -4,
+    "bad_geo":       -4,
+
+    # Diversity rerank
+    "div_company":   4,     # penalty per company after 2 appearances
+    "div_title":     4,     # penalty per title after 2 appearances
+}
+
+# =========================================================
+# SOURCE TIERS
+# =========================================================
+_SOURCE_LOCAL = {
+    "wuzzuf", "forasna", "drjobpro", "akhtaboot", "bayt", "naukrigulf",
+    "tanqeeb", "arab_boards", "stc_ksa", "tdra_uae", "etisalat_uae",
+    "iti", "depi", "nti", "linkedin_egypt_companies", "linkedin_gulf_companies",
+}
+_SOURCE_CYBERSEC = {
+    "bugcrowd", "hackerone", "infosec_jobs", "infosec_jobs.com",
+    "cybersecjobs", "clearancejobs", "isaca", "isc2", "cybersec_rss",
+}
+_SOURCE_DIRECT = {
+    "greenhouse_expanded", "greenhouse_cybersec", "lever_expanded",
+}
+_PREMIUM_COMPANIES = {
+    "crowdstrike", "palo alto networks", "sentinelone", "zscaler",
+    "cloudflare", "okta", "datadog", "rapid7", "tenable", "qualys",
+    "abnormal security", "huntress", "axonius", "wiz", "snyk",
+    "recorded future", "darktrace", "vectra ai", "illumio",
+    "google", "microsoft", "amazon", "meta", "apple",
+}
+
+# =========================================================
+# DISQUALIFIER LISTS
+# =========================================================
+_CLEARANCE_REQUIRED = [
+    "us clearance", "uk sc clearance", "nato clearance",
+    "security clearance required", "dv clearance", "strap clearance",
+    "active clearance", "ts/sci", "top secret",
+    "must be uk citizen", "must be us citizen",
+    "must hold uk", "must hold us",
+    "eligible to work in the uk", "eligible to work in the us",
+    "right to work in uk", "right to work in us",
+]
+_WEAK_SECURITY_TITLES = [
+    "it support", "helpdesk", "help desk", "desktop support",
+    "system administrator", "sysadmin", "network administrator",
+    "database administrator", "dba", "data entry",
+    "sales engineer", "pre-sales", "presales",
+    "noc engineer", "noc analyst", "network operations",
+    "it manager", "it director", "infrastructure engineer",
+    "devops engineer", "site reliability", "sre",
+    "data analyst", "business analyst", "project manager",
+    "scrum master", "agile coach",
+]
+_NON_CYBER_TITLES = [
+    "physical security", "security guard", "security officer",
+    "building security", "event security", "loss prevention",
+    "security supervisor",
+]
+_IRRELEVANT_GEO = [
+    "london", "new york", "san francisco", "toronto", "sydney",
+    "berlin", "paris", "singapore", "amsterdam", "stockholm",
+]
+
+# =========================================================
+# TECH KEYWORD MAP
+# =========================================================
+TECH_MAP = {
+    # SOC / Blue Team
+    "soc analyst": 6,       "soc engineer": 6,      "security operations center": 5,
+    "soc": 3,               "blue team": 4,          "threat analyst": 4,
+    "siem": 3,              "splunk": 3,              "qradar": 3,         "sentinel": 3,
+    "incident response": 4, "threat hunting": 5,     "threat hunter": 5,
+    "dfir": 5,              "digital forensics": 4,  "malware analyst": 4,
+    "detection engineer": 5,
+    # Pentest / Red Team
+    "penetration tester": 6, "penetration testing": 6, "pentest": 5,
+    "red team": 5,           "offensive security": 4,
+    "ethical hacker": 4,     "bug bounty": 4,
+    "oscp": 3,               "ceh": 2,                "exploit": 3,
+    # Network Security
+    "network security engineer": 6, "network security analyst": 6,
+    "firewall engineer": 5,         "firewall administrator": 4,
+    "intrusion detection": 4,       "intrusion prevention": 4,
+    "ids": 3,     "ips": 3,         "zero trust": 3,
+    "palo alto": 3, "fortinet": 3,  "cisco security": 3,
+    "network defense": 4, "waf engineer": 4, "ddos": 3,
+    # Cloud Security
+    "cloud security": 5, "aws security": 5, "azure security": 5,
+    "kubernetes security": 4, "container security": 3, "cspm": 3,
+    # AppSec
+    "appsec": 4, "application security": 4, "devsecops": 4,
+    "sast": 3,   "dast": 3,                 "owasp": 3,
+    # GRC
+    "grc": 4,       "iso 27001": 3,     "compliance": 2,
+    "nist": 2,      "risk analyst": 3,  "security auditor": 3,
+    # General
+    "vulnerability": 2, "ciso": 2, "security architect": 4, "cryptograph": 2,
+}
+
+_ENTRY_KW = [
+    "junior", "intern", "internship", "trainee",
+    "fresh grad", "fresh graduate", "entry level", "entry-level",
+    "graduate program", "0-1 years", "0-2 years", "1-2 years",
+]
 
 
-# ─────────────────────────────────────────────────────────────
-# 🔎 Geo Helpers
-# ─────────────────────────────────────────────────────────────
+# =========================================================
+# HELPERS
+# =========================================================
 
-def _is_egypt_job(job):
-    loc = (job.location or "").lower()
-    return any(p in loc for p in EGYPT_PATTERNS)
-
-def _is_gulf_job(job):
-    loc = (job.location or "").lower()
-    return any(p in loc for p in GULF_PATTERNS)
-
-def _is_remote_job(job):
-    if job.is_remote:
-        return True
-    combined = (job.title + " " + job.location + " " + job.job_type).lower()
-    return any(p in combined for p in REMOTE_PATTERNS)
-
-
-# ─────────────────────────────────────────────────────────────
-# 🔎 Routing — which channels gets this job
-# ─────────────────────────────────────────────────────────────
-
-def _channel_priority(ch_key: str) -> int:
+def phrase_match(phrase: str, text: str) -> bool:
     """
-    Returns priority rank for a channel key.
-    Lower number = higher specificity = wins when a job matches multiple channels.
-    Specialty topic channels beat geo channels beat catch-all.
+    Flexible word-boundary match from V32-Enterprise.
+    Handles: 'cloud security', 'cloud-security', 'cloud/security'.
+    Prevents false positives like 'ids' matching inside 'considers'.
     """
-    PRIORITY = {
-        # Most specific specialty topics first
-        "networksec":  1,
-        "pentest":     1,
-        "soc":         1,
-        "appsec":      1,
-        "cloudsec":    1,
-        "grc":         1,
-        "seceng":      2,   # broad — loses to the above
-        "internships": 2,   # broad — loses to specific topics
-        # Geo channels
-        "egypt":       3,
-        "gulf":        3,
-        "remote":      3,
-    }
-    return PRIORITY.get(ch_key, 5)
-
-
-def route_job(job):
-    """
-    Route a job to channels — v29 model:
-
-    GEO channels  (egypt / gulf / remote): based on location only.
-    TOPIC channels (soc / grc / pentest / ...): based on keywords only.
-
-    A job CAN and SHOULD appear in BOTH a geo channel AND a topic channel.
-    Example: "GRC Analyst in Cairo" → egypt + grc ✅
-
-    Within topic channels, if a job matches multiple topics, it goes to the
-    HIGHEST-priority (most specific) one only to avoid topic channel flooding.
-    Within geo channels, a job goes to exactly one geo channel.
-    """
-    tags_str   = _flatten_tags(job.tags)
-    searchable = (job.title + " " + job.company + " " + tags_str + " " + job.description).lower()
-
-    # ── Geo routing (mutually exclusive) ─────────────────────
-    geo_result = []
-    if _is_egypt_job(job):
-        geo_result = ["egypt"]
-    elif _is_gulf_job(job):
-        geo_result = ["gulf"]
-    elif _is_remote_job(job):
-        geo_result = ["remote"]
-
-    # ── Topic routing (keyword-based) ────────────────────────
-    topic_matches = []
-    for key, ch in CHANNELS.items():
-        if ch.get("match"):          # skip geo channels
-            continue
-        if "keywords" not in ch:
-            continue
-        if any(kw.lower() in searchable for kw in ch["keywords"]):
-            topic_matches.append(key)
-
-    # Among topic channels, keep only highest-priority match
-    topic_result = []
-    if topic_matches:
-        best = min(_channel_priority(k) for k in topic_matches)
-        top  = [k for k in topic_matches if _channel_priority(k) == best]
-        topic_result = top[:1]
-
-    return geo_result + topic_result
-
-
-def send_jobs(jobs):
-    """
-    Send jobs to Telegram channels — v29 rules:
-
-    - A job appears in at most 1 GEO channel + at most 1 TOPIC channel.
-    - GEO channels are deduped among themselves (no job in both egypt & gulf).
-    - TOPIC channels are deduped among themselves (no job in both soc & grc).
-    - A job CAN appear in one geo + one topic (e.g. egypt + grc).
-    - Jobs sorted by score desc — best jobs go first.
-    - Each channel: max MAX_JOBS_PER_CHANNEL (5) jobs per run.
-    """
-    from scoring import score_job_int, score_job
-
-    total_sent      = 0
-    channel_summary = {}
-
-    GEO_CHANNELS   = ["egypt", "gulf", "remote"]
-    TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
-    send_order     = GEO_CHANNELS + TOPIC_CHANNELS
-
-    active  = [k for k in send_order if get_topic_thread_id(k)]
-    missing = [k for k in send_order if not get_topic_thread_id(k)]
-    log.info(f"📢 Active channels ({len(active)}): {', '.join(active)}")
-    if missing:
-        log.warning(f"⚠️  Missing thread IDs for: {', '.join(missing)} — skipping those")
-
-    # Sort jobs by score
-    jobs_scored = sorted(jobs, key=lambda j: -score_job_int(j))
-
-    # Build per-channel queues
-    channel_queues = {key: [] for key in CHANNELS.keys()}
-    for job in jobs_scored:
-        for ch_key in route_job(job):
-            if ch_key in channel_queues:
-                channel_queues[ch_key].append(job)
-
-    limit           = MAX_JOBS_PER_CHANNEL
-    geo_sent_urls   = set()   # tracks URLs sent to GEO channels
-    all_sent_urls   = set()   # GLOBAL dedup — no URL sent twice across ALL channels
-
-    for ch_key in send_order:
-        ch_jobs   = channel_queues.get(ch_key, [])
-        thread_id = get_topic_thread_id(ch_key)
-
-        if not thread_id:
-            continue
-
-        ch_name  = CHANNELS.get(ch_key, {}).get("name", ch_key)
-        is_geo   = ch_key in GEO_CHANNELS
-
-        if not ch_jobs:
-            log.info(f"📭 [{ch_key}] {ch_name}: 0 matching jobs this run")
-            channel_summary[ch_key] = 0
-            continue
-
-        sent_this_ch = 0
-
-        for job in ch_jobs:
-            if sent_this_ch >= limit:
-                break
-
-            # Global dedup — never send the same URL twice across any channel
-            if job.url in all_sent_urls:
-                continue
-
-            message = format_job_message(job)
-            success = _send_to_topic(message, thread_id)
-
-            if success:
-                sent_this_ch   += 1
-                total_sent     += 1
-                all_sent_urls.add(job.url)
-                if is_geo:
-                    geo_sent_urls.add(job.url)
-                log.info(f"  ✅ [{ch_key}] {sent_this_ch}/{limit} — {job.title[:50]}")
-
-            time.sleep(TELEGRAM_SEND_DELAY)
-
-        channel_summary[ch_key] = sent_this_ch
-        if sent_this_ch > 0:
-            log.info(f"📨 Channel [{ch_key}] {ch_name}: sent {sent_this_ch} jobs")
-        else:
-            log.info(f"📭 Channel [{ch_key}] {ch_name}: 0 sent (all filtered/deduped)")
-
-    log.info("=" * 40)
-    log.info("📊 Per-Channel Summary:")
-    for k, v in channel_summary.items():
-        ch_name = CHANNELS.get(k, {}).get("name", k)
-        bar = "✅" if v > 0 else "⬜"
-        log.info(f"   {bar} {ch_name}: {v} jobs")
-    log.info("=" * 40)
-
-    # Return count + all sent URLs for seen_jobs dedup
-    return total_sent, all_sent_urls
-
-
-# ─────────────────────────────────────────────────────────────
-# ✨ Message Formatting — matches reference format exactly
-# ─────────────────────────────────────────────────────────────
-
-def _clean_title(raw: str) -> str:
-    """
-    Normalize job title:
-    - Decode HTML entities (&amp; → &)
-    - Collapse extra spaces
-    - Remove truncated unclosed parentheses at end
-    - Fix ALL_CAPS → Title Case
-    """
-    import html as _html
-    import re as _re
-    if not raw:
-        return raw
-    # 1. Decode HTML entities
-    t = _html.unescape(raw.strip())
-    # 2. Collapse whitespace
-    t = " ".join(t.split())
-    # 3. Remove truncated parenthetical at end (no closing paren within 35 chars)
-    t = _re.sub(r" *\([^)]{0,35}$", "", t).strip()
-    # 4. ALL CAPS → Title Case
-    if t == t.upper() and len(t) > 4:
-        t = t.title()
-    return t.strip()
-
-
-def _escape(text):
-    if not text:
-        return ""
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-def _detect_level(text):
-    if any(k in text for k in ["intern", "junior", "trainee", "entry", "fresh grad", "graduate"]):
-        return "Entry-Level"
-    if any(k in text for k in ["senior", "lead", "manager", "principal", "head", "director"]):
-        return "Senior"
-    if any(k in text for k in ["mid", "intermediate", "associate"]):
-        return "Mid-Level"
-    return "Open"
-
-def _detect_domain(text):
-    """
-    Classify job domain. Uses word-boundary matching to reduce false positives.
-    KEY RULE: title signals beat description signals.
-    Network Security checked BEFORE GRC to avoid "nist" in desc hijacking network roles.
-    """
-    import re as _re
-    def has(kws):
-        return any(_re.search(r'\b' + _re.escape(k) + r'\b', text) for k in kws)
-
-    # Most-specific title signals first
-    if has(["soc analyst", "soc engineer", "soc manager", "security operations center",
-            "security operations", "blue team", "threat detection", "security monitoring",
-            "siem analyst", "threat hunter", "cyber defense"]):
-        return "SOC / Blue Team"
-    if has(["pentest", "penetration test", "penetration tester", "red team",
-            "ethical hack", "bug bounty", "offensive security", "exploit"]):
-        return "Penetration Testing / Red Team"
-    if has(["cloud security", "aws security", "azure security", "gcp security",
-            "cloud native security", "cspm", "cnapp", "kubernetes security"]):
-        return "Cloud Security"
-    if has(["appsec", "application security", "devsecops", "sast", "dast", "owasp",
-            "secure code", "product security"]):
-        return "AppSec / DevSecOps"
-    if has(["dfir", "digital forensics", "malware analyst", "malware analysis",
-            "reverse engineer", "incident response analyst", "incident response engineer"]):
-        return "DFIR / Forensics"
-    # Network Security BEFORE GRC — "nist" keyword in description shouldn't override
-    if has(["network security engineer", "network security analyst", "network security manager",
-            "firewall engineer", "firewall administrator", "firewall specialist",
-            "network defense", "waf engineer", "ddos", "vpn engineer",
-            "zero trust", "palo alto", "fortinet", "cisco security",
-            "intrusion detection", "intrusion prevention", "ids engineer", "ips engineer"]):
-        return "Network Security"
-    # GRC — only when title/tags actually indicate it
-    if has(["grc analyst", "grc manager", "grc engineer", "compliance analyst",
-            "compliance manager", "risk analyst", "risk manager", "security auditor",
-            "it auditor", "iso 27001 lead", "nist framework", "data protection officer",
-            "governance risk", "pci dss analyst", "gdpr officer"]):
-        return "GRC / Compliance"
-    if has(["ciso", "security manager", "security director", "security lead",
-            "head of security", "vp security", "chief security",
-            "cybersecurity manager", "cybersecurity director"]):
-        return "Security Management"
-    if has(["security architect", "security architecture"]):
-        return "Security Architecture"
-    if has(["iam engineer", "identity access management", "pki engineer", "privileged access"]):
-        return "IAM / Identity Security"
-    if has(["security internship", "security trainee", "junior security", "security graduate",
-            "internship cybersecurity", "scholarship security", "bootcamp security"]):
-        return "Training / Program"
-    # Broad fallbacks — only reached when no specific domain matched
-    if has(["soc", "siem", "splunk", "qradar", "sentinel"]):
-        return "SOC / Blue Team"
-    if has(["network security", "firewall"]):
-        return "Network Security"
-    if has(["threat intel", "threat intelligence", "cti"]):
-        return "DFIR / Forensics"
-    if has(["grc", "iso 27001", "compliance", "nist", "auditor"]):
-        return "GRC / Compliance"
-    return "Cybersecurity"
-
-def _detect_location_flag(job):
-    if _is_egypt_job(job):
-        loc = (job.location or "").lower()
-        if "cairo" in loc or "القاهرة" in loc:
-            return "🇪🇬 Cairo, Egypt"
-        if "alex" in loc or "الإسكندرية" in loc:
-            return "🇪🇬 Alexandria, Egypt"
-        return "🇪🇬 Egypt"
-    if _is_gulf_job(job):
-        loc = (job.location or "").lower()
-        if "saudi" in loc or "ksa" in loc or "riyadh" in loc or "jeddah" in loc:
-            return "🇸🇦 Saudi Arabia"
-        if "dubai" in loc or "uae" in loc or "abu dhabi" in loc:
-            return "🇦🇪 UAE"
-        if "qatar" in loc or "doha" in loc:
-            return "🇶🇦 Qatar"
-        if "kuwait" in loc:
-            return "🇰🇼 Kuwait"
-        if "bahrain" in loc:
-            return "🇧🇭 Bahrain"
-        if "oman" in loc or "muscat" in loc:
-            return "🇴🇲 Oman"
-        return "🌙 Gulf"
-    if _is_remote_job(job):
-        return "🌍 Remote / Worldwide"
-    return "📍 " + _escape(job.location or "Unknown")
-
-def _freshness_badge(job):
-    if not job.posted_date:
-        return ""
-    diff = datetime.now() - job.posted_date
-    if diff < timedelta(hours=6):
-        return "[NEW]"
-    if diff < timedelta(hours=24):
-        return "[Today]"
-    return ""
-
-def _extract_skills(text):
-    skill_map = {
-        "siem": "SIEM", "splunk": "Splunk", "qradar": "QRadar",
-        "sentinel": "Sentinel", "aws": "AWS", "azure": "Azure",
-        "gcp": "GCP", "incident": "IR", "threat": "Threat Intel",
-        "pentest": "Pentest", "burp": "Burp Suite", "nessus": "Nessus",
-        "metasploit": "Metasploit", "iso 27001": "ISO 27001",
-        "nist": "NIST", "grc": "GRC", "pci": "PCI-DSS",
-        "crowdstrike": "CrowdStrike", "defender": "MS Defender",
-        "wireshark": "Wireshark", "oscp": "OSCP", "cissp": "CISSP",
-        "ceh": "CEH", "python": "Python", "soc": "SOC",
-    }
-    found = [label for kw, label in skill_map.items() if kw in text]
-    return ", ".join(found[:5]) if found else "General Security"
-
-def _match_bar(score: int) -> str:
-    if score >= 18:
-        return "🟢🟢🟢🟢🟢  Excellent"
-    if score >= 14:
-        return "🟢🟢🟢🟢⚪  Strong"
-    if score >= 11:
-        return "🟢🟢🟢⚪⚪  Good"
-    if score >= 7:
-        return "🟡🟡⚪⚪⚪  Relevant"
-    return "🔵⚪⚪⚪⚪  Listed"
-
-def _domain_emoji(domain: str) -> str:
-    mapping = {
-        "SOC / Blue Team":               "🖥️",
-        "Penetration Testing / Red Team": "🕵️",
-        "Cloud Security":                "☁️",
-        "AppSec / DevSecOps":            "🛡️",
-        "GRC / Compliance":              "📋",
-        "DFIR / Forensics":              "🔬",
-        "Network Security":              "🌐",
-        "Security Management":           "👔",
-        "Security Architecture":         "🏗️",
-        "IAM / Identity Security":       "🔑",
-        "Training / Program":            "🎓",
-        "Cybersecurity":                 "🔐",
-    }
-    return mapping.get(domain, "🔐")
-
-def _level_emoji(level: str) -> str:
-    return {"Entry-Level": "🌱", "Mid-Level": "⚙️", "Senior": "👨‍💻", "Open": "🔍"}.get(level, "🔍")
-
-
-def format_job_message(job):
-    from scoring import score_job_int
-    score = score_job_int(job)
-
-    text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
-
-    level    = _detect_level(text)
-    domain   = _detect_domain(text)
-    location = _detect_location_flag(job)
-    skills   = _extract_skills(text)
-    fresh    = _freshness_badge(job)
-
-    title   = _escape(_clean_title(job.title))
-    company = _escape(job.company) if job.company else "Unknown"
-    source  = _escape(getattr(job, "display_source", None) or job.source or "")
-    # For hiring posts, show the original raw job title (HR's exact wording) as subtext
-    is_hiring_post = getattr(job, "source", "") == "linkedin_hiring"
-    # For #Hiring posts: original_source contains "HR Name — Job Title" or "#Hiring — raw title"
-    hiring_poster = ""
-    if is_hiring_post:
-        orig = getattr(job, "original_source", "") or ""
-        # Extract the HR/poster part if available (format: "#Hiring — <raw_title>")
-        # We show the original raw title as context
-        if orig.startswith("#Hiring — ") or orig.startswith("#Hiring —"):
-            raw = orig.replace("#Hiring — ", "").replace("#Hiring —", "").strip()
-            if raw and raw.lower() != job.title.lower():
-                hiring_poster = raw
-    hiring_context = _escape(hiring_poster) if hiring_poster else ""
-    is_internship  = any(k in text for k in ["intern", "trainee", "fresh grad", "graduate program"])
-
-    d_emoji = _domain_emoji(domain)
-    l_emoji = _level_emoji(level)
-
-    lines = []
-
-    # ── Badge row (only if exists) ────────────────────────────
-    badges = []
-    if fresh == "[NEW]":
-        badges.append("🆕 NEW")
-    elif fresh == "[Today]":
-        badges.append("📅 Today")
-    if is_internship:
-        badges.append("🎓 Internship")
-    if is_hiring_post:
-        badges.append("📢 #Hiring")
-    if badges:
-        lines.append(f"<b>{'  ·  '.join(badges)}</b>")
-        lines.append("")
-
-    # ── Title ─────────────────────────────────────────────────
-    lines.append(f"{d_emoji}  <b>{title}</b>")
-    lines.append("")
-
-    # ── Company & Location ────────────────────────────────────
-    lines.append(f"🏢  <b>{company}</b>")
-    lines.append(f"📍  {location}")
-    lines.append("")
-
-    # ── Role Details ──────────────────────────────────────────
-    lines.append(f"<b>━━ Role Details</b>")
-    lines.append(f"{l_emoji}  {level}   {d_emoji}  {domain}")
-    if job.job_type:
-        lines.append(f"📄  {_escape(job.job_type)}")
-    if job.salary:
-        lines.append(f"💰  {_escape(str(job.salary))}")
-    lines.append("")
-
-    # ── Skills ────────────────────────────────────────────────
-    lines.append(f"<b>━━ Key Skills</b>")
-    lines.append(f"⚡  {skills}")
-    lines.append("")
-
-    # ── Match Strength — bar + score ─────────────────────────
-    lines.append(f"<b>━━ Match Strength</b>")
-    lines.append(f"   {_match_bar(score)}  <b>({score})</b>")
-    lines.append("")
-
-    # ── Source ────────────────────────────────────────────────
-    if is_hiring_post:
-        lines.append(f"📢  <i>Via: LinkedIn #Hiring</i>")
-        if hiring_context:
-            lines.append(f"📝  <i>Original: {hiring_context}</i>")
-    elif source:
-        lines.append(f"🌐  <i>Source: {source}</i>")
-
-    lines.append("")
-
-    # ── Apply + short bottom separator ───────────────────────
-    lines.append(f'<a href="{job.url}">🚀  Apply Now  →</a>')
-    lines.append(f"<code>{'─' * 14}</code>")
-
-    return "\n".join(lines).strip()
-
-
-# ─────────────────────────────────────────────────────────────
-# 📤 Sending — per channel, no cross-channel duplicates
-# ─────────────────────────────────────────────────────────────
-
-def _send_to_topic(message, thread_id=None):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_GROUP_ID:
-        log.warning("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_GROUP_ID")
-        return False
-
-    payload = {
-        "chat_id": TELEGRAM_GROUP_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    if thread_id:
-        payload["message_thread_id"] = thread_id
-
     try:
-        resp = requests.post(
-            "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage",
-            json=payload,
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return True
-        log.error("Telegram error " + str(resp.status_code) + ": " + resp.text[:200])
-        return False
-    except Exception as e:
-        log.error("Telegram request failed: " + str(e))
-        return False
+        escaped = re.escape(phrase).replace(r"\ ", r"[\s\-_/]*")
+        return bool(re.search(rf"\b{escaped}\b", text))
+    except Exception:
+        return phrase in text
 
 
+def _freshness_score(posted_date) -> Tuple[int, str]:
+    """
+    Freshness scoring — smooth Bayesian decay + hard stale penalties.
+
+    Age → score:
+      0–6h   → +6  (brand new)
+      1d     → +4
+      2d     → +2
+      3d     → +1
+      5d     →  0  (neutral)
+      7d     → -4  (stale — reduces below threshold for borderline jobs)
+      10d+   → -8  (very stale — effectively blocked)
+
+    Jobs with no posted_date get 0 (neutral — unknown age).
+    """
+    if not posted_date:
+        return 0, ""
+    age_h = (datetime.now() - posted_date).total_seconds() / 3600
+
+    # Bayesian decay component (positive freshness bonus)
+    decay_raw = WEIGHTS["fresh_peak"] * math.exp(-age_h / WEIGHTS["fresh_halflife"])
+    decay_pts = round(decay_raw)  # +6 → +0 as age increases
+
+    # Hard stale penalty (negative — kicks in after 5 days)
+    if age_h > 10 * 24:       # > 10 days
+        penalty = WEIGHTS["fresh_floor"]   # -8
+    elif age_h > 7 * 24:      # > 7 days
+        penalty = -6
+    elif age_h > 5 * 24:      # > 5 days
+        penalty = -4
+    else:
+        penalty = 0
+
+    score = decay_pts + penalty
+
+    if score > 0:
+        label = f"+{score} fresh ({int(age_h)}h old)"
+    elif score < 0:
+        label = f"{score} stale ({int(age_h//24)}d old)"
+    else:
+        label = ""
+
+    return score, label
 
 
+# =========================================================
+# MAIN SCORER
+# =========================================================
+
+def score_job(job: Job) -> Tuple[int, List[str]]:
+    """
+    Score a job. Returns (score: int, reasons: list[str]).
+
+    Usage:
+        score, reasons = score_job(job)
+        # or for just the number:
+        score = score_job_int(job)
+    """
+    score   = 0
+    reasons = []
+
+    title = (job.title or "").lower()
+    desc  = (job.description or "").lower()
+    tags  = _flatten_tags(job.tags).lower()
+
+    # ── 0. Hard disqualifiers ────────────────────────────────
+    if any(phrase_match(k, title) for k in _NON_CYBER_TITLES):
+        has_cyber = any(phrase_match(k, title) for k in
+                        ["cyber", "information", "infosec", "it", "digital"])
+        if not has_cyber:
+            score += WEIGHTS["non_cyber"]
+            reasons.append(f"{WEIGHTS['non_cyber']} non-cyber title")
+
+    quick_scan = title + " " + desc[:200] + " " + tags
+    if any(k in quick_scan for k in _CLEARANCE_REQUIRED):
+        score += WEIGHTS["clearance"]
+        reasons.append(f"{WEIGHTS['clearance']} clearance required")
+
+    # ── 1. Location ──────────────────────────────────────────
+    try:
+        loc_type = classify_location(job)
+    except Exception:
+        loc_lower = (job.location or "").lower()
+        if "egypt" in loc_lower or "cairo" in loc_lower:
+            loc_type = "egypt"
+        elif any(x in loc_lower for x in ["saudi", "uae", "dubai", "qatar", "kuwait"]):
+            loc_type = "gulf"
+        else:
+            loc_type = "global"
+
+    is_remote = job.is_remote or phrase_match("remote", title + " " + desc[:80] + " " + tags)
+
+    if loc_type == "egypt":
+        score += WEIGHTS["egypt"]
+        reasons.append(f"+{WEIGHTS['egypt']} Egypt")
+    elif loc_type == "gulf":
+        score += WEIGHTS["gulf"]
+        reasons.append(f"+{WEIGHTS['gulf']} Gulf")
+    elif is_remote:
+        score += WEIGHTS["remote"]
+        reasons.append(f"+{WEIGHTS['remote']} remote")
+    else:
+        score += WEIGHTS["global"]
+        reasons.append(f"+{WEIGHTS['global']} global onsite")
+
+    # Hybrid only when Egypt/Gulf + confirmed remote option
+    if loc_type in ("egypt", "gulf") and is_remote:
+        score += WEIGHTS["hybrid_bonus"]
+        reasons.append(f"+{WEIGHTS['hybrid_bonus']} hybrid")
+
+    # ── 2. Tech skills — context-weighted ────────────────────
+    tech_cap   = WEIGHTS["tech_cap"]
+    tech_score = 0.0
+    matched    = []
+
+    for kw, val in TECH_MAP.items():
+        if tech_score >= tech_cap:
+            break
+        if phrase_match(kw, title):       # title — highest signal
+            tech_score += val * 2
+            matched.append(kw)
+        elif phrase_match(kw, tags):      # tags — medium signal
+            tech_score += val * 1.5
+            matched.append(kw)
+        elif phrase_match(kw, desc):      # description — base signal
+            tech_score += val
+
+    raw_tech = min(int(tech_score), tech_cap)
+
+    if loc_type == "global" and not is_remote:
+        credit = int(raw_tech * WEIGHTS["tech_global"])
+        score += credit
+        if raw_tech:
+            reasons.append(f"+{credit} tech (global penalty, raw={raw_tech})")
+    else:
+        score += raw_tech
+        if raw_tech:
+            top = ", ".join(matched[:3])
+            reasons.append(f"+{raw_tech} tech ({top})" if top else f"+{raw_tech} tech")
+
+    # ── 3. Freshness — Bayesian decay ────────────────────────
+    fresh_pts, fresh_label = _freshness_score(job.posted_date)
+    score += fresh_pts
+    if fresh_label:
+        reasons.append(fresh_label)
+
+    # ── 4. Source quality ────────────────────────────────────
+    src = (job.source or "").lower()
+    if src in _SOURCE_LOCAL:
+        score += WEIGHTS["src_local"]
+        reasons.append(f"+{WEIGHTS['src_local']} local source")
+    elif src in _SOURCE_CYBERSEC:
+        score += WEIGHTS["src_cybersec"]
+        reasons.append(f"+{WEIGHTS['src_cybersec']} cybersec board")
+    elif src in _SOURCE_DIRECT:
+        score += WEIGHTS["src_direct"]
+        reasons.append(f"+{WEIGHTS['src_direct']} direct page")
+    elif src in ("linkedin", "linkedin_hiring", "linkedin_posts", "linkedin_hr"):
+        score += WEIGHTS["src_li_reg"]
+        reasons.append(f"+{WEIGHTS['src_li_reg']} linkedin source")
+
+    company_lower = (job.company or "").lower()
+    if any(c in company_lower for c in _PREMIUM_COMPANIES):
+        score += WEIGHTS["premium_co"]
+        reasons.append(f"+{WEIGHTS['premium_co']} premium company")
+
+    # ── 5. Entry-level CONDITIONAL ───────────────────────────
+    if any(phrase_match(k, title + " " + desc[:200]) for k in _ENTRY_KW):
+        if score >= WEIGHTS["entry_min"]:
+            score += WEIGHTS["entry_boost"]
+            reasons.append(f"+{WEIGHTS['entry_boost']} entry-level")
+        else:
+            reasons.append("0 entry skipped (score too low)")
+
+    # ── 6. Penalties ─────────────────────────────────────────
+    if any(phrase_match(k, title) for k in _WEAK_SECURITY_TITLES):
+        score += WEIGHTS["weak_title"]
+        reasons.append(f"{WEIGHTS['weak_title']} weak title")
+
+    if "support" in title and not any(
+        phrase_match(k, title) for k in ["security", "cyber", "soc", "analyst"]
+    ):
+        score += WEIGHTS["support_gen"]
+        reasons.append(f"{WEIGHTS['support_gen']} generic support")
+
+    if any(phrase_match(k, title) for k in ["guard", "officer"]) and \
+       not any(phrase_match(k, title) for k in
+               ["security engineer", "security analyst", "cyber", "information security"]):
+        score += WEIGHTS["guard_title"]
+        reasons.append(f"{WEIGHTS['guard_title']} guard/officer title")
+
+    if len(job.title) < 5:
+        score += WEIGHTS["short_title"]
+        reasons.append(f"{WEIGHTS['short_title']} title too short")
+
+    if not job.url:
+        score += WEIGHTS["no_url"]
+        reasons.append(f"{WEIGHTS['no_url']} no URL")
+
+    if loc_type == "global" and not is_remote:
+        score += WEIGHTS["global_onsite"]
+        reasons.append(f"{WEIGHTS['global_onsite']} global onsite")
+
+    if any(sig in (job.location or "").lower() for sig in _IRRELEVANT_GEO):
+        if not is_remote:
+            score += WEIGHTS["bad_geo"]
+            reasons.append(f"{WEIGHTS['bad_geo']} bad geo")
+
+    return score, reasons
+
+
+# =========================================================
+# BACKWARD-COMPAT WRAPPER
+# =========================================================
+
+def score_job_int(job: Job) -> int:
+    """Drop-in replacement for the old score_job() → int."""
+    s, _ = score_job(job)
+    return s
+
+
+# =========================================================
+# DIVERSITY RERANK  (from V32-Enterprise)
+# =========================================================
+
+def diversity_rerank(
+    rows: List[Tuple],
+    max_per_company: int = 2,
+    max_per_title: int   = 2,
+) -> List[Tuple]:
+    """
+    Prevents one company or one role from flooding the feed.
+    Applies a soft penalty (not hard filter) so legitimate
+    top-scoring duplicates don't vanish — they just rank lower.
+
+    Input:  [(job, score, reasons), ...]  — already sorted descending
+    Output: re-sorted list after diversity penalty
+    """
+    company_count: dict = {}
+    title_count:   dict = {}
+    result         = []
+
+    for item in rows:
+        job   = item[0]
+        score = item[1]
+        extra = item[2:]   # handles (job, score) or (job, score, reasons)
+
+        c = (job.company or "unknown").lower().strip()
+        t = (job.title   or "").lower().strip()
+
+        penalty = 0
+        if company_count.get(c, 0) >= max_per_company:
+            penalty += WEIGHTS["div_company"]
+        if title_count.get(t, 0) >= max_per_title:
+            penalty += WEIGHTS["div_title"]
+
+        company_count[c] = company_count.get(c, 0) + 1
+        title_count[t]   = title_count.get(t,   0) + 1
+
+        result.append((job, score - penalty) + extra)
+
+    result.sort(key=lambda x: -x[1])
+    return result
+
+
+# =========================================================
+# LOCATION PRIORITY SORT  (used by main.py)
+# =========================================================
+
+def sort_by_location_priority(jobs_with_scores: list) -> list:
+    """Sort (job, score) pairs: Egypt → Gulf → Rest, then by score within each."""
+    def priority(item):
+        job, score = item[0], item[1]
+        try:
+            loc = classify_location(job)
+        except Exception:
+            loc = "global"
+        return (0 if loc == "egypt" else 1 if loc == "gulf" else 2, -score)
+    return sorted(jobs_with_scores, key=priority)
