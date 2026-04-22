@@ -18,7 +18,7 @@ from config import SEEN_JOBS_FILE
 
 log = logging.getLogger(__name__)
 
-MEMORY_DAYS = 3  # was 7 — faster expiry, prevents "seen everything" deadlock
+MEMORY_DAYS = 7  # v32: restored to 7 — 3 days was causing re-sending of old jobs
 
 
 def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
