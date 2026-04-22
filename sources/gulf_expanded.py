@@ -122,10 +122,16 @@ LINKEDIN_GULF_EXPANDED = [
 ]
 
 def _fetch_linkedin_gulf_expanded():
+    import time as _t
     jobs = []
     seen = set()
+    budget = 240  # v32: 4-min budget (was unlimited — was taking 9+ min)
+    t0 = _t.time()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     for company_name, slug in LINKEDIN_GULF_EXPANDED:
+        if _t.time() - t0 > budget:
+            log.warning(f"gulf_expanded: 4-min budget hit after {len(jobs)} jobs — stopping early")
+            break
         url = f"{base}?keywords=cybersecurity&f_C={slug}&start=0&count=10"
         html = get_text(url, headers={**_H, "Accept": "text/html,application/xhtml+xml"})
         if not html:
