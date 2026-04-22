@@ -31,33 +31,53 @@ JOBS_API = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/sear
 
 # Government & public sector companies only (private in egypt_alt.py)
 LINKEDIN_EG_COMPANIES = [
-    ("Telecom Egypt (WE)",  "telecom-egypt"),
-    ("Vodafone Egypt",      "vodafone-egypt"),
-    ("Orange Egypt",        "orange-egypt"),
-    ("Etisalat Egypt",      "etisalatmisr"),
-    ("CIB Egypt",           "commercial-international-bank"),
-    ("QNB Egypt",           "qnb-alahli"),
-    ("HSBC Egypt",          "hsbc"),
-    ("Fawry",               "fawry"),
-    ("ITWorx",              "itworx"),
-    ("Paymob",              "paymob"),
-    ("Raya Corporation",    "raya-corporation"),
-    ("Xceed",               "xceed"),
-    ("Deloitte Egypt",      "deloitte"),
-    ("KPMG Egypt",          "kpmg"),
-    ("PwC Egypt",           "pwc"),
-    ("EY Egypt",            "ey"),
-    ("MCIT Egypt",          "mcit-egypt"),
-    ("ITIDA",               "itida"),
-    ("EG-CERT",             "eg-cert"),
-    ("Central Bank Egypt",  "central-bank-of-egypt"),
+    # Telecom
+    ("Telecom Egypt (WE)",       "telecom-egypt"),
+    ("Vodafone Egypt",           "vodafone-egypt"),
+    ("Orange Egypt",             "orange-egypt"),
+    ("Etisalat Egypt (e&)",      "etisalatmisr"),
+    # Banks
+    ("CIB Egypt",                "commercial-international-bank"),
+    ("QNB Egypt",                "qnb-alahli"),
+    ("HSBC Egypt",               "hsbc"),
+    ("National Bank of Egypt",   "national-bank-of-egypt"),
+    ("Banque Misr",              "banque-misr"),
+    ("Central Bank of Egypt",    "central-bank-of-egypt"),
+    ("Al Ahly Bank",             "ahly-bank"),
+    ("Banque du Caire",          "banque-du-caire"),
+    # Fintech
+    ("Fawry",                    "fawry"),
+    ("Paymob",                   "paymob"),
+    ("E-Finance",                "e-finance"),
+    # IT & Consulting
+    ("ITWorx",                   "itworx"),
+    ("Raya Corporation",         "raya-corporation"),
+    ("Xceed",                    "xceed"),
+    ("Deloitte Egypt",           "deloitte"),
+    ("KPMG Egypt",               "kpmg"),
+    ("PwC Egypt",                "pwc"),
+    ("EY Egypt",                 "ey"),
+    ("Accenture Egypt",          "accenture"),
+    ("IBM Egypt",                "ibm"),
+    ("Cisco Egypt",              "cisco"),
+    ("Microsoft Egypt",          "microsoft"),
+    # Government / Public Sector
+    ("MCIT Egypt",               "mcit-egypt"),
+    ("ITIDA",                    "itida"),
+    ("EG-CERT",                  "eg-cert"),
+    ("ITI Egypt",                "information-technology-institute"),
+    ("NTI Egypt",                "nti-egypt"),
+    ("NTRA Egypt",               "ntra"),
+    ("TIEC",                     "tiec"),
+    ("MCDR Egypt",               "mcdr"),
+    ("Egyptian Armed Forces IT",  "egyptian-armed-forces"),
 ]
 
 
 def _fetch_egypt_linkedin_companies():
     jobs = []
     seen = set()
-    budget = 90   # seconds max — was unlimited
+    budget = 150  # v32: raised 90→150s
     t0 = time.time()
 
     for company_name, slug in LINKEDIN_EG_COMPANIES:
@@ -103,7 +123,7 @@ SECURITY_KEYWORDS = [
 def _fetch_linkedin_by_governorate():
     jobs = []
     seen = set()
-    budget = 45   # seconds max
+    budget = 75   # v32: raised 45→75s
     t0 = time.time()
 
     for gov in TOP_TECH_HUBS:
