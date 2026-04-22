@@ -168,13 +168,43 @@ LINKEDIN_EG_SECURITY_COMPANIES = [
     ("SilverKey Technologies",           "silverkey-technologies"),
     ("Etisalat Misr Cybersecurity",      "etisalat-misr"),
     ("Vodafone Egypt Security",          "vodafone-egypt"),
+    ("Tek-Experts Egypt",                "tek-experts"),
+    ("Concentrix Egypt",                 "concentrix"),
+    ("Sutherland Egypt",                 "sutherland-global-services"),
+    ("Foundever Egypt",                  "foundever"),
+    ("Stream Global Services",           "stream-global-services"),
     # ── Insurance & Healthcare ───────────────────────────────
     ("Allianz Egypt",                    "allianz-egypt"),
     ("Bupa Egypt",                       "bupa-egypt"),
+    ("MetLife Egypt",                    "metlife"),
     # ── Media & E-commerce ───────────────────────────────────
     ("Jumia Egypt",                      "jumia"),
     ("Amazon Egypt",                     "amazon"),
     ("OLX Egypt",                        "olx-egypt"),
+    ("Noon Egypt",                       "noon"),
+    ("Talabat Egypt",                    "talabat"),
+    # ── New Cybersecurity Companies ─────────────────────────
+    ("V-SOC Egypt",                      "vsoc"),
+    ("McAfee Egypt",                     "mcafee"),
+    ("Symantec Egypt",                   "broadcom"),
+    ("Qualys Egypt",                     "qualys"),
+    ("Rapid7 Egypt",                     "rapid7"),
+    ("LogRhythm Egypt",                  "logrhythm"),
+    ("Splunk Egypt",                     "splunk"),
+    ("CyberArk Egypt",                   "cyberark"),
+    ("Varonis Egypt",                    "varonis"),
+    ("Tenable Egypt",                    "tenable"),
+    ("SentinelOne Egypt",                "sentinelone"),
+    # ── More Banks ───────────────────────────────────────────
+    ("SAIB Egypt",                       "saib-bank"),
+    ("Arab Investment Bank Egypt",       "arab-investment-bank"),
+    ("First Abu Dhabi Bank Egypt",       "fab"),
+    ("Emirates NBD Egypt",               "emirates-nbd"),
+    ("Suez Canal Bank",                  "suez-canal-bank"),
+    # ── Utilities & Energy ──────────────────────────────────
+    ("Egyptian Electricity",             "egyptian-electricity-holding-company"),
+    ("Gasco Egypt",                      "gasco"),
+    ("Cairo Electricity",                "cairo-electricity-distribution-company"),
 ]
 
 # Search keywords for LinkedIn company pages
@@ -189,7 +219,7 @@ def _fetch_linkedin_eg_security_companies():
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    budget = 150
+    budget = 240  # v32: raised 150→240s
     t0 = _time2.time()
     for company_name, slug in LINKEDIN_EG_SECURITY_COMPANIES:
         if _time2.time() - t0 > budget:
