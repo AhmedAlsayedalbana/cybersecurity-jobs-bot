@@ -66,20 +66,38 @@ def _li_jobs_from_html(html, location, source_tag):
 
 # ── 1. LinkedIn Egypt keyword search (trimmed to 8 high-value queries) ──
 EGYPT_SEARCH_KEYWORDS = [
+    # English — role-based
     "cybersecurity Egypt",
     "information security Egypt",
     "SOC analyst Egypt",
     "penetration tester Egypt",
     "security engineer Egypt",
     "GRC analyst Egypt",
+    "network security engineer Egypt",
+    "cloud security Egypt",
+    "devsecops Egypt",
+    "threat intelligence Egypt",
+    "malware analyst Egypt",
+    "security architect Egypt",
+    "dfir Egypt",
+    "appsec Egypt",
+    "junior security Egypt",
+    "security intern Egypt",
+    "SIEM engineer Egypt",
+    "vulnerability analyst Egypt",
+    # Arabic — role-based
     "امن معلومات مصر",
     "امن سيبراني مصر",
+    "محلل امن مصر",
+    "مهندس امن مصر",
+    "اختبار اختراق مصر",
+    "حماية المعلومات",
 ]
 
 def _fetch_linkedin_egypt_search():
     jobs = []
     seen = set()
-    budget = 90
+    budget = 150  # v32: raised 90→150s
     t0 = time.time()
     for kw in EGYPT_SEARCH_KEYWORDS:
         if time.time() - t0 > budget:
@@ -138,7 +156,7 @@ LINKEDIN_EG_PRIVATE = [
 def _fetch_linkedin_eg_private():
     jobs = []
     seen = set()
-    budget = 120
+    budget = 180  # v32: raised 120→180s
     t0 = time.time()
     for company_name, slug in LINKEDIN_EG_PRIVATE:
         if time.time() - t0 > budget:
@@ -170,7 +188,7 @@ LINKEDIN_EG_GOV = [
 def _fetch_linkedin_eg_gov():
     jobs = []
     seen = set()
-    budget = 60
+    budget = 90   # v32: raised 60→90s (governorate)
     t0 = time.time()
     for company_name, slug in LINKEDIN_EG_GOV:
         if time.time() - t0 > budget:
@@ -211,7 +229,7 @@ def _fetch_linkedin_by_governorate():
     for gov in TOP_GOVERNORATES:
         for kw in GOVERNORATE_KEYWORDS:
             if time.time() - t0 > budget:
-                log.warning("egypt_alt/governorate: 60s budget hit — stopping early")
+                log.warning("egypt_alt/governorate: 90s budget hit — stopping early")
                 break
             params = (
                 f"?keywords={urllib.parse.quote(kw)}"
