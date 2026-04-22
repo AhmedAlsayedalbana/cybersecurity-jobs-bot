@@ -150,17 +150,37 @@ def _fetch_via_linkedin_search_api():
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
     # HR-specific search terms — these match how HR write #hiring posts
+    # LinkedIn job search with HR-style keywords that match post language
+    # This catches jobs posted by HR professionals using "#Hiring" style
     searches = [
-        {"keywords": "we are hiring cybersecurity",     "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "hiring now security analyst",      "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "join our team cyber",              "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "open position security engineer",  "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "vacancy information security",     "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "فرصة عمل أمن سيبراني",            "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "مطلوب محلل أمن",                  "location": "Egypt",  "f_TPR": "r604800"},
-        {"keywords": "we are hiring cybersecurity",      "location": "Saudi Arabia", "f_TPR": "r604800"},
-        {"keywords": "hiring SOC analyst",               "location": "Saudi Arabia", "f_TPR": "r604800"},
-        {"keywords": "نوظف أمن معلومات",                 "location": "Saudi Arabia", "f_TPR": "r604800"},
+        # Egypt — English HR keywords
+        {"keywords": "#Hiring cybersecurity",             "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring SOC analyst",               "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring security engineer",         "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring penetration tester",        "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring GRC",                       "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring information security",      "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring network security",          "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring cloud security",            "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "Senior SOC Analyst",                "location": "Cairo, Egypt", "f_TPR": "r259200"},
+        {"keywords": "cybersecurity vacancy Egypt",        "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "we are looking for cybersecurity",  "location": "Egypt",        "f_TPR": "r259200"},
+        # Egypt — Arabic HR keywords
+        {"keywords": "#توظيف أمن سيبراني",               "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "#وظيفة أمن معلومات",                "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "فرصة عمل أمن سيبراني",             "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "مطلوب محلل أمن سيبراني",            "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "مطلوب مهندس أمن",                   "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "نحن نوظف أمن",                      "location": "Egypt",        "f_TPR": "r604800"},
+        # Gulf — English
+        {"keywords": "#Hiring cybersecurity",             "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring SOC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "#Hiring security engineer",         "location": "Dubai, UAE",          "f_TPR": "r259200"},
+        {"keywords": "#Hiring cybersecurity",             "location": "United Arab Emirates","f_TPR": "r259200"},
+        {"keywords": "#Hiring GRC",                       "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        # Gulf — Arabic
+        {"keywords": "#توظيف أمن سيبراني",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
+        {"keywords": "نوظف أمن معلومات",                  "location": "Saudi Arabia",        "f_TPR": "r604800"},
     ]
 
     for s in searches:
