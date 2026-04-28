@@ -141,10 +141,88 @@ def _fetch_adzuna_mena():
     return jobs
 
 
+def _fetch_wuzzuf_direct():
+    """
+    Wuzzuf.net — Egypt's top job board. Direct HTML scrape.
+    v33: Added as primary Egypt source since SerpAPI/Adzuna consistently fail.
+    """
+    import json as _json
+    jobs = []
+    seen = set()
+    searches = [
+        ("cybersecurity",       "Egypt"),
+        ("information security","Egypt"),
+        ("SOC analyst",         "Egypt"),
+        ("penetration tester",  "Egypt"),
+        ("security engineer",   "Egypt"),
+        ("GRC",                 "Egypt"),
+        ("network security",    "Egypt"),
+        ("cloud security",      "Egypt"),
+        ("أمن سيبراني",         "Egypt"),
+        ("أمن معلومات",          "Egypt"),
+    ]
+    for query, location in searches:
+        import urllib.parse as _up
+        url = f"https://wuzzuf.net/search/jobs/?a=navbg&q={_up.quote(query)}&l=Egypt&sort=date"
+        html = get_text(url, headers=HEADERS)
+        if not html:
+            continue
+        # Extract JSON-LD job postings
+        for block in re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL):
+            try:
+                data = _json.loads(block.strip())
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") != "JobPosting":
+                        continue
+                    title = item.get("title", "").strip()
+                    if not title or title in seen:
+                        continue
+                    seen.add(title)
+                    company = ""
+                    org = item.get("hiringOrganization", {})
+                    if isinstance(org, dict):
+                        company = org.get("name", "Unknown")
+                    loc_data = item.get("jobLocation", {})
+                    if isinstance(loc_data, dict):
+                        addr = loc_data.get("address", {})
+                        loc_str = addr.get("addressLocality", "") or addr.get("addressCountry", "Egypt")
+                    else:
+                        loc_str = "Egypt"
+                    jobs.append(Job(
+                        title=title,
+                        company=company,
+                        location=loc_str or "Egypt",
+                        url=item.get("url", url),
+                        source="wuzzuf",
+                        tags=["wuzzuf", "egypt"],
+                    ))
+            except Exception:
+                continue
+        # Fallback: extract from HTML anchors
+        if not jobs:
+            for m in re.findall(r'href="(/jobs/p/[^"]+)"[^>]*>([^<]{5,80})</a>', html):
+                href, title = m
+                title = title.strip()
+                if title and title not in seen:
+                    seen.add(title)
+                    jobs.append(Job(
+                        title=title,
+                        company="Unknown",
+                        location="Egypt",
+                        url=f"https://wuzzuf.net{href}",
+                        source="wuzzuf",
+                        tags=["wuzzuf", "egypt"],
+                    ))
+        import time as _t; _t.sleep(1.5)
+    log.info(f"Wuzzuf Direct: {len(jobs)} jobs")
+    return jobs
+
+
 def fetch_google_jobs():
     """Aggregate all Google/jobs sources."""
     all_jobs = []
-    for fn in [_fetch_via_serpapi, _fetch_adzuna_mena]:
+    for fn in [_fetch_via_serpapi, _fetch_adzuna_mena, _fetch_wuzzuf_direct]:
         try:
             all_jobs.extend(fn())
         except Exception as e:
