@@ -131,13 +131,13 @@ def main():
             )
 
             # 6. Build final pool — large enough for all channels × 10
-            # Each channel needs up to 10 jobs, 10 channels = up to 100 pool
-            POOL_SIZE = config.MAX_JOBS_PER_RUN  # 100
+            # Each channel needs up to 10 jobs, 10+ channels = up to 150 pool
+            POOL_SIZE = config.MAX_JOBS_PER_RUN  # 200
 
-            selected  = tier1[:30]
-            selected += tier2[:20]
-            selected += tier3[:25]
-            selected += tier4[:10]
+            selected  = tier1[:40]
+            selected += tier2[:30]
+            selected += tier3[:35]
+            selected += tier4[:20]
 
             if len(selected) < POOL_SIZE:
                 selected += tier5[:POOL_SIZE - len(selected)]
@@ -145,7 +145,7 @@ def main():
             # Backfill from leftovers
             if len(selected) < POOL_SIZE:
                 used = set(id(j) for j, _ in selected)
-                leftovers = tier1[30:] + tier2[20:] + tier3[25:] + tier4[10:]
+                leftovers = tier1[40:] + tier2[30:] + tier3[35:] + tier4[20:]
                 leftovers.sort(key=lambda x: -x[1])
                 for item in leftovers:
                     if len(selected) >= POOL_SIZE:
