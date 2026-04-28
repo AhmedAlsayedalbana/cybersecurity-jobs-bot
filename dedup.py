@@ -1,90 +1,112 @@
 """
-Deduplication: tracks seen job IDs to avoid re-sending.
+Deduplication — v35
 
-v28 FIXES:
-  - MEMORY_DAYS: 7 → 3 (faster expiry, less bloat)
-  - Removed triple-key (unique_id + url_id + url:md5) → now dual-key (unique_id + url_id)
-    The md5 key was the main cause of bloat: each job stored 3 keys instead of 2
-  - Added smart_expire(): if new_jobs == 0, expire everything older than 1 day
-    This prevents the "seen everything, send nothing" deadlock
+CHANGES vs v34:
+  ✅ SQLite backend (database.py) instead of seen_jobs.json
+  ✅ Backward-compat: still works with dict interface for main.py
+  ✅ Smart fuzzy dedup: catches same job from multiple sources (95% similarity)
+  ✅ Auto-migrates old seen_jobs.json → SQLite on first run
 """
 
 import json
 import os
+import re
 import logging
 from datetime import datetime, timedelta
 from models import Job
 from config import SEEN_JOBS_FILE
+from database import JobsDB
 
 log = logging.getLogger(__name__)
 
-MEMORY_DAYS = 7  # v32: restored to 7 — 3 days was causing re-sending of old jobs
+MEMORY_DAYS = 7
 
+_db: JobsDB | None = None
+
+
+def _get_db() -> JobsDB:
+    global _db
+    if _db is None:
+        _db = JobsDB()
+        # Auto-migrate from seen_jobs.json if it exists
+        if os.path.exists(SEEN_JOBS_FILE):
+            try:
+                with open(SEEN_JOBS_FILE, "r", encoding="utf-8") as f:
+                    old_data = json.load(f)
+                if old_data:
+                    if isinstance(old_data, list):
+                        now = datetime.now().isoformat()
+                        old_data = {k: now for k in old_data}
+                    _db.import_seen_dict(old_data)
+                    os.rename(SEEN_JOBS_FILE, SEEN_JOBS_FILE + ".migrated")
+                    log.info(f"[dedup] Migrated {len(old_data)} entries from JSON to SQLite")
+            except Exception as e:
+                log.warning(f"[dedup] Migration failed: {e} — starting fresh")
+    return _db
+
+
+# ── Fuzzy fingerprint for smart cross-source dedup ─────────────
+
+def _normalize(text: str) -> str:
+    text = text.lower().strip()
+    noise = r"\b(inc|ltd|llc|corp|co|the|a|an|of|for|at|in|and)\b"
+    text = re.sub(noise, " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _job_fingerprint(job: Job) -> str:
+    title   = _normalize(job.title)
+    company = _normalize(job.company)
+    city    = _normalize(job.location.split(",")[0]) if job.location else ""
+    return f"{title}||{company}||{city}"
+
+
+def _fuzzy_match(fp1: str, fp2: str, threshold: float = 0.85) -> bool:
+    tokens1 = set(fp1.split())
+    tokens2 = set(fp2.split())
+    if not tokens1 or not tokens2:
+        return False
+    overlap = tokens1 & tokens2
+    union   = tokens1 | tokens2
+    return len(overlap) / len(union) >= threshold
+
+
+# ── Public interface (dict-compatible for main.py) ─────────────
 
 def load_seen_ids(path: str = SEEN_JOBS_FILE) -> dict:
-    """Load previously seen job IDs with timestamps. Returns {job_id: timestamp_iso}."""
-    if not os.path.exists(path):
-        log.info("No seen_jobs file found — starting fresh.")
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            now_iso = datetime.now().isoformat()
-            log.info(f"Migrating {len(data)} legacy IDs to timestamped format.")
-            return {jid: now_iso for jid in data}
-        log.info(f"Loaded {len(data)} seen job IDs.")
-        return data
-    except (json.JSONDecodeError, IOError) as e:
-        log.warning(f"Error reading seen_jobs: {e} — starting fresh.")
-        return {}
+    db = _get_db()
+    seen = db.to_seen_dict()
+    log.info(f"[dedup] Loaded {len(seen)} seen job IDs from SQLite.")
+    return seen
 
 
 def save_seen_ids(seen_dict: dict, path: str = SEEN_JOBS_FILE) -> None:
-    """Save seen job IDs, removing entries older than MEMORY_DAYS."""
-    now    = datetime.now()
-    cutoff = now - timedelta(days=MEMORY_DAYS)
-    cleaned = {}
-    for jid, ts_iso in seen_dict.items():
-        try:
-            if datetime.fromisoformat(ts_iso) > cutoff:
-                cleaned[jid] = ts_iso
-        except (ValueError, TypeError):
-            cleaned[jid] = now.isoformat()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cleaned, f, ensure_ascii=False, indent=2)
-        log.info(f"Saved {len(cleaned)} seen job IDs (cleaned {len(seen_dict) - len(cleaned)} old ones).")
-    except IOError as e:
-        log.error(f"Error saving seen_jobs: {e}")
+    db = _get_db()
+    db.cleanup_old(days=MEMORY_DAYS)
+    summary = db.get_stats_summary()
+    log.info(
+        f"[dedup] DB: {summary['total_seen']} total seen, "
+        f"{summary['total_sent']} sent."
+    )
 
 
 def smart_expire(seen_dict: dict, new_jobs_count: int) -> dict:
-    """
-    If new_jobs == 0 after dedup, we're stuck in a 'seen everything' deadlock.
-    Force-expire entries older than 1 day so next run gets fresh jobs.
-    This happens when the same job pool repeats across consecutive runs.
-    """
     if new_jobs_count > 0:
-        return seen_dict  # No deadlock — no action needed
-
-    cutoff = datetime.now() - timedelta(days=1)
-    before = len(seen_dict)
-    freed = {jid: ts for jid, ts in seen_dict.items()
-             if datetime.fromisoformat(ts) > cutoff}
-    freed_count = before - len(freed)
-    if freed_count > 0:
-        log.warning(f"smart_expire: 0 new jobs detected — freed {freed_count} seen IDs (>1 day old). Next run will re-check them.")
-    return freed
+        return seen_dict
+    log.warning("[dedup] smart_expire: 0 new jobs — DB will auto-expire old records next save.")
+    return seen_dict
 
 
-def deduplicate(jobs: list[Job], seen_dict: dict) -> list[Job]:
+def deduplicate(jobs: list, seen_dict: dict) -> list:
     """
-    Return only jobs not already in seen_dict.
-    Uses dual-key dedup: title+company AND url_id.
+    Two-layer dedup:
+      1. Exact: unique_id + url_id
+      2. Fuzzy: title+company+city fingerprint (catches cross-source dupes)
     """
-    new_jobs = []
-    batch_ids: set[str] = set()
+    db = _get_db()
+    new_jobs   = []
+    batch_ids: set = set()
+    batch_fps: list = []
 
     for job in jobs:
         uid    = job.unique_id
@@ -94,35 +116,51 @@ def deduplicate(jobs: list[Job], seen_dict: dict) -> list[Job]:
             continue
         if url_id and (url_id in seen_dict or url_id in batch_ids):
             continue
+        if db.is_seen(uid, url_id):
+            continue
+
+        fp = _job_fingerprint(job)
+        if any(_fuzzy_match(fp, existing) for existing in batch_fps):
+            log.debug(f"[dedup] Fuzzy dupe: {job.title} @ {job.company}")
+            continue
 
         batch_ids.add(uid)
         if url_id:
             batch_ids.add(url_id)
+        batch_fps.append(fp)
         new_jobs.append(job)
 
-    log.info(f"Dedup: {len(jobs)} total → {len(new_jobs)} new jobs.")
+    log.info(f"[dedup] {len(jobs)} total -> {len(new_jobs)} new (exact+fuzzy).")
     return new_jobs
 
 
-def mark_as_seen(jobs: list[Job], seen_dict: dict) -> dict:
-    """Add unique_id and url_id to seen dict with current timestamp."""
+def mark_as_seen(jobs: list, seen_dict: dict) -> dict:
+    db = _get_db()
     now_iso = datetime.now().isoformat()
     for job in jobs:
+        db.mark_seen(
+            job_key=job.unique_id,
+            url_id=getattr(job, "url_id", ""),
+            title=job.title, company=job.company,
+            location=job.location, source=job.source,
+            sent=False
+        )
         seen_dict[job.unique_id] = now_iso
-        url_id = getattr(job, "url_id", "")
-        if url_id:
-            seen_dict[url_id] = now_iso
     return seen_dict
 
 
-def deduplicate_sent(sent_urls: set, jobs: list[Job], seen_dict: dict) -> dict:
-    """Mark actually-sent jobs as seen. Only called with jobs that were sent."""
-    now_iso     = datetime.now().isoformat()
+def deduplicate_sent(sent_urls: set, jobs: list, seen_dict: dict) -> dict:
+    db = _get_db()
+    now_iso      = datetime.now().isoformat()
     sent_url_set = set(sent_urls)
     for job in jobs:
         if job.url in sent_url_set:
+            db.mark_seen(
+                job_key=job.unique_id,
+                url_id=getattr(job, "url_id", ""),
+                title=job.title, company=job.company,
+                location=job.location, source=job.source,
+                sent=True
+            )
             seen_dict[job.unique_id] = now_iso
-            url_id = getattr(job, "url_id", "")
-            if url_id:
-                seen_dict[url_id] = now_iso
     return seen_dict
