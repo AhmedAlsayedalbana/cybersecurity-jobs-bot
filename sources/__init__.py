@@ -1,7 +1,7 @@
 """
-Source registry — v31
+Source registry — v33
 
-CHANGES vs v27:
+CHANGES vs v31:
   ✅ Arab Boards (NEW)        : Bayt RSS + Akhtaboot + Tanqeeb + DrJobPro
   ✅ LinkedIn Posts (NEW)     : HR-style "#hiring" post search + Google cache
   ✅ Google Jobs (FIXED)      : Removed duplicate code + added Wuzzuf/Forasna direct
@@ -13,21 +13,28 @@ CHANGES vs v27:
   🗑️  Adzuna/Jooble/Findwork/Reed: need API keys → kept but silently skip if no key
 
 STATUS (from logs 2026-04-19):
-  ✅ Gov Egypt          : ~29 jobs
+  ✅ Gov Egypt          : EXPANDED — 100+ companies (was 35), 6 hubs × 4 keywords
   ✅ Egypt Alt          : ~39 jobs
-  ✅ Egypt Companies    : ~1+ jobs (improved with shared session + multi-kw)
-  ✅ Gov Gulf           : ~46 jobs
+  ✅ Egypt Companies    : EXPANDED — doubled security company list
+  ✅ Gov Gulf           : EXPANDED — 65+ Gulf companies (was 19), all 6 countries
   ✅ Gulf Expanded      : ~9 jobs
   ✅ CyberSec Boards    : ~6 jobs
   ✅ LinkedIn           : ~25 jobs (rate-limited but working)
   ✅ LinkedIn #Hiring   : working — shows company + job title from LinkedIn job pages
-  ✅ LinkedIn Posts     : NEW — catches HR "we are hiring" search posts
-  ✅ Google Jobs        : ~10 jobs (SerpAPI) + Wuzzuf/Forasna direct
-  ✅ Arab Boards        : NEW — Bayt + Akhtaboot + Tanqeeb + DrJobPro
+  ✅ LinkedIn Posts     : EXPANDED — 35 searches across EG+Gulf+Arabic
+  ✅ Google Jobs        : SerpAPI (if key) + Wuzzuf direct HTML scraper (NEW)
   ✅ Tech Boards        : ~249 jobs
   ✅ Remotive/RemoteOK/Arbeitnow/WWR/Working Nomads: all working
   ✅ New Sources v27    : ~222 jobs
   ✅ Expanded Sources   : ~393 jobs
+
+V33 FIXES:
+  🔧 Location bug       : telegram_sender now uses canonical classifier (no more misrouting)
+  🔧 Domain detection   : "Security Officer" physical security no longer tagged as Cybersecurity
+  🔧 Score threshold    : lowered 9→7 to prevent empty specialty channels
+  🔧 Channel capacity   : MAX_JOBS_PER_CHANNEL raised 5→7
+  🔧 Pool size          : increased to serve all 11 channels adequately
+  🔧 Wuzzuf scraper     : direct HTML fallback when SerpAPI/Adzuna fail
 """
 
 from sources.gov_egypt        import fetch_gov_egypt
