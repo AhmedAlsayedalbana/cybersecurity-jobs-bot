@@ -1,5 +1,5 @@
 """
-Source registry — v33
+Source registry — v34
 
 CHANGES vs v31:
   ✅ Arab Boards (NEW)        : Bayt RSS + Akhtaboot + Tanqeeb + DrJobPro
@@ -43,6 +43,7 @@ from sources.egypt_companies  import fetch_egypt_companies
 from sources.gov_gulf         import fetch_gov_gulf
 from sources.gulf_expanded    import fetch_gulf_expanded
 from sources.cybersec_boards  import fetch_cybersec_boards
+from sources.linkedin_hr_hunter import fetch_linkedin_hr_hunter  # v34 NEW — AI HR Post Hunter
 from sources.linkedin         import fetch_linkedin
 from sources.linkedin_hiring  import fetch_linkedin_hiring
 from sources.linkedin_posts   import fetch_linkedin_posts    # v31 NEW
@@ -75,6 +76,7 @@ ALL_FETCHERS = [
     ("LinkedIn",             fetch_linkedin),
     ("LinkedIn #Hiring",     fetch_linkedin_hiring),
     ("LinkedIn Posts",       fetch_linkedin_posts),
+    ("LinkedIn HR Hunter",   fetch_linkedin_hr_hunter),   # v34 NEW — AI-powered HR post hunter
 
     # ── 4. Cybersec boards ───────────────────────────────────
     ("CyberSec Boards",      fetch_cybersec_boards),
