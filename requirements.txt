@@ -1,1 +1,2 @@
 requests>=2.31.0
+# asyncio, sqlite3, concurrent.futures — all built into Python 3.10+
