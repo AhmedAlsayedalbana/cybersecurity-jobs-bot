@@ -156,27 +156,83 @@ def _fetch_etisalat_uae():
     return jobs
 
 
-# ─── 4. LinkedIn Gulf Companies — confirmed 9 jobs ────────────
+# ─── 4. LinkedIn Gulf Companies — doubled list (v33) ─────────
 LINKEDIN_GULF_COMPANIES = [
-    ("Saudi Aramco",      "saudi-aramco"),
-    ("STC KSA",           "stc"),
-    ("Zain KSA",          "zain-ksa"),
-    ("du UAE",            "du"),
-    ("Etisalat UAE",      "etisalat"),
-    ("NEOM",              "neom"),
-    ("stc pay",           "stc-pay"),
-    ("Mobily KSA",        "mobily"),
-    ("Qatar Telecom",     "ooredoo"),
-    ("Batelco Bahrain",   "batelco"),
-    ("Kuwait Telecom",    "zain"),
-    ("Omantel",           "omantel"),
-    ("Careem",            "careem"),
-    ("Noon",              "noon"),
-    ("SABIC",             "sabic"),
-    ("Saudi ARAMCO",      "aramco"),
-    ("ADNOC",             "adnoc"),
-    ("Emirates NBD",      "emirates-nbd"),
-    ("First Abu Dhabi Bank", "fab"),
+    # Saudi Arabia — Telecom & Tech
+    ("Saudi Aramco",             "saudi-aramco"),
+    ("STC KSA",                  "stc"),
+    ("Zain KSA",                 "zain-ksa"),
+    ("Mobily KSA",               "mobily"),
+    ("stc pay",                  "stc-pay"),
+    ("NEOM",                     "neom"),
+    ("SABIC",                    "sabic"),
+    ("ADNOC",                    "adnoc"),
+    ("SDAIA",                    "sdaia"),
+    ("NCA Saudi Arabia",         "national-cybersecurity-authority"),
+    ("Saudi Data & AI Authority", "sdaia"),
+    ("STC Solutions",            "stc-solutions"),
+    ("Elm Company",              "elm"),
+    ("Saudi Telecom Group",      "stc"),
+    ("Nahdi Medical",            "nahdi-medical"),
+    ("Al Rajhi Bank",            "al-rajhi-bank"),
+    ("Saudi National Bank",      "saudi-national-bank"),
+    ("Riyad Bank",               "riyad-bank"),
+    ("Saudi British Bank",       "sabb"),
+    ("Banque Saudi Fransi",      "banque-saudi-fransi"),
+    ("Alinma Bank",              "alinma-bank"),
+    ("Arab National Bank",       "arab-national-bank"),
+    # UAE — Telecom & Finance
+    ("du UAE",                   "du"),
+    ("Etisalat UAE",             "etisalat"),
+    ("G42 UAE",                  "g42"),
+    ("ADIB UAE",                 "adib"),
+    ("FAB UAE",                  "fab"),
+    ("Emirates NBD",             "emirates-nbd"),
+    ("Mashreq Bank",             "mashreqbank"),
+    ("ENOC",                     "enoc"),
+    ("DP World",                 "dp-world"),
+    ("Abu Dhabi Commercial Bank", "adcb"),
+    ("Dubai Islamic Bank",       "dubai-islamic-bank"),
+    ("Emaar Properties",         "emaar"),
+    # Kuwait
+    ("Zain Kuwait",              "zain"),
+    ("Kuwait Finance House",     "kfh"),
+    ("National Bank of Kuwait",  "nbk"),
+    ("Gulf Bank Kuwait",         "gulf-bank"),
+    # Qatar
+    ("Qatar Telecom (Ooredoo)",  "ooredoo"),
+    ("Qatar National Bank",      "qnb"),
+    ("Qatar Islamic Bank",       "qatar-islamic-bank"),
+    ("Industries Qatar",         "industries-qatar"),
+    # Bahrain
+    ("Batelco Bahrain",          "batelco"),
+    ("Bank of Bahrain and Kuwait", "bbk"),
+    ("Ahli United Bank",         "ahli-united-bank"),
+    # Oman
+    ("Omantel",                  "omantel"),
+    ("Bank Muscat",              "bank-muscat"),
+    ("Ooredoo Oman",             "ooredoo"),
+    # Regional Tech & Consulting
+    ("Careem",                   "careem"),
+    ("Noon",                     "noon"),
+    ("talabat",                  "talabat"),
+    ("Deloitte Gulf",            "deloitte"),
+    ("PwC Gulf",                 "pwc"),
+    ("KPMG Gulf",                "kpmg"),
+    ("EY Gulf",                  "ey"),
+    ("Accenture Gulf",           "accenture"),
+    ("IBM Gulf",                 "ibm"),
+    ("Cisco Gulf",               "cisco"),
+    ("Microsoft Gulf",           "microsoft"),
+    ("Oracle Gulf",              "oracle"),
+    ("SAP Gulf",                 "sap"),
+    ("Huawei Gulf",              "huawei"),
+    ("Help AG Gulf",             "help-ag"),
+    ("Palo Alto Networks Gulf",  "palo-alto-networks"),
+    ("CrowdStrike Gulf",         "crowdstrike"),
+    ("Check Point Gulf",         "check-point-software-technologies"),
+    ("Fortinet Gulf",            "fortinet"),
+    ("Darktrace Gulf",           "darktrace"),
 ]
 
 def _fetch_gulf_linkedin_companies():
@@ -184,11 +240,11 @@ def _fetch_gulf_linkedin_companies():
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    budget = 150  # v32: raised 90→150s
+    budget = 300  # v33: raised 150→300s — doubled company list
     t0 = _t.time()
     for company_name, slug in LINKEDIN_GULF_COMPANIES:
         if _t.time() - t0 > budget:
-            log.warning("gov_gulf/companies: 90s budget hit — stopping early")
+            log.warning("gov_gulf/companies: budget hit — stopping early")
             break
         url  = f"{base}?keywords=cybersecurity&f_C={slug}&start=0&count=10"
         html = get_text(url, headers={**HEADERS, "Accept": "text/html,application/xhtml+xml"})
@@ -222,14 +278,15 @@ GULF_LOCATIONS = [
 GULF_KEYWORDS = [
     "cybersecurity", "information security", "SOC analyst",
     "security engineer", "penetration tester",
+    "GRC analyst", "cloud security", "network security engineer",
 ]
 
 def _fetch_linkedin_gulf_search():
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    for loc in GULF_LOCATIONS[:3]:  # top 3 to avoid rate limit
-        for kw in GULF_KEYWORDS[:2]:
+    for loc in GULF_LOCATIONS:  # all 6 countries
+        for kw in GULF_KEYWORDS[:3]:  # top 3 keywords per country
             params = (
                 f"?keywords={urllib.parse.quote(kw)}"
                 f"&location={urllib.parse.quote(loc)}"
