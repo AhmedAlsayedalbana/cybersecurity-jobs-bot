@@ -208,7 +208,7 @@ def is_cybersec_job(job: "Job") -> bool:
                 return True
 
         # LinkedIn sources: short posts with minimal context — be lenient
-        if job.source in ("linkedin_hiring", "linkedin_posts", "linkedin_hr", "linkedin"):
+        if job.source in ("linkedin_hiring", "linkedin_posts", "linkedin_hr", "linkedin", "linkedin_hr_post"):
             if any(term in title_lower for term in ["security", "cyber", "soc", "grc", "network security"]):
                 return True
 
@@ -227,6 +227,8 @@ def passes_geo_filter(job: "Job") -> bool:
         return True
     if job.source == "linkedin_hiring":
         return True  # location unreliable for hiring posts
+    if job.source == "linkedin_hr_post":
+        return True  # HR posts: location derived from search query, always valid
     if _is_remote(job):
         return True
     if _is_in_gulf(job.location):
