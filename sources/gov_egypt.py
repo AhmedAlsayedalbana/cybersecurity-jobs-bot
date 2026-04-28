@@ -29,7 +29,7 @@ _H = {
 
 JOBS_API = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
-# Government & public sector companies only (private in egypt_alt.py)
+# Government & public sector + key private companies (double the original list)
 LINKEDIN_EG_COMPANIES = [
     # Telecom
     ("Telecom Egypt (WE)",       "telecom-egypt"),
@@ -45,10 +45,24 @@ LINKEDIN_EG_COMPANIES = [
     ("Central Bank of Egypt",    "central-bank-of-egypt"),
     ("Al Ahly Bank",             "ahly-bank"),
     ("Banque du Caire",          "banque-du-caire"),
+    ("Arab African International Bank", "arab-african-international-bank"),
+    ("Abu Dhabi Islamic Bank Egypt",    "adib-egypt"),
+    ("Alex Bank",                "alexbank"),
+    ("Egyptian Gulf Bank",       "egyptian-gulf-bank"),
+    ("Housing and Development Bank", "housing-and-development-bank"),
+    ("Attijariwafa Bank Egypt",  "attijariwafa-bank"),
+    ("Emirates NBD Egypt",       "emirates-nbd"),
+    ("Suez Canal Bank",          "suez-canal-bank"),
+    ("First Abu Dhabi Bank Egypt", "fab"),
+    ("Misr Insurance",           "misr-insurance"),
     # Fintech
     ("Fawry",                    "fawry"),
     ("Paymob",                   "paymob"),
     ("E-Finance",                "e-finance"),
+    ("Khazna",                   "khazna"),
+    ("Valify",                   "valify-solutions"),
+    ("Money Fellows",            "money-fellows"),
+    ("Geidea Egypt",             "geidea"),
     # IT & Consulting
     ("ITWorx",                   "itworx"),
     ("Raya Corporation",         "raya-corporation"),
@@ -61,6 +75,46 @@ LINKEDIN_EG_COMPANIES = [
     ("IBM Egypt",                "ibm"),
     ("Cisco Egypt",              "cisco"),
     ("Microsoft Egypt",          "microsoft"),
+    ("Oracle Egypt",             "oracle"),
+    ("SAP Egypt",                "sap"),
+    ("Huawei Egypt",             "huawei"),
+    ("Ericsson Egypt",           "ericsson"),
+    ("Nokia Egypt",              "nokia"),
+    ("Dell Egypt",               "dell-technologies"),
+    ("HP Egypt",                 "hp"),
+    ("Capgemini Egypt",          "capgemini"),
+    ("NTT Egypt",                "ntt-data"),
+    ("Wipro Egypt",              "wipro"),
+    ("Cognizant Egypt",          "cognizant"),
+    ("Giza Systems",             "giza-systems"),
+    ("Link Development",         "link-development"),
+    ("Devoteam Egypt",           "devoteam"),
+    ("Synapse Analytics",        "synapse-analytics"),
+    ("Binaryville",              "binaryville"),
+    ("BDO Egypt",                "bdo-egypt"),
+    # Cybersecurity Specialists
+    ("CyberTalents",             "cybertalents"),
+    ("C5 Alliance",              "c5-alliance"),
+    ("Help AG Egypt",            "help-ag"),
+    ("Securemisr",               "securemisr"),
+    ("Cybergate Egypt",          "cybergate"),
+    ("Check Point Egypt",        "check-point-software-technologies"),
+    ("Palo Alto Networks Egypt", "palo-alto-networks"),
+    ("Fortinet Egypt",           "fortinet"),
+    ("CrowdStrike",              "crowdstrike"),
+    ("Darktrace",                "darktrace"),
+    ("Kaspersky Egypt",          "kaspersky-lab"),
+    ("Sophos Egypt",             "sophos"),
+    ("Trend Micro Egypt",        "trend-micro"),
+    ("ESET Egypt",               "eset"),
+    ("CyberArk Egypt",           "cyberark"),
+    ("Tenable Egypt",            "tenable"),
+    ("SentinelOne Egypt",        "sentinelone"),
+    ("Splunk Egypt",             "splunk"),
+    ("Qualys Egypt",             "qualys"),
+    ("Rapid7 Egypt",             "rapid7"),
+    ("Varonis Egypt",            "varonis"),
+    ("Secureworks Egypt",        "secureworks"),
     # Government / Public Sector
     ("MCIT Egypt",               "mcit-egypt"),
     ("ITIDA",                    "itida"),
@@ -71,18 +125,38 @@ LINKEDIN_EG_COMPANIES = [
     ("TIEC",                     "tiec"),
     ("MCDR Egypt",               "mcdr"),
     ("Egyptian Armed Forces IT",  "egyptian-armed-forces"),
+    ("Cairo University",         "cairo-university"),
+    ("Ain Shams University",     "ain-shams-university"),
+    # Startups & E-commerce
+    ("Instabug",                 "instabug"),
+    ("Halan",                    "halan"),
+    ("Swvl",                     "swvl"),
+    ("Vezeeta",                  "vezeeta"),
+    ("Bosta",                    "bosta"),
+    ("Trella",                   "trella"),
+    ("MaxAB",                    "maxab"),
+    ("Dsquares",                 "dsquares"),
+    ("Jumia Egypt",              "jumia"),
+    ("Amazon Egypt",             "amazon"),
+    ("Noon Egypt",               "noon"),
+    ("Talabat Egypt",            "talabat"),
+    ("Valeo Egypt",              "valeo"),
+    ("Si Electronics",           "si-electronics"),
+    ("Pioneers Holding",         "pioneers-holding"),
+    # Utilities & Energy
+    ("Egyptian Electricity",     "egyptian-electricity-holding-company"),
 ]
 
 
 def _fetch_egypt_linkedin_companies():
     jobs = []
     seen = set()
-    budget = 150  # v32: raised 90→150s
+    budget = 300  # v33: raised 150→300s — doubled company list
     t0 = time.time()
 
     for company_name, slug in LINKEDIN_EG_COMPANIES:
         if time.time() - t0 > budget:
-            log.warning("gov_egypt/companies: 90s budget hit — stopping early")
+            log.warning("gov_egypt/companies: budget hit — stopping early")
             break
         url = f"{JOBS_API}?keywords=security&f_C={slug}&start=0&count=10"
         html = get_text(url, headers=_H)
@@ -107,29 +181,34 @@ def _fetch_egypt_linkedin_companies():
     return jobs
 
 
-# 3 major tech hubs × 2 keywords = 6 requests max (was 9 × 5 = 45)
+# Expanded to 6 tech hubs × 4 keywords = 24 requests
 TOP_TECH_HUBS = [
     "New Cairo, Egypt",
     "New Administrative Capital, Egypt",
     "Cairo, Egypt",
+    "Alexandria, Egypt",
+    "Giza, Egypt",
+    "Smart Village, Egypt",
 ]
 
 SECURITY_KEYWORDS = [
     "cybersecurity",
     "information security",
+    "SOC analyst",
+    "security engineer",
 ]
 
 
 def _fetch_linkedin_by_governorate():
     jobs = []
     seen = set()
-    budget = 75   # v32: raised 45→75s
+    budget = 150  # v33: raised 75→150s — expanded hubs+keywords
     t0 = time.time()
 
     for gov in TOP_TECH_HUBS:
         for kw in SECURITY_KEYWORDS:
             if time.time() - t0 > budget:
-                log.warning("gov_egypt/governorates: 45s budget hit — stopping early")
+                log.warning("gov_egypt/governorates: budget hit — stopping early")
                 break
             params = (
                 f"?keywords={urllib.parse.quote(kw)}"
