@@ -24,18 +24,22 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 def _is_egypt_job(job):
-    loc = (job.location or "").lower()
-    return any(p in loc for p in EGYPT_PATTERNS)
+    from classifier import classify_location
+    # Use the canonical classifier (same as main.py) — avoids routing mismatches
+    return classify_location(job) == "egypt"
 
 def _is_gulf_job(job):
-    loc = (job.location or "").lower()
-    return any(p in loc for p in GULF_PATTERNS)
+    from classifier import classify_location
+    return classify_location(job) == "gulf"
 
 def _is_remote_job(job):
+    from classifier import classify_location
     if job.is_remote:
         return True
-    combined = (job.title + " " + job.location + " " + job.job_type).lower()
-    return any(p in combined for p in REMOTE_PATTERNS)
+    if classify_location(job) == "global":
+        combined = (job.title + " " + (job.location or "") + " " + (job.job_type or "")).lower()
+        return any(p in combined for p in REMOTE_PATTERNS)
+    return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -236,6 +240,14 @@ def _detect_domain(text):
     def has(kws):
         return any(_re.search(r'\b' + _re.escape(k) + r'\b', text) for k in kws)
 
+    # ── Physical / non-cyber security — detected FIRST ───────
+    if has(["security guard", "security officer", "physical security",
+            "loss prevention", "event security", "building security",
+            "security supervisor", "security patrol"]):
+        if not has(["cyber", "information security", "infosec", "soc", "siem",
+                    "network security", "cloud security", "penetration", "malware"]):
+            return "Physical Security"
+
     # Most-specific title signals first
     if has(["soc analyst", "soc engineer", "soc manager", "security operations center",
             "security operations", "blue team", "threat detection", "security monitoring",
@@ -365,6 +377,7 @@ def _domain_emoji(domain: str) -> str:
         "IAM / Identity Security":       "🔑",
         "Training / Program":            "🎓",
         "Cybersecurity":                 "🔐",
+        "Physical Security":             "🏢",
     }
     return mapping.get(domain, "🔐")
 
