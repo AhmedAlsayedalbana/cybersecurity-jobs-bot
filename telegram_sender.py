@@ -4,6 +4,7 @@ KEY FEATURE: 10 jobs per channel per run, no duplicates across channels.
 Format: matches reference telegram_sender exactly.
 """
 
+import re
 import time
 import logging
 import requests
@@ -385,7 +386,142 @@ def _level_emoji(level: str) -> str:
     return {"Entry-Level": "🌱", "Mid-Level": "⚙️", "Senior": "👨‍💻", "Open": "🔍"}.get(level, "🔍")
 
 
+def _parse_hr_post_fields(job) -> dict:
+    """
+    Parse structured fields embedded in the description of an HR post.
+    Description format (set by linkedin_hr_hunter.py):
+      "Responsibilities: X; Y | Requirements: A; B"
+    Also reads job_type for work_model and tags for poster name.
+    """
+    desc = job.description or ""
+    highlights: list[str] = []
+    requirements: list[str] = []
+
+    # Extract responsibilities
+    resp_match = re.search(r"Responsibilities?:\s*([^|]+)", desc, re.IGNORECASE)
+    if resp_match:
+        highlights = [s.strip() for s in resp_match.group(1).split(";") if s.strip()]
+
+    # Extract requirements
+    req_match = re.search(r"Requirements?:\s*([^|]+)", desc, re.IGNORECASE)
+    if req_match:
+        requirements = [s.strip() for s in req_match.group(1).split(";") if s.strip()]
+
+    # Poster name from tags (format: "poster:Name")
+    poster = ""
+    for tag in (job.tags or []):
+        if isinstance(tag, str) and tag.startswith("poster:"):
+            poster = tag[7:].strip()
+            break
+
+    # Fallback: try original_source
+    if not poster:
+        orig = getattr(job, "original_source", "") or ""
+        if " — " in orig:
+            poster = orig.split(" — ", 1)[1].strip()
+
+    work_model = getattr(job, "job_type", "") or ""
+
+    return {
+        "highlights": highlights,
+        "requirements": requirements,
+        "poster": poster,
+        "work_model": work_model,
+    }
+
+
+def _work_model_badge(work_model: str) -> str:
+    """Return emoji badge for work model."""
+    wm = work_model.lower()
+    if "remote" in wm:
+        return "🌍 Remote"
+    if "hybrid" in wm:
+        return "🔀 Hybrid"
+    if "on-site" in wm or "onsite" in wm:
+        return "🏢 On-site"
+    return ""
+
+
+def format_hr_post_message(job) -> str:
+    """
+    قالب عرض خاص بمنشورات HR على LinkedIn.
+    يُميَّز بـ 📢 ويبرز:
+      - اسم كاتب المنشور (HR/Recruiter) إن وُجد
+      - نظام العمل (Remote/Hybrid/On-site)
+      - أبرز المهام والمتطلبات المستخرجة بالذكاء الاصطناعي
+      - رابط مباشر للمنشور (View Post & Apply Directly)
+    """
+    from scoring import score_job_int
+
+    fields   = _parse_hr_post_fields(job)
+    score    = score_job_int(job)
+    text     = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
+    domain   = _detect_domain(text)
+    location = _detect_location_flag(job)
+    d_emoji  = _domain_emoji(domain)
+
+    title   = _escape(job.title)
+    company = _escape(job.company) if job.company and job.company != "Unknown" else ""
+    poster  = _escape(fields["poster"]) if fields["poster"] else ""
+    wm      = _work_model_badge(fields["work_model"])
+    fresh   = _freshness_badge(job)
+
+    lines = []
+
+    # ── Header Badge ─────────────────────────────────────────
+    badges = ["📢 HR Post on LinkedIn"]
+    if fresh == "[NEW]":
+        badges.insert(0, "🆕 NEW")
+    elif fresh == "[Today]":
+        badges.insert(0, "📅 Today")
+    lines.append(f"<b>{'  ·  '.join(badges)}</b>")
+    lines.append("")
+
+    # ── Role Title ───────────────────────────────────────────
+    lines.append(f"{d_emoji}  <b>{title}</b>")
+    lines.append("")
+
+    # ── Company & Location ───────────────────────────────────
+    if company:
+        lines.append(f"🏢  <b>{company}</b>")
+    if poster:
+        lines.append(f"👤  <i>Posted by: {poster}</i>")
+    lines.append(f"📍  {location}")
+    if wm:
+        lines.append(f"🗂  {wm}")
+    lines.append("")
+
+    # ── Job Highlights (from AI) ──────────────────────────────
+    if fields["highlights"]:
+        lines.append("<b>━━ Job Highlights</b>")
+        for h in fields["highlights"][:4]:
+            lines.append(f"   • {_escape(h)}")
+        lines.append("")
+
+    # ── Requirements (from AI) ────────────────────────────────
+    if fields["requirements"]:
+        lines.append("<b>━━ Requirements</b>")
+        for r in fields["requirements"][:4]:
+            lines.append(f"   ✅ {_escape(r)}")
+        lines.append("")
+
+    # ── Match Strength ────────────────────────────────────────
+    lines.append("<b>━━ Match Strength</b>")
+    lines.append(f"   {_match_bar(score)}  <b>({score})</b>")
+    lines.append("")
+
+    # ── Apply CTA ────────────────────────────────────────────
+    lines.append(f'<a href="{job.url}">🔗  View Post &amp; Apply Directly  →</a>')
+    lines.append(f"<code>{'─' * 14}</code>")
+
+    return "\n".join(lines).strip()
+
+
 def format_job_message(job):
+    # ── HR Post fast-path — use dedicated template ────────────
+    if getattr(job, "source", "") == "linkedin_hr_post":
+        return format_hr_post_message(job)
+
     from scoring import score_job_int
     score = score_job_int(job)
 
