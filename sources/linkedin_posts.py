@@ -141,76 +141,89 @@ def _fetch_via_google_cache():
 
 def _fetch_via_linkedin_search_api():
     """
-    LinkedIn jobs search — searches with keywords that HR use in job posts.
-    Unlike regular job search, uses keywords that appear in LinkedIn posts.
+    LinkedIn jobs search — searches with HR-style keywords across Egypt & Gulf.
+    v33: Expanded searches, added location extraction, multi-keyword support.
     """
     from sources.http_utils import get_text as _get
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
-    # HR-specific search terms — these match how HR write #hiring posts
-    # LinkedIn job search with HR-style keywords that match post language
-    # This catches jobs posted by HR professionals using "#Hiring" style
+    # Comprehensive HR-style searches — English + Arabic + all cybersec domains
     searches = [
-        # Egypt — English HR keywords
-        {"keywords": "#Hiring cybersecurity",             "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring SOC analyst",               "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring security engineer",         "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring penetration tester",        "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring GRC",                       "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring information security",      "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring network security",          "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring cloud security",            "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "Senior SOC Analyst",                "location": "Cairo, Egypt", "f_TPR": "r259200"},
-        {"keywords": "cybersecurity vacancy Egypt",        "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "we are looking for cybersecurity",  "location": "Egypt",        "f_TPR": "r259200"},
-        # Egypt — Arabic HR keywords
-        {"keywords": "#توظيف أمن سيبراني",               "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "#وظيفة أمن معلومات",                "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "فرصة عمل أمن سيبراني",             "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "مطلوب محلل أمن سيبراني",            "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "مطلوب مهندس أمن",                   "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "نحن نوظف أمن",                      "location": "Egypt",        "f_TPR": "r604800"},
-        # Gulf — English
-        {"keywords": "#Hiring cybersecurity",             "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring SOC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "#Hiring security engineer",         "location": "Dubai, UAE",          "f_TPR": "r259200"},
-        {"keywords": "#Hiring cybersecurity",             "location": "United Arab Emirates","f_TPR": "r259200"},
-        {"keywords": "#Hiring GRC",                       "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        # Gulf — Arabic
-        {"keywords": "#توظيف أمن سيبراني",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
-        {"keywords": "نوظف أمن معلومات",                  "location": "Saudi Arabia",        "f_TPR": "r604800"},
+        # Egypt — specialist roles
+        {"keywords": "SOC analyst",              "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "penetration tester",        "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer",    "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "information security",      "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "GRC analyst",               "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "cloud security engineer",   "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "network security engineer", "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "security architect",        "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "malware analyst",           "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "devsecops",                 "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "threat intelligence",       "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "incident response",         "location": "Cairo, Egypt", "f_TPR": "r259200"},
+        {"keywords": "security intern",           "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "cyber security",            "location": "Cairo, Egypt", "f_TPR": "r259200"},
+        {"keywords": "cyber security",            "location": "Alexandria, Egypt", "f_TPR": "r259200"},
+        # Egypt — Arabic
+        {"keywords": "أمن سيبراني",              "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "أمن معلومات",               "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "اختبار اختراق",             "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "محلل أمن",                  "location": "Egypt",        "f_TPR": "r604800"},
+        # Saudi Arabia
+        {"keywords": "SOC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer",    "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "information security",      "location": "Riyadh, Saudi Arabia", "f_TPR": "r259200"},
+        {"keywords": "GRC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "penetration tester",        "location": "Saudi Arabia",        "f_TPR": "r259200"},
+        {"keywords": "security engineer",         "location": "Jeddah, Saudi Arabia", "f_TPR": "r259200"},
+        # UAE
+        {"keywords": "SOC analyst",               "location": "United Arab Emirates","f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer",    "location": "Dubai, UAE",          "f_TPR": "r259200"},
+        {"keywords": "security engineer",         "location": "Abu Dhabi, UAE",      "f_TPR": "r259200"},
+        {"keywords": "GRC analyst",               "location": "United Arab Emirates","f_TPR": "r259200"},
+        {"keywords": "cloud security",            "location": "United Arab Emirates","f_TPR": "r259200"},
+        # Gulf Arabic
+        {"keywords": "أمن سيبراني",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
+        {"keywords": "أمن معلومات",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
+        # Other Gulf
+        {"keywords": "cybersecurity",             "location": "Qatar",               "f_TPR": "r259200"},
+        {"keywords": "cybersecurity",             "location": "Kuwait",              "f_TPR": "r259200"},
     ]
 
     for s in searches:
         params = {k: v for k, v in s.items()}
-        params.update({"start": "0", "count": "10"})
+        params.update({"start": "0", "count": "15"})
         html = _get(base, params=params)
         if not html or len(html) < 200:
             time.sleep(3)
             continue
 
-        job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-        titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+        titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
         companies = re.findall(r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>\s*<a[^>]*>([^<]+)', html)
+        locations = re.findall(r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>\s*([^<]+)', html)
 
         for i, title in enumerate(titles):
             title = title.strip()
             if not title or title in seen:
                 continue
             seen.add(title)
-            job_id = job_ids[i] if i < len(job_ids) else ""
-            company = companies[i].strip() if i < len(companies) else "Unknown"
-            location = s.get("location", "Egypt")
+            job_id   = job_ids[i] if i < len(job_ids) else ""
+            company  = companies[i].strip() if i < len(companies) else "Unknown"
+            # Use actual scraped location if available, otherwise fall back to search location
+            raw_loc  = locations[i].strip() if i < len(locations) else ""
+            location = raw_loc if raw_loc else s.get("location", "Egypt")
             jobs.append(Job(
                 title=_match_title(title),
                 company=company,
                 location=location,
                 url=f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else base,
-                source="linkedin_hiring",
-                original_source=f"#Hiring — {title}",
-                tags=["#hiring", "linkedin", "hiring-post"],
+                source="linkedin_posts",
+                original_source=f"LinkedIn HR — {s.get('keywords', '')}",
+                tags=["linkedin", "hr-search", s.get("location", "").split(",")[0].lower()],
                 is_remote=False,
             ))
         time.sleep(random.uniform(2, 3.5))
