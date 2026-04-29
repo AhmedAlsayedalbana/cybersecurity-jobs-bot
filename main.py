@@ -255,9 +255,14 @@ def main():
                 sent_urls = set()
 
             # 8. Mark seen (SQLite)
+            # Mark ALL new jobs as seen — not just sent ones.
+            # This prevents jobs that passed the filter but weren't sent (score below threshold,
+            # pool size limit, etc.) from reappearing in subsequent runs the same day.
+            seen = mark_as_seen(new_jobs, seen)
+            log.info(f"💾 Marked {len(new_jobs)} new jobs as seen (all candidates).")
             if sent_urls:
                 seen = deduplicate_sent(sent_urls, final_pool, seen)
-                log.info(f"💾 Marked {len(sent_urls)} sent job URLs as seen.")
+                log.info(f"💾 Also marked {len(sent_urls)} sent job URLs as seen.")
 
             # 9. Health report (send once per day — check hour)
             if datetime.now().hour < 10:  # morning run
