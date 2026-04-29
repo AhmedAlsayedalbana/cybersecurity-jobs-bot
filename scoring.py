@@ -166,6 +166,8 @@ TECH_MAP = {
     "grc": 4,       "iso 27001": 3,     "compliance": 2,
     "nist": 2,      "risk analyst": 3,  "security auditor": 3,
     # General
+    "information security analyst": 5, "information security engineer": 5,
+    "information security": 3, "cybersecurity analyst": 5, "cybersecurity specialist": 4,
     "vulnerability": 2, "ciso": 2, "security architect": 4, "cryptograph": 2,
 }
 
