@@ -50,95 +50,6 @@ def _match_title(raw: str) -> str:
     return raw.strip().title()
 
 
-# Google cache search — finds LinkedIn posts indexed by Google
-def _fetch_via_google_cache():
-    """
-    Use Google search to find LinkedIn posts with #hiring + cybersecurity.
-    Google indexes LinkedIn posts, so this catches HR posts that aren't in job listings.
-    """
-    jobs = []
-    seen = set()
-
-    queries = [
-        'site:linkedin.com "#hiring" "cybersecurity" "Egypt"',
-        'site:linkedin.com "#hiring" "SOC analyst" "Egypt"',
-        'site:linkedin.com "#hiring" "information security" "Cairo"',
-        'site:linkedin.com "#hiring" "security engineer" "Egypt"',
-        'site:linkedin.com "#hiring" "penetration" "Egypt"',
-        'site:linkedin.com "we are hiring" "cybersecurity" "Egypt"',
-        'site:linkedin.com "نحن نوظف" "أمن" "مصر"',
-        'site:linkedin.com "#hiring" "cybersecurity" "Saudi Arabia"',
-        'site:linkedin.com "#hiring" "SOC" "Riyadh"',
-        'site:linkedin.com "#hiring" "security" "Dubai"',
-    ]
-
-    for q in queries:
-        encoded = urllib.parse.quote_plus(q)
-        url = f"https://www.google.com/search?q={encoded}&num=10&tbs=qdr:w"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        html = get_text(url, headers=headers)
-        if not html:
-            time.sleep(2)
-            continue
-
-        # Extract LinkedIn post/profile URLs from Google results
-        li_urls = re.findall(
-            r'https://www\.linkedin\.com/(?:posts|pulse|feed/update)/[^\s"&<>]+',
-            html
-        )
-        # Extract snippets with job info
-        snippets = re.findall(r'<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
-
-        for snippet in snippets:
-            clean = re.sub(r'<[^>]+>', ' ', snippet).strip()
-            if not clean or len(clean) < 20:
-                continue
-            # Try to extract a job title from the snippet
-            title_match = re.search(
-                r'(?:hiring|looking for|seeking|vacancy|role|position|open)[:\s]+([A-Z][^.!?]{5,60})',
-                clean, re.IGNORECASE
-            )
-            if not title_match:
-                # Try to match known roles
-                matched = _match_title(clean)
-                if matched == clean.strip().title():  # no match
-                    continue
-                title = matched
-            else:
-                title = title_match.group(1).strip()
-
-            if title in seen:
-                continue
-
-            # Determine location from query
-            location = "Egypt"
-            if "saudi" in q.lower() or "riyadh" in q.lower():
-                location = "Saudi Arabia"
-            elif "dubai" in q.lower():
-                location = "UAE"
-
-            seen.add(title)
-            url_job = li_urls[0] if li_urls else f"https://www.linkedin.com/search/results/content/?keywords={urllib.parse.quote(q)}"
-            jobs.append(Job(
-                title=_match_title(title),
-                company="Unknown",
-                location=location,
-                url=url_job,
-                source="linkedin_hiring",
-                original_source=f"#Hiring — {title}",
-                description=clean[:300],
-                tags=["#hiring", "linkedin", "hiring-post", "google-indexed"],
-                is_remote=False,
-            ))
-        time.sleep(random.uniform(3, 5))  # respect Google rate limits
-
-    log.info(f"LinkedIn Posts (Google cache): {len(jobs)} jobs")
-    return jobs
-
-
 def _fetch_via_linkedin_search_api():
     """
     LinkedIn jobs search — searches with HR-style keywords across Egypt & Gulf.
@@ -149,48 +60,26 @@ def _fetch_via_linkedin_search_api():
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
-    # Comprehensive HR-style searches — English + Arabic + all cybersec domains
+    # Focused searches — top HR keywords for Egypt & Gulf (trimmed to reduce rate-limit hits)
     searches = [
-        # Egypt — specialist roles
-        {"keywords": "SOC analyst",              "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "penetration tester",        "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "cybersecurity engineer",    "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "information security",      "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "GRC analyst",               "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "cloud security engineer",   "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "network security engineer", "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "security architect",        "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "malware analyst",           "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "devsecops",                 "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "threat intelligence",       "location": "Egypt",        "f_TPR": "r259200"},
-        {"keywords": "incident response",         "location": "Cairo, Egypt", "f_TPR": "r259200"},
-        {"keywords": "security intern",           "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "cyber security",            "location": "Cairo, Egypt", "f_TPR": "r259200"},
-        {"keywords": "cyber security",            "location": "Alexandria, Egypt", "f_TPR": "r259200"},
-        # Egypt — Arabic
-        {"keywords": "أمن سيبراني",              "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "أمن معلومات",               "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "اختبار اختراق",             "location": "Egypt",        "f_TPR": "r604800"},
-        {"keywords": "محلل أمن",                  "location": "Egypt",        "f_TPR": "r604800"},
+        # Egypt
+        {"keywords": "SOC analyst",           "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "penetration tester",     "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer", "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "information security",   "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "GRC analyst",            "location": "Egypt",        "f_TPR": "r259200"},
+        {"keywords": "security intern",        "location": "Egypt",        "f_TPR": "r604800"},
+        {"keywords": "أمن سيبراني",            "location": "Egypt",        "f_TPR": "r604800"},
         # Saudi Arabia
-        {"keywords": "SOC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "cybersecurity engineer",    "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "information security",      "location": "Riyadh, Saudi Arabia", "f_TPR": "r259200"},
-        {"keywords": "GRC analyst",               "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "penetration tester",        "location": "Saudi Arabia",        "f_TPR": "r259200"},
-        {"keywords": "security engineer",         "location": "Jeddah, Saudi Arabia", "f_TPR": "r259200"},
+        {"keywords": "SOC analyst",            "location": "Saudi Arabia", "f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer", "location": "Saudi Arabia", "f_TPR": "r259200"},
+        {"keywords": "GRC analyst",            "location": "Saudi Arabia", "f_TPR": "r259200"},
         # UAE
-        {"keywords": "SOC analyst",               "location": "United Arab Emirates","f_TPR": "r259200"},
-        {"keywords": "cybersecurity engineer",    "location": "Dubai, UAE",          "f_TPR": "r259200"},
-        {"keywords": "security engineer",         "location": "Abu Dhabi, UAE",      "f_TPR": "r259200"},
-        {"keywords": "GRC analyst",               "location": "United Arab Emirates","f_TPR": "r259200"},
-        {"keywords": "cloud security",            "location": "United Arab Emirates","f_TPR": "r259200"},
-        # Gulf Arabic
-        {"keywords": "أمن سيبراني",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
-        {"keywords": "أمن معلومات",               "location": "Saudi Arabia",        "f_TPR": "r604800"},
+        {"keywords": "SOC analyst",            "location": "United Arab Emirates", "f_TPR": "r259200"},
+        {"keywords": "cybersecurity engineer", "location": "Dubai, UAE",           "f_TPR": "r259200"},
         # Other Gulf
-        {"keywords": "cybersecurity",             "location": "Qatar",               "f_TPR": "r259200"},
-        {"keywords": "cybersecurity",             "location": "Kuwait",              "f_TPR": "r259200"},
+        {"keywords": "cybersecurity",          "location": "Qatar",                "f_TPR": "r259200"},
+        {"keywords": "cybersecurity",          "location": "Kuwait",               "f_TPR": "r259200"},
     ]
 
     for s in searches:
@@ -235,10 +124,9 @@ def _fetch_via_linkedin_search_api():
 def fetch_linkedin_posts():
     """Aggregate LinkedIn post-based hiring signals."""
     all_jobs = []
-    for fn in [_fetch_via_linkedin_search_api, _fetch_via_google_cache]:
-        try:
-            all_jobs.extend(fn())
-        except Exception as e:
-            log.warning(f"linkedin_posts sub-fetcher {fn.__name__} failed: {e}")
+    try:
+        all_jobs.extend(_fetch_via_linkedin_search_api())
+    except Exception as e:
+        log.warning(f"linkedin_posts _fetch_via_linkedin_search_api failed: {e}")
     log.info(f"LinkedIn Posts total: {len(all_jobs)} jobs")
     return all_jobs
