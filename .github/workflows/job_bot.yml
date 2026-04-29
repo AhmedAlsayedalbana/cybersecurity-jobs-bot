@@ -28,15 +28,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore seen_jobs.json
+      - name: Restore jobs database
         run: |
           git fetch origin data:data || true
-          git checkout data -- seen_jobs.json 2>/dev/null || echo '[]' > seen_jobs.json
-          if ! python3 -c "import json; json.load(open('seen_jobs.json'))" 2>/dev/null; then
-            echo "⚠️ Corrupt seen_jobs.json — resetting"
-            echo '[]' > seen_jobs.json
+          git checkout data -- jobs_bot.db 2>/dev/null || echo "ℹ️ No existing DB found — starting fresh"
+          if [ -f jobs_bot.db ]; then
+            echo "✅ jobs_bot.db restored: $(wc -c < jobs_bot.db) bytes"
+          else
+            echo "ℹ️ Fresh DB will be created by the bot"
           fi
-          echo "✅ seen_jobs.json: $(wc -c < seen_jobs.json) bytes"
 
       - name: Run bot
         env:
@@ -67,11 +67,16 @@ jobs:
 
         run: python main.py
 
-      - name: Save seen_jobs.json
+      - name: Save jobs database
         if: always()
         run: |
-          # Save BEFORE any git operations to avoid checkout conflicts
-          cp seen_jobs.json /tmp/seen_jobs.json
+          if [ ! -f jobs_bot.db ]; then
+            echo "ℹ️ No jobs_bot.db to save — skipping"
+            exit 0
+          fi
+
+          # Save DB before any git operations
+          cp jobs_bot.db /tmp/jobs_bot.db
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -88,12 +93,12 @@ jobs:
             git rm -rf . || true
           fi
 
-          cp /tmp/seen_jobs.json seen_jobs.json
-          git add seen_jobs.json
+          cp /tmp/jobs_bot.db jobs_bot.db
+          git add jobs_bot.db
           if ! git diff --cached --quiet; then
-            git commit -m "seen_jobs update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+            git commit -m "jobs_bot.db update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
-            echo "✅ Saved"
+            echo "✅ jobs_bot.db saved to data branch"
           else
-            echo "ℹ️ No changes"
+            echo "ℹ️ No changes in DB"
           fi
