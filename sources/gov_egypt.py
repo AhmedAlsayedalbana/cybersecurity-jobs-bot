@@ -162,17 +162,24 @@ def _fetch_egypt_linkedin_companies():
         html = get_text(url, headers=_H)
         if not html:
             continue
-        job_ids  = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-        titles   = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+        titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        locations = re.findall(r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>\s*([^<]+)', html)
+        _foreign = ["united states", "u.s.", "usa", "united kingdom", "germany",
+                    "france", "canada", "australia", "netherlands", "singapore", "india"]
         for i, title in enumerate(titles):
             title = title.strip()
             if not title or title in seen:
                 continue
+            raw_loc = locations[i].strip() if i < len(locations) else ""
+            if any(f in raw_loc.lower() for f in _foreign):
+                continue
+            final_loc = raw_loc if raw_loc else "Egypt"
             seen.add(title)
             job_id = job_ids[i] if i < len(job_ids) else ""
             jobs.append(Job(
                 title=title, company=company_name,
-                location="Egypt",
+                location=final_loc,
                 url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else url,
                 source="linkedin", tags=["linkedin", "egypt"],
             ))
