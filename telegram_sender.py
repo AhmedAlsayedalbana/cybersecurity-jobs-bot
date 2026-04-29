@@ -153,9 +153,10 @@ def send_jobs(jobs):
             if ch_key in channel_queues:
                 channel_queues[ch_key].append(job)
 
-    limit           = MAX_JOBS_PER_CHANNEL
-    geo_sent_urls   = set()   # tracks URLs sent to GEO channels
-    all_sent_urls   = set()   # GLOBAL dedup — no URL sent twice across ALL channels
+    limit         = MAX_JOBS_PER_CHANNEL
+    geo_sent_urls   = set()   # tracks URLs sent to GEO channels (dedup within geo only)
+    topic_sent_urls = set()   # tracks URLs sent to TOPIC channels (dedup within topic only)
+    all_sent_urls   = set()   # ALL sent URLs — returned to main for seen-jobs marking
 
     for ch_key in send_order:
         ch_jobs   = channel_queues.get(ch_key, [])
@@ -178,8 +179,12 @@ def send_jobs(jobs):
             if sent_this_ch >= limit:
                 break
 
-            # Global dedup — never send the same URL twice across any channel
-            if job.url in all_sent_urls:
+            # GEO channels: dedup among themselves only (egypt/gulf/remote don't duplicate each other)
+            # TOPIC channels: dedup among themselves only (soc/grc/pentest don't duplicate each other)
+            # A job CAN appear in one geo + one topic channel — this is intentional and desired
+            if is_geo and job.url in geo_sent_urls:
+                continue
+            if not is_geo and job.url in topic_sent_urls:
                 continue
 
             message = format_job_message(job)
@@ -191,6 +196,8 @@ def send_jobs(jobs):
                 all_sent_urls.add(job.url)
                 if is_geo:
                     geo_sent_urls.add(job.url)
+                else:
+                    topic_sent_urls.add(job.url)
                 log.info(f"  ✅ [{ch_key}] {sent_this_ch}/{limit} — {job.title[:50]}")
 
             time.sleep(TELEGRAM_SEND_DELAY)
