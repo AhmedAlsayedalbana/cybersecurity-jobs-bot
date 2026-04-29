@@ -284,7 +284,7 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
 
 
 def get_json(url: str, params: dict = None, headers: dict = None,
-             timeout: int = REQUEST_TIMEOUT) -> dict | list | None:
+             timeout: int = REQUEST_TIMEOUT, max_retries: int = 4) -> dict | list | None:
     if _is_linkedin_url(url):
         sess = _get_linkedin_session()
     elif _is_gov_url(url):
@@ -294,7 +294,8 @@ def get_json(url: str, params: dict = None, headers: dict = None,
     t = GOV_TIMEOUT if _is_gov_url(url) else timeout
     try:
         resp = _request_with_retry("GET", url, session=sess,
-                                   params=params, headers=headers, timeout=t)
+                                   params=params, headers=headers, timeout=t,
+                                   max_retries=max_retries)
         if resp is None:
             return None
         return resp.json()
