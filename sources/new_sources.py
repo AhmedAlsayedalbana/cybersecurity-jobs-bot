@@ -281,52 +281,6 @@ def _fetch_telegram_public_channels() -> list:
     return jobs
 
 
-# ── 5. Nitter RSS (nitter.net/CyberSecJobs only confirmed working) ──
-def _fetch_nitter_security_jobs() -> list:
-    jobs = []
-    seen = set()
-    # Only nitter.net/CyberSecJobs confirmed working from logs
-    # infosecjobs and SecurityJobs → HTTP 404
-    feeds = [
-        ("https://nitter.net/CyberSecJobs/rss", "CyberSecJobs", "Remote"),
-    ]
-    for feed_url, company, location in feeds:
-        xml = get_text(feed_url, headers=_H)
-        if not xml:
-            continue
-        for j in _parse_rss(xml, company, "nitter_twitter", location,
-                             ["twitter", "cybersec", "remote"], is_remote=True):
-            if j.url not in seen:
-                seen.add(j.url)
-                jobs.append(j)
-    log.info(f"Nitter Security Jobs: {len(jobs)} jobs")
-    return jobs
-
-
-# ── 6. Akhtaboot (Arab job board) ────────────────────────────
-def _fetch_akhtaboot() -> list:
-    jobs = []
-    seen = set()
-    pages = [
-        ("https://www.akhtaboot.com/en/jobs/Egypt/Cybersecurity-jobs",        "Egypt"),
-        ("https://www.akhtaboot.com/en/jobs/Egypt/IT-Security-jobs",           "Egypt"),
-        ("https://www.akhtaboot.com/en/jobs/Saudi-Arabia/Cybersecurity-jobs",  "Saudi Arabia"),
-        ("https://www.akhtaboot.com/en/jobs/UAE/Cybersecurity-jobs",           "UAE"),
-    ]
-    for url, loc in pages:
-        html = get_text(url, headers=_H)
-        if not html:
-            continue
-        for j in _extract_jsonld_jobs(html, url, "akhtaboot", loc,
-                                       ["akhtaboot", loc.lower().replace(" ", "_")]):
-            if j.url not in seen and _is_sec(j.title):
-                seen.add(j.url)
-                jobs.append(j)
-        time.sleep(0.5)
-    log.info(f"Akhtaboot: {len(jobs)} jobs")
-    return jobs
-
-
 # ── 7. Forasna Egypt (HTTP 404 — kept as stub, skips gracefully) ─
 def _fetch_forasna() -> list:
     return []   # disabled — HTTP 404 on all endpoints confirmed
@@ -367,8 +321,6 @@ def fetch_new_sources() -> list:
         ("HN Hiring",           _fetch_hackernews_hiring),
         ("GitHub Hiring",       _fetch_github_security_jobs),
         ("Telegram Channels",   _fetch_telegram_public_channels),
-        ("Nitter",              _fetch_nitter_security_jobs),
-        ("Akhtaboot",           _fetch_akhtaboot),
     ]
     for name, fn in fetchers:
         if time.time() - _start > BUDGET_SECONDS:
