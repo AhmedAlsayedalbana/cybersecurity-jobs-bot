@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import random
+import threading
 import requests
 import urllib3
 from config import REQUEST_TIMEOUT
@@ -48,29 +49,65 @@ _session.headers.update({
     "Accept-Language": "en-US,en;q=0.9",
 })
 
-# ── LinkedIn session — bootstrapped with real CSRF token ──────
-_linkedin_session = requests.Session()
-_linkedin_session.headers.update({
-    "User-Agent": _DEFAULT_UA,
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-})
+# ── LinkedIn session — thread-local to avoid race conditions ──
+# Each thread gets its own session + CSRF token (safe for asyncio ThreadPoolExecutor)
+_linkedin_local = threading.local()
 
-_linkedin_csrf_token: str = "ajax:0123456789"
-_linkedin_bootstrapped: bool = False
+
+def _get_linkedin_session() -> requests.Session:
+    """Return this thread's LinkedIn session, creating it if needed."""
+    if not hasattr(_linkedin_local, "session") or _linkedin_local.session is None:
+        sess = requests.Session()
+        sess.headers.update({
+            "User-Agent": _DEFAULT_UA,
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+        _linkedin_local.session = sess
+        _linkedin_local.csrf_token = "ajax:0123456789"
+        _linkedin_local.bootstrapped = False
+    return _linkedin_local.session
+
+
+def _get_linkedin_csrf() -> str:
+    _get_linkedin_session()   # ensure thread-local is initialised
+    return _linkedin_local.csrf_token
+
+
+def _set_linkedin_csrf(token: str):
+    _get_linkedin_session()
+    _linkedin_local.csrf_token = token
+
+
+def _is_linkedin_bootstrapped() -> bool:
+    _get_linkedin_session()
+    return _linkedin_local.bootstrapped
+
+
+def _set_linkedin_bootstrapped(value: bool):
+    _get_linkedin_session()
+    _linkedin_local.bootstrapped = value
+
+
+# Keep module-level aliases for any external code that references them directly
+# (read-only; mutations must go through the helpers above)
+_linkedin_session: requests.Session = None        # legacy alias — not used internally
+_linkedin_csrf_token: str = "ajax:0123456789"     # legacy alias — not used internally
+_linkedin_bootstrapped: bool = False              # legacy alias — not used internally
 
 
 def _bootstrap_linkedin():
     """
     Visit LinkedIn's public jobs page to collect real cookies and CSRF token.
     LinkedIn Guest API returns HTTP 400 without a valid CSRF token.
-    Must be called once before the first API request.
+    Must be called once per thread before the first API request.
+    Thread-safe: each thread manages its own session via threading.local().
     """
-    global _linkedin_csrf_token, _linkedin_bootstrapped
-
-    if _linkedin_bootstrapped:
+    if _is_linkedin_bootstrapped():
         return
+
+    sess = _get_linkedin_session()
 
     bootstrap_urls = [
         "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Egypt",
@@ -79,7 +116,7 @@ def _bootstrap_linkedin():
 
     for url in bootstrap_urls:
         try:
-            resp = _linkedin_session.get(
+            resp = sess.get(
                 url,
                 headers={
                     "User-Agent": _random_ua(),
@@ -95,13 +132,13 @@ def _bootstrap_linkedin():
             )
 
             # JSESSIONID cookie value IS the CSRF token on LinkedIn
-            csrf = _linkedin_session.cookies.get("JSESSIONID", "")
+            csrf = sess.cookies.get("JSESSIONID", "")
             if csrf:
                 csrf = csrf.strip('"')
             if csrf:
-                _linkedin_csrf_token = csrf
-                log.info(f"LinkedIn bootstrap OK (JSESSIONID): {csrf[:20]}…")
-                _linkedin_bootstrapped = True
+                _set_linkedin_csrf(csrf)
+                log.info(f"LinkedIn bootstrap OK (JSESSIONID): {csrf[:20]}… [thread={threading.current_thread().name}]")
+                _set_linkedin_bootstrapped(True)
                 break
 
             # Fallback: extract from HTML
@@ -109,9 +146,9 @@ def _bootstrap_linkedin():
             if not m:
                 m = re.search(r'name="csrf-token"\s+content="([^"]+)"', resp.text)
             if m:
-                _linkedin_csrf_token = m.group(1)
-                log.info(f"LinkedIn bootstrap OK (HTML): {_linkedin_csrf_token[:20]}…")
-                _linkedin_bootstrapped = True
+                _set_linkedin_csrf(m.group(1))
+                log.info(f"LinkedIn bootstrap OK (HTML): {_get_linkedin_csrf()[:20]}… [thread={threading.current_thread().name}]")
+                _set_linkedin_bootstrapped(True)
                 break
 
             log.debug(f"LinkedIn bootstrap: no CSRF from {url} (status={resp.status_code})")
@@ -121,13 +158,13 @@ def _bootstrap_linkedin():
             log.debug(f"LinkedIn bootstrap failed ({url}): {e}")
             time.sleep(random.uniform(2, 4))
 
-    if not _linkedin_bootstrapped:
+    if not _is_linkedin_bootstrapped():
         log.warning("LinkedIn bootstrap: no CSRF obtained — using fallback token")
-        _linkedin_bootstrapped = True  # mark done to avoid infinite loops
+        _set_linkedin_bootstrapped(True)  # mark done to avoid infinite loops
 
-    # Apply CSRF to session headers
-    _linkedin_session.headers.update({
-        "Csrf-Token": _linkedin_csrf_token,
+    # Apply CSRF to this thread's session headers
+    sess.headers.update({
+        "Csrf-Token": _get_linkedin_csrf(),
         "X-Li-Lang": "en_US",
         "X-Requested-With": "XMLHttpRequest",
         "x-restli-protocol-version": "2.0.0",
@@ -221,9 +258,8 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
             # HTTP 400 on LinkedIn = bad/expired CSRF token → re-bootstrap
             if resp.status_code == 400 and _is_linkedin_url(url):
                 if attempt < max_retries:
-                    global _linkedin_bootstrapped
-                    _linkedin_bootstrapped = False
-                    log.warning(f"HTTP 400 on LinkedIn (bad CSRF) — re-bootstrapping (attempt {attempt+1})")
+                    _set_linkedin_bootstrapped(False)
+                    log.warning(f"HTTP 400 on LinkedIn (bad CSRF) — re-bootstrapping (attempt {attempt+1}) [thread={threading.current_thread().name}]")
                     _bootstrap_linkedin()
                     time.sleep(random.uniform(3, 7))
                     continue
@@ -250,7 +286,7 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
 def get_json(url: str, params: dict = None, headers: dict = None,
              timeout: int = REQUEST_TIMEOUT) -> dict | list | None:
     if _is_linkedin_url(url):
-        sess = _linkedin_session
+        sess = _get_linkedin_session()
     elif _is_gov_url(url):
         sess = _gov_session
     else:
@@ -294,7 +330,7 @@ def post_json(url: str, payload: dict = None, headers: dict = None,
 def get_text(url: str, params: dict = None, headers: dict = None,
              timeout: int = REQUEST_TIMEOUT) -> str | None:
     if _is_linkedin_url(url):
-        sess = _linkedin_session
+        sess = _get_linkedin_session()
     elif _is_gov_url(url):
         sess = _gov_session
     else:
