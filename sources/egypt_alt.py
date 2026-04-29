@@ -97,7 +97,7 @@ EGYPT_SEARCH_KEYWORDS = [
 def _fetch_linkedin_egypt_search():
     jobs = []
     seen = set()
-    budget = 150  # v32: raised 90→150s
+    budget = 210  # v33: raised 150→210s
     t0 = time.time()
     for kw in EGYPT_SEARCH_KEYWORDS:
         if time.time() - t0 > budget:
@@ -156,7 +156,7 @@ LINKEDIN_EG_PRIVATE = [
 def _fetch_linkedin_eg_private():
     jobs = []
     seen = set()
-    budget = 180  # v32: raised 120→180s
+    budget = 240  # v33: raised 180→240s
     t0 = time.time()
     for company_name, slug in LINKEDIN_EG_PRIVATE:
         if time.time() - t0 > budget:
@@ -188,7 +188,7 @@ LINKEDIN_EG_GOV = [
 def _fetch_linkedin_eg_gov():
     jobs = []
     seen = set()
-    budget = 90   # v32: raised 60→90s (governorate)
+    budget = 120  # v33: raised 90→120s (governorate)
     t0 = time.time()
     for company_name, slug in LINKEDIN_EG_GOV:
         if time.time() - t0 > budget:
@@ -224,7 +224,7 @@ GOVERNORATE_KEYWORDS = [
 def _fetch_linkedin_by_governorate():
     jobs = []
     seen = set()
-    budget = 60
+    budget = 90  # v33: raised 60→90s (by_governorate)
     t0 = time.time()
     for gov in TOP_GOVERNORATES:
         for kw in GOVERNORATE_KEYWORDS:
