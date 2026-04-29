@@ -140,7 +140,7 @@ def fetch_linkedin() -> list[Job]:
     budget to prevent GitHub Actions timeout.
     """
     import random
-    BUDGET_SECONDS = 8 * 60  # hard ceiling: 8 minutes for LinkedIn
+    BUDGET_SECONDS = 12 * 60  # v33: raised 8→12 minutes for LinkedIn
     _start = time.time()
 
     jobs = []
@@ -152,7 +152,7 @@ def fetch_linkedin() -> list[Job]:
 
     for search in SEARCHES:
         if time.time() - _start > BUDGET_SECONDS:
-            log.warning(f"LinkedIn: 8-minute budget exhausted after {len(jobs)} jobs — stopping early.")
+            log.warning(f"LinkedIn: 12-minute budget exhausted after {len(jobs)} jobs — stopping early.")
             break
 
         if total_failures >= MAX_TOTAL:
