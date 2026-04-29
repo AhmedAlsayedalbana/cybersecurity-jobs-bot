@@ -231,16 +231,38 @@ def _fetch_linkedin_eg_security_companies():
             html = get_text(url)   # use shared session — no custom headers
             if not html:
                 continue
-            job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-            titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+            job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+            titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+            locations = re.findall(r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>\s*([^<]+)', html)
             for i, title in enumerate(titles):
                 title = title.strip()
                 if not title or title in seen or not _is_sec(title):
                     continue
+                # Use real scraped location — skip if clearly non-Egypt/Gulf
+                raw_loc = locations[i].strip() if i < len(locations) else ""
+                loc_lower = raw_loc.lower()
+                # Reject jobs with explicit foreign locations (US, UK, etc.)
+                _foreign = ["united states", "u.s.", "usa", "united kingdom",
+                             "germany", "france", "canada", "australia",
+                             "netherlands", "singapore", "india", "pakistan"]
+                if any(f in loc_lower for f in _foreign):
+                    continue
+                # Use scraped location if it has Egypt/Gulf signal, else keep Egypt
+                _eg = ["egypt", "cairo", "alexandria", "giza", "مصر"]
+                _gulf = ["saudi", "uae", "dubai", "riyadh", "qatar", "kuwait", "abu dhabi", "bahrain"]
+                if any(g in loc_lower for g in _eg):
+                    final_loc = raw_loc
+                elif any(g in loc_lower for g in _gulf):
+                    final_loc = raw_loc
+                elif raw_loc:
+                    # Has a location but it's unknown — skip (could be foreign)
+                    continue
+                else:
+                    final_loc = "Egypt"  # no location scraped → trust the company search
                 seen.add(title)
                 job_id = job_ids[i] if i < len(job_ids) else ""
                 jobs.append(Job(
-                    title=title, company=company_name, location="Egypt",
+                    title=title, company=company_name, location=final_loc,
                     url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else url,
                     source="linkedin_egypt_companies",
                     tags=["linkedin", "egypt", "security-company"],
