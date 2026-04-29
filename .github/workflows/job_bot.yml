@@ -30,10 +30,11 @@ jobs:
 
       - name: Restore jobs database
         run: |
-          git fetch origin data:data || true
+          git fetch origin data:data || echo "⚠️ data branch not found yet"
           git checkout data -- jobs_bot.db 2>/dev/null || echo "ℹ️ No existing DB found — starting fresh"
           if [ -f jobs_bot.db ]; then
-            echo "✅ jobs_bot.db restored: $(wc -c < jobs_bot.db) bytes"
+            ROWS=$(python3 -c "import sqlite3; c=sqlite3.connect('jobs_bot.db'); print(c.execute('SELECT COUNT(*) FROM seen_jobs').fetchone()[0])" 2>/dev/null || echo "?")
+            echo "✅ jobs_bot.db restored: $(wc -c < jobs_bot.db) bytes | seen_jobs rows: $ROWS"
           else
             echo "ℹ️ Fresh DB will be created by the bot"
           fi
