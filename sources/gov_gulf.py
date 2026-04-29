@@ -250,17 +250,29 @@ def _fetch_gulf_linkedin_companies():
         html = get_text(url, headers={**HEADERS, "Accept": "text/html,application/xhtml+xml"})
         if not html:
             continue
-        job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
-        titles  = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        job_ids   = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)
+        titles    = re.findall(r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>\s*([^<]+)', html)
+        locations = re.findall(r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>\s*([^<]+)', html)
+        _foreign = ["united states", "u.s.", "usa", "united kingdom", "germany",
+                    "france", "canada", "australia", "netherlands", "singapore", "india", "egypt"]
+        _gulf_kw = ["saudi", "uae", "dubai", "riyadh", "jeddah", "qatar", "kuwait",
+                    "abu dhabi", "bahrain", "oman", "doha"]
         for i, title in enumerate(titles):
             title = title.strip()
             if not title or title in seen:
                 continue
+            raw_loc = locations[i].strip() if i < len(locations) else ""
+            loc_lower = raw_loc.lower()
+            if any(f in loc_lower for f in _foreign):
+                continue
+            if raw_loc and not any(g in loc_lower for g in _gulf_kw):
+                continue  # has location but not Gulf → skip
+            final_loc = raw_loc if raw_loc else "Gulf"
             seen.add(title)
             job_id  = job_ids[i] if i < len(job_ids) else ""
             jobs.append(Job(
                 title=title, company=company_name,
-                location="Gulf",
+                location=final_loc,
                 url=f"https://www.linkedin.com/jobs/view/{job_id}" if job_id else url,
                 source="linkedin", tags=["linkedin", "gulf"],
             ))
