@@ -297,6 +297,9 @@ EXCLUDE_KEYWORDS = [
     "real estate", "insurance agent",
     "nurse", "physician", "pharmacist", "dental", "clinical",
     "medical coder", "veterinary",
+    # Security Guard / Physical Security (bypass WEAK_TERMS false-positive in Egypt filter)
+    "security guard", "physical security", "loss prevention",
+    "security supervisor", "building security", "event security",
 ]
 
 # ─── Emoji Map ────────────────────────────────────────────────
