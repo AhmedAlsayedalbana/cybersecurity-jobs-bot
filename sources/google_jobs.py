@@ -66,7 +66,7 @@ def _fetch_via_serpapi():
             "hl":       "en",
             "gl":       search.get("gl", "us"),
         }
-        data = get_json("https://serpapi.com/search", params=params, headers=HEADERS)
+        data = get_json("https://serpapi.com/search", params=params, headers=HEADERS, max_retries=0)
         if not _first_done:
             _first_done = True
             if not data or "jobs_results" not in data:
@@ -102,43 +102,6 @@ def _fetch_via_serpapi():
 
 
 
-
-
-def _fetch_adzuna_mena():
-    from config import ADZUNA_APP_ID, ADZUNA_APP_KEY
-    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
-        return []
-    jobs = []
-    searches = [
-        ("eg", "cybersecurity",       "Egypt"),
-        ("eg", "SOC analyst",         "Egypt"),
-        ("eg", "penetration tester",  "Egypt"),
-        ("eg", "security engineer",   "Egypt"),
-        ("ae", "cybersecurity",       "UAE"),
-        ("ae", "security engineer",   "UAE"),
-        ("ae", "SOC analyst",         "UAE"),
-    ]
-    for country_code, query, location in searches:
-        url = (
-            f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
-            f"?app_id={ADZUNA_APP_ID}&app_key={ADZUNA_APP_KEY}"
-            f"&results_per_page=20&what={query.replace(' ', '+')}&sort_by=date"
-        )
-        data = get_json(url, headers=HEADERS)
-        if not data or "results" not in data:
-            continue
-        for item in data["results"]:
-            jobs.append(Job(
-                title=item.get("title", ""),
-                company=item.get("company", {}).get("display_name", "Unknown"),
-                location=item.get("location", {}).get("display_name", location),
-                url=item.get("redirect_url", ""),
-                source="adzuna_mena",
-                tags=["adzuna", location],
-                is_remote="remote" in item.get("title", "").lower(),
-            ))
-    log.info(f"Adzuna MENA: {len(jobs)} jobs")
-    return jobs
 
 
 def _fetch_wuzzuf_direct():
@@ -222,7 +185,7 @@ def _fetch_wuzzuf_direct():
 def fetch_google_jobs():
     """Aggregate all Google/jobs sources."""
     all_jobs = []
-    for fn in [_fetch_via_serpapi, _fetch_adzuna_mena, _fetch_wuzzuf_direct]:
+    for fn in [_fetch_via_serpapi, _fetch_wuzzuf_direct]:
         try:
             all_jobs.extend(fn())
         except Exception as e:
