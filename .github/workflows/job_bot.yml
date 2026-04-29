@@ -2,7 +2,7 @@ name: Cybersecurity Jobs Bot V5
 
 on:
   schedule:
-    - cron: "0 */3 * * *"       # Every 3 hours
+    - cron: "0 */2 * * *"       # Every 2 hours
   workflow_dispatch:       # Manual trigger
 
 permissions:
