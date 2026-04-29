@@ -137,7 +137,8 @@ def _bootstrap_linkedin():
                 csrf = csrf.strip('"')
             if csrf:
                 _set_linkedin_csrf(csrf)
-                log.info(f"LinkedIn bootstrap OK (JSESSIONID): {csrf[:20]}… [thread={threading.current_thread().name}]")
+                masked = csrf[:4] + "****" + csrf[-4:] if len(csrf) > 8 else "****"
+                log.info(f"LinkedIn bootstrap OK (JSESSIONID): {masked} [thread={threading.current_thread().name}]")
                 _set_linkedin_bootstrapped(True)
                 break
 
@@ -250,7 +251,9 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
             if resp.status_code == 429:
                 jitter = random.uniform(1, 3)
                 wait = backoff * (2 ** attempt) + jitter
-                log.warning(f"429 rate-limit on {url} — waiting {wait:.1f}s (attempt {attempt+1}/{max_retries+1})")
+                # Truncate URL to avoid GitHub Actions masking numeric IDs that look like secrets
+                short_url = url[:80] + "…" if len(url) > 80 else url
+                log.warning(f"429 rate-limit on {short_url} — waiting {wait:.1f}s (attempt {attempt+1}/{max_retries+1})")
                 time.sleep(wait)
                 _domain_last_req[_get_domain(url)] = time.time()
                 continue
