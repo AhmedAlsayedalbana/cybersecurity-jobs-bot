@@ -228,6 +228,9 @@ def _freshness_score(posted_date) -> Tuple[int, str]:
 
     score = decay_pts + penalty
 
+    # Enforce fresh_floor as the absolute minimum — old jobs never score below this
+    score = max(score, WEIGHTS["fresh_floor"])
+
     if score > 0:
         label = f"+{score} fresh ({int(age_h)}h old)"
     elif score < 0:
