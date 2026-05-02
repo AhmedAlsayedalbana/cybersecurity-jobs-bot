@@ -24,7 +24,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DB_PATH = "jobs_bot.db"
-MEMORY_DAYS = 7
+MEMORY_DAYS = 3  # v37: reduced 7→3 — jobs fill in 2-3 days; 7d was blocking 92% of results
 
 
 class JobsDB:
