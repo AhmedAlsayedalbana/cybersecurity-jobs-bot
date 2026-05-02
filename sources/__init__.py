@@ -1,38 +1,22 @@
 """
-Source registry — v36 (LinkedIn-Only Edition)
+Source registry — v37
 
-CHANGES vs v34:
-  🗑️  REMOVED ALL NON-LINKEDIN SOURCES:
-      - Adzuna          (API key required, low relevance)
-      - Jooble          (noisy, low Egypt/Gulf quality)
-      - GitHub Jobs     (irrelevant to MENA market)
-      - GitLab Jobs     (irrelevant to MENA market)
-      - Telegram Channels (unreliable, 2 jobs per run)
-      - Hacker News Hiring (0 jobs last run)
-      - Google Jobs/SerpAPI (always 0, rate-limited)
-      - Wuzzuf scraper  (0 jobs last run)
-      - Findwork        (API key required, skipped)
-      - Reed            (UK-only, API key required)
-      - Remotive        (generic remote, low MENA relevance)
-      - RemoteOK        (generic remote, low MENA relevance)
-      - Arbeitnow       (generic remote, irrelevant)
-      - WWR             (generic remote, irrelevant)
-      - Working Nomads  (generic remote, irrelevant)
-      - Tech Boards     (Greenhouse noisy US-only)
-      - New Sources v27 (GitHub+Telegram=dead)
-      - Expanded Sources (Greenhouse = mostly US/EU)
-      - CyberSec Boards (Bugcrowd = 6 jobs only, not MENA)
-      - Arab Boards     (all 403/404 dead confirmed)
+CHANGES vs v36:
+  ✅ MEMORY_DAYS: 7→3 (see dedup.py & database.py) — was blocking 92% of results
+  ✅ BUDGETS raised: egypt_companies 120→240s, gov_egypt 300→420s+150→240s,
+                     gov_gulf 300→420s — retry sleep time not previously counted
+  ✅ WUZZUF: switched HTML scraping → RSS feed (bypasses Cloudflare JS challenge)
+  ✅ RE-ENABLED free non-LinkedIn sources for redundancy:
+      - Remotive API   (no key, remote cybersec roles)
+      - Arbeitnow API  (no key, clean JSON, international)
+      - WWR RSS        (no key, DevOps/SysAdmin → security filtered)
+  ✅ DB table bug fixed: job_bot.yml was querying seen_jobs → now queries jobs
+  ✅ Added NOTE in scoring.py about README vs actual WEIGHTS discrepancy
+  ✅ linkedin_hiring.py: fixed SENDING bug — jobs were fetched but never sent
 
-  ✅  KEPT: All 9 LinkedIn-backed sources
-  ✅  EXPANDED linkedin.py: +10 Egypt searches, +8 Gulf, +4 Remote
-  ✅  EXPANDED linkedin_hiring.py: +8 Egypt searches, +4 Gulf, +4 Junior
-  ✅  EXPANDED linkedin_hr_hunter.py: +10 specialized search terms
-  ✅  EXPANDED linkedin_posts.py: +6 Egypt HR searches
-
-ACTIVE SOURCES (LinkedIn only — 9 fetchers):
+ACTIVE SOURCES (12 fetchers):
   1. Gov Egypt          — LinkedIn: Egyptian gov & major co. security roles
-  2. Egypt Alt          — LinkedIn: Egypt alternate / private sector
+  2. Egypt Alt          — LinkedIn: Egypt alternate / private sector + Wuzzuf RSS
   3. Egypt Companies    — LinkedIn: 150+ Egypt security companies
   4. Gov Gulf           — LinkedIn: Gulf gov & majors (STC, Aramco, etc.)
   5. Gulf Expanded      — LinkedIn: Gulf broader search + internships
@@ -40,6 +24,9 @@ ACTIVE SOURCES (LinkedIn only — 9 fetchers):
   7. LinkedIn #Hiring   — Guest API: #Hiring keyword focused (21 queries)
   8. LinkedIn Posts     — HR post search style (14 queries)
   9. LinkedIn HR Hunter — Blue/Red/Specialist hunter (20 queries)
+ 10. Remotive           — Free API: remote cybersecurity roles globally
+ 11. Arbeitnow          — Free API: international security roles (JSON)
+ 12. WWR                — Free RSS: remote DevOps/SysAdmin → security filtered
 """
 
 from sources.gov_egypt          import fetch_gov_egypt
@@ -51,6 +38,9 @@ from sources.linkedin           import fetch_linkedin
 from sources.linkedin_hiring    import fetch_linkedin_hiring
 from sources.linkedin_posts     import fetch_linkedin_posts
 from sources.linkedin_hr_hunter import fetch_linkedin_hr_hunter
+from sources.remotive           import fetch_remotive
+from sources.arbeitnow          import fetch_arbeitnow
+from sources.wwr                import fetch_wwr
 
 ALL_FETCHERS = [
     # ── 1. Egypt 🇪🇬 (highest priority) ──────────────────────
@@ -67,4 +57,9 @@ ALL_FETCHERS = [
     ("LinkedIn #Hiring",   fetch_linkedin_hiring),
     ("LinkedIn Posts",     fetch_linkedin_posts),
     ("LinkedIn HR Hunter", fetch_linkedin_hr_hunter),
+
+    # ── 4. Free APIs (no key needed, redundancy) ─────────────
+    ("Remotive",           fetch_remotive),
+    ("Arbeitnow",          fetch_arbeitnow),
+    ("WWR",                fetch_wwr),
 ]
