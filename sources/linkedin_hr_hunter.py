@@ -17,22 +17,36 @@ from sources.http_utils import get_text
 
 log = logging.getLogger(__name__)
 
-MAX_BUDGET_SECS = 3 * 60  # 3 min budget
+MAX_BUDGET_SECS = 5 * 60  # 5 min budget (v36 expanded)
 
 _BASE = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
-# HR-style keywords unlikely to be covered by other LinkedIn fetchers
+# HR-style / specialist keywords not covered by other fetchers (v36 expanded)
 _SEARCHES = [
-    {"keywords": "security operations center",   "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "blue team",                     "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "red team",                      "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "DFIR",                          "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "vulnerability assessment",      "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "cyber threat intelligence",     "location": "Egypt",         "f_TPR": "r259200"},
-    {"keywords": "security operations center",   "location": "Saudi Arabia",   "f_TPR": "r259200"},
-    {"keywords": "blue team",                     "location": "Saudi Arabia",   "f_TPR": "r259200"},
-    {"keywords": "red team",                      "location": "UAE",            "f_TPR": "r259200"},
-    {"keywords": "DFIR",                          "location": "Saudi Arabia",   "f_TPR": "r259200"},
+    # Egypt — specialist roles
+    {"keywords": "security operations center",    "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "blue team",                     "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "red team",                      "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "DFIR",                          "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "vulnerability assessment",      "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "cyber threat intelligence",     "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "malware analyst",               "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "detection engineer",            "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "appsec engineer",               "location": "Egypt",                "f_TPR": "r259200"},
+    {"keywords": "zero trust",                    "location": "Egypt",                "f_TPR": "r604800"},
+    {"keywords": "\u0623\u0645\u0646 \u0633\u064a\u0628\u0631\u0627\u0646\u064a",                  "location": "Egypt",                "f_TPR": "r604800"},
+    {"keywords": "\u0627\u062e\u062a\u0628\u0627\u0631 \u0627\u062e\u062a\u0631\u0627\u0642",             "location": "Egypt",                "f_TPR": "r604800"},
+    # Saudi Arabia — specialist
+    {"keywords": "security operations center",    "location": "Saudi Arabia",         "f_TPR": "r259200"},
+    {"keywords": "blue team",                     "location": "Saudi Arabia",         "f_TPR": "r259200"},
+    {"keywords": "red team",                      "location": "Saudi Arabia",         "f_TPR": "r259200"},
+    {"keywords": "DFIR",                          "location": "Saudi Arabia",         "f_TPR": "r259200"},
+    {"keywords": "vulnerability assessment",      "location": "Saudi Arabia",         "f_TPR": "r259200"},
+    {"keywords": "\u0623\u0645\u0646 \u0633\u064a\u0628\u0631\u0627\u0646\u064a",                  "location": "Saudi Arabia",         "f_TPR": "r604800"},
+    # UAE — specialist
+    {"keywords": "red team",                      "location": "United Arab Emirates", "f_TPR": "r259200"},
+    {"keywords": "blue team",                     "location": "United Arab Emirates", "f_TPR": "r259200"},
+    {"keywords": "DFIR",                          "location": "United Arab Emirates", "f_TPR": "r259200"},
 ]
 
 _ROLE_MAP = [
