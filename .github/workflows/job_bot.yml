@@ -5,6 +5,11 @@ on:
     - cron: "0 */2 * * *"       # Every 2 hours
   workflow_dispatch:       # Manual trigger
 
+# V17: prevent simultaneous runs (manual + cron) to avoid DB race conditions
+concurrency:
+  group: cybersec-bot
+  cancel-in-progress: false   # let the running job finish; queue the next
+
 permissions:
   contents: write
 
@@ -65,6 +70,11 @@ jobs:
           FINDWORK_API_KEY:    ${{ secrets.FINDWORK_API_KEY }}
           JOOBLE_API_KEY:      ${{ secrets.JOOBLE_API_KEY }}
           REED_API_KEY:        ${{ secrets.REED_API_KEY }}
+
+          # Proxy rotation — comma-separated list of proxy URLs (optional)
+          # Format: http://user:pass@host:port,socks5://user:pass@host2:port
+          # Leave the secret empty to use direct connection (no proxies).
+          PROXIES:             ${{ secrets.PROXIES }}
 
         run: python main.py
 
