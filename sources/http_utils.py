@@ -1,19 +1,25 @@
 """
 Shared HTTP helpers with session reuse, timeouts, and error handling.
 
-V16 fix:
-  - LinkedIn Guest API now returns HTTP 400 unless a valid CSRF token
-    is included in every request.
-  - Added _bootstrap_linkedin() which visits the public LinkedIn jobs
-    page once at startup, captures the JSESSIONID cookie (used as the
-    CSRF token) and stores it for all subsequent calls.
-  - All LinkedIn requests now include Csrf-Token / X-Li-Lang headers.
-  - Rotating User-Agent pool retained.
-  - Per-domain rate tracking retained.
+V17 additions (Proxy Rotation):
+  - Added _ProxyPool class: rotates through a list of HTTP/SOCKS5 proxies,
+    auto-bans proxies that trigger 429/403, re-admits them after COOLDOWN_SEC.
+  - LinkedIn session now pulls a fresh proxy on every bootstrap call.
+  - _request_with_retry() passes the current proxy to each request.
+  - PROXIES env var: comma-separated list of proxy URLs (see README).
+    Example: http://user:pass@host:port,socks5://user:pass@host2:port2
+  - Falls back to direct connection automatically if PROXIES is empty or all banned.
+
+V16 retained:
+  - LinkedIn Guest API CSRF token via JSESSIONID cookie.
+  - _bootstrap_linkedin() per-thread.
+  - Rotating User-Agent pool.
+  - Per-domain rate tracking.
   - Gov session: short timeout (8s), SSL-tolerant.
 """
 
 import logging
+import os
 import re
 import time
 import random
@@ -41,6 +47,84 @@ def _random_ua() -> str:
 
 _DEFAULT_UA = _USER_AGENTS[0]
 
+
+# ══════════════════════════════════════════════════════════════
+# ── Proxy Pool ────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+
+class _ProxyPool:
+    """
+    Thread-safe rotating proxy pool.
+
+    Load proxies from the PROXIES environment variable:
+      PROXIES=http://u:p@host1:8080,socks5://u:p@host2:1080
+
+    Behaviour:
+      - get() returns a requests-style dict  {"http": url, "https": url}
+        or None if the pool is empty / all proxies are cooling down.
+      - ban(url) parks a proxy for COOLDOWN_SEC seconds (e.g. after 429).
+      - Uses round-robin with jitter so concurrent threads don't always
+        pick the same proxy.
+    """
+    COOLDOWN_SEC = 300   # 5 minutes before a banned proxy is retried
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        raw = os.environ.get("PROXIES", "").strip()
+        self._proxies: list[str] = [p.strip() for p in raw.split(",") if p.strip()]
+        self._banned: dict[str, float] = {}   # url → ban_until timestamp
+        self._index = 0
+
+        if self._proxies:
+            log.info(f"ProxyPool: loaded {len(self._proxies)} proxy/proxies.")
+        else:
+            log.info("ProxyPool: no proxies configured — using direct connection.")
+
+    def _available(self) -> list[str]:
+        """Return proxies not currently banned."""
+        now = time.time()
+        # Lift expired bans
+        self._banned = {k: v for k, v in self._banned.items() if v > now}
+        return [p for p in self._proxies if p not in self._banned]
+
+    def get(self) -> dict | None:
+        """Return next available proxy dict, or None for direct connection."""
+        with self._lock:
+            available = self._available()
+            if not available:
+                return None   # direct connection fallback
+            # Round-robin with wrap-around
+            self._index = self._index % len(available)
+            proxy_url = available[self._index]
+            self._index += 1
+            return {"http": proxy_url, "https": proxy_url}
+
+    def ban(self, proxy_url: str):
+        """Temporarily ban a proxy after a rate-limit or auth error."""
+        with self._lock:
+            until = time.time() + self.COOLDOWN_SEC
+            self._banned[proxy_url] = until
+            log.warning(f"ProxyPool: banned {proxy_url[:40]}… for {self.COOLDOWN_SEC}s")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._proxies)
+
+
+_proxy_pool = _ProxyPool()
+
+
+def _current_proxy_url(proxy_dict: dict | None) -> str | None:
+    """Extract the URL string from a proxy dict for ban purposes."""
+    if proxy_dict:
+        return proxy_dict.get("https") or proxy_dict.get("http")
+    return None
+
+
+# ══════════════════════════════════════════════════════════════
+# ── Sessions ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+
 # ── Standard session ──────────────────────────────────────────
 _session = requests.Session()
 _session.headers.update({
@@ -50,7 +134,6 @@ _session.headers.update({
 })
 
 # ── LinkedIn session — thread-local to avoid race conditions ──
-# Each thread gets its own session + CSRF token (safe for asyncio ThreadPoolExecutor)
 _linkedin_local = threading.local()
 
 
@@ -67,11 +150,12 @@ def _get_linkedin_session() -> requests.Session:
         _linkedin_local.session = sess
         _linkedin_local.csrf_token = "ajax:0123456789"
         _linkedin_local.bootstrapped = False
+        _linkedin_local.active_proxy = None   # V17: track proxy used at bootstrap
     return _linkedin_local.session
 
 
 def _get_linkedin_csrf() -> str:
-    _get_linkedin_session()   # ensure thread-local is initialised
+    _get_linkedin_session()
     return _linkedin_local.csrf_token
 
 
@@ -91,10 +175,9 @@ def _set_linkedin_bootstrapped(value: bool):
 
 
 # Keep module-level aliases for any external code that references them directly
-# (read-only; mutations must go through the helpers above)
-_linkedin_session: requests.Session = None        # legacy alias — not used internally
-_linkedin_csrf_token: str = "ajax:0123456789"     # legacy alias — not used internally
-_linkedin_bootstrapped: bool = False              # legacy alias — not used internally
+_linkedin_session: requests.Session = None
+_linkedin_csrf_token: str = "ajax:0123456789"
+_linkedin_bootstrapped: bool = False
 
 
 def _bootstrap_linkedin():
@@ -103,11 +186,25 @@ def _bootstrap_linkedin():
     LinkedIn Guest API returns HTTP 400 without a valid CSRF token.
     Must be called once per thread before the first API request.
     Thread-safe: each thread manages its own session via threading.local().
+
+    V17: Picks a proxy from _proxy_pool and stores it on the thread-local
+    so that all subsequent requests from this thread use the same proxy
+    (keeps the session/cookie consistent with the bootstrap IP).
     """
     if _is_linkedin_bootstrapped():
         return
 
     sess = _get_linkedin_session()
+
+    # V17: choose a proxy for this bootstrap session
+    proxy = _proxy_pool.get()
+    _linkedin_local.active_proxy = proxy
+    if proxy:
+        sess.proxies.update(proxy)
+        log.info(f"LinkedIn bootstrap: using proxy {list(proxy.values())[0][:40]}… [thread={threading.current_thread().name}]")
+    else:
+        sess.proxies.clear()
+        log.info(f"LinkedIn bootstrap: direct connection [thread={threading.current_thread().name}]")
 
     bootstrap_urls = [
         "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Egypt",
@@ -131,7 +228,14 @@ def _bootstrap_linkedin():
                 allow_redirects=True,
             )
 
-            # JSESSIONID cookie value IS the CSRF token on LinkedIn
+            # Ban proxy if LinkedIn immediately rejects it
+            if resp.status_code in (429, 403) and proxy:
+                _proxy_pool.ban(_current_proxy_url(proxy))
+                # Try again without proxy
+                _linkedin_local.active_proxy = None
+                sess.proxies.clear()
+                log.warning("LinkedIn bootstrap: proxy rejected, falling back to direct.")
+
             csrf = sess.cookies.get("JSESSIONID", "")
             if csrf:
                 csrf = csrf.strip('"')
@@ -142,7 +246,6 @@ def _bootstrap_linkedin():
                 _set_linkedin_bootstrapped(True)
                 break
 
-            # Fallback: extract from HTML
             m = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', resp.text)
             if not m:
                 m = re.search(r'name="csrf-token"\s+content="([^"]+)"', resp.text)
@@ -161,9 +264,8 @@ def _bootstrap_linkedin():
 
     if not _is_linkedin_bootstrapped():
         log.warning("LinkedIn bootstrap: no CSRF obtained — using fallback token")
-        _set_linkedin_bootstrapped(True)  # mark done to avoid infinite loops
+        _set_linkedin_bootstrapped(True)
 
-    # Apply CSRF to this thread's session headers
     sess.headers.update({
         "Csrf-Token": _get_linkedin_csrf(),
         "X-Li-Lang": "en_US",
@@ -188,7 +290,7 @@ GOV_TIMEOUT = 8
 
 # ── Per-domain last request time tracker (rate spacing) ───────
 _domain_last_req: dict = {}
-_LINKEDIN_MIN_INTERVAL = 4.0   # v28: raised from 2.0 — reduces rate-limit hits
+_LINKEDIN_MIN_INTERVAL = 4.0
 
 
 def _get_domain(url: str) -> str:
@@ -232,33 +334,57 @@ def _is_gov_url(url: str) -> bool:
 def _request_with_retry(method, url, *, session, params=None, headers=None,
                          json=None, timeout=REQUEST_TIMEOUT,
                          max_retries=4, backoff=5):
-    """Execute a request with exponential backoff + jitter on 429/400."""
+    """Execute a request with exponential backoff + jitter on 429/400.
+
+    V17: For LinkedIn requests, the proxy is already baked into the session
+    by _bootstrap_linkedin(). For non-LinkedIn requests we inject a fresh
+    proxy per-request so different searches naturally rotate IPs.
+    """
     if _is_linkedin_url(url):
         _bootstrap_linkedin()
 
     _throttle_domain(url)
+
+    # V17: inject proxy for non-LinkedIn, non-gov requests
+    request_proxy = None
+    if not _is_linkedin_url(url) and not _is_gov_url(url) and _proxy_pool.enabled:
+        request_proxy = _proxy_pool.get()
 
     for attempt in range(max_retries + 1):
         if _is_linkedin_url(url) and attempt > 0:
             session.headers.update({"User-Agent": _random_ua()})
 
         try:
-            resp = session.request(
-                method, url,
-                params=params, headers=headers, json=json,
+            kwargs = dict(
+                params=params,
+                headers=headers,
+                json=json,
                 timeout=timeout,
             )
+            # Only pass proxies= if we have one (avoids overriding LinkedIn session proxy)
+            if request_proxy and not _is_linkedin_url(url):
+                kwargs["proxies"] = request_proxy
+
+            resp = session.request(method, url, **kwargs)
+
             if resp.status_code == 429:
+                # Ban the proxy that caused the rate-limit (if any)
+                if _is_linkedin_url(url) and hasattr(_linkedin_local, "active_proxy") and _linkedin_local.active_proxy:
+                    _proxy_pool.ban(_current_proxy_url(_linkedin_local.active_proxy))
+                    _linkedin_local.active_proxy = None
+                    _set_linkedin_bootstrapped(False)  # force re-bootstrap with new proxy
+                elif request_proxy:
+                    _proxy_pool.ban(_current_proxy_url(request_proxy))
+                    request_proxy = _proxy_pool.get()  # get next available proxy
+
                 jitter = random.uniform(1, 3)
                 wait = backoff * (2 ** attempt) + jitter
-                # Truncate URL to avoid GitHub Actions masking numeric IDs that look like secrets
                 short_url = url[:80] + "…" if len(url) > 80 else url
                 log.warning(f"429 rate-limit on {short_url} — waiting {wait:.1f}s (attempt {attempt+1}/{max_retries+1})")
                 time.sleep(wait)
                 _domain_last_req[_get_domain(url)] = time.time()
                 continue
 
-            # HTTP 400 on LinkedIn = bad/expired CSRF token → re-bootstrap
             if resp.status_code == 400 and _is_linkedin_url(url):
                 if attempt < max_retries:
                     _set_linkedin_bootstrapped(False)
