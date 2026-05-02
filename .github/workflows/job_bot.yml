@@ -1,14 +1,14 @@
-name: Cybersecurity Jobs Bot V5
+name: Cybersecurity Jobs Bot 
 
 on:
   schedule:
     - cron: "0 */2 * * *"       # Every 2 hours
-  workflow_dispatch:       # Manual trigger
+  workflow_dispatch:
 
 # V17: prevent simultaneous runs (manual + cron) to avoid DB race conditions
 concurrency:
   group: cybersec-bot
-  cancel-in-progress: false   # let the running job finish; queue the next
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -33,13 +33,28 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore jobs database
+      # PRIMARY STORAGE = CACHE
+      - name: Restore jobs database from cache
+        id: cache-db
+        uses: actions/cache@v4
+        with:
+          path: jobs_bot.db
+          key: jobs-db-${{ github.repository }}
+          restore-keys: |
+            jobs-db-
+
+      # FALLBACK = DATA BRANCH
+      - name: Restore jobs database from git branch fallback
+        if: steps.cache-db.outputs.cache-hit != 'true'
         run: |
           git fetch origin data:data || echo "⚠️ data branch not found yet"
-          git checkout data -- jobs_bot.db 2>/dev/null || echo "ℹ️ No existing DB found — starting fresh"
+          git checkout data -- jobs_bot.db 2>/dev/null || echo "ℹ️ No existing DB found in data branch"
+
+      - name: Validate restored database
+        run: |
           if [ -f jobs_bot.db ]; then
             ROWS=$(python3 -c "import sqlite3; c=sqlite3.connect('jobs_bot.db'); print(c.execute('SELECT COUNT(*) FROM seen_jobs').fetchone()[0])" 2>/dev/null || echo "?")
-            echo "✅ jobs_bot.db restored: $(wc -c < jobs_bot.db) bytes | seen_jobs rows: $ROWS"
+            echo "✅ jobs_bot.db ready: $(wc -c < jobs_bot.db) bytes | seen_jobs rows: $ROWS"
           else
             echo "ℹ️ Fresh DB will be created by the bot"
           fi
@@ -71,14 +86,13 @@ jobs:
           JOOBLE_API_KEY:      ${{ secrets.JOOBLE_API_KEY }}
           REED_API_KEY:        ${{ secrets.REED_API_KEY }}
 
-          # Proxy rotation — comma-separated list of proxy URLs (optional)
-          # Format: http://user:pass@host:port,socks5://user:pass@host2:port
-          # Leave the secret empty to use direct connection (no proxies).
+          # Proxy rotation
           PROXIES:             ${{ secrets.PROXIES }}
 
         run: python main.py
 
-      - name: Save jobs database
+      # FALLBACK PERSISTENCE = DATA BRANCH
+      - name: Save jobs database to data branch
         if: always()
         run: |
           if [ ! -f jobs_bot.db ]; then
@@ -86,15 +100,12 @@ jobs:
             exit 0
           fi
 
-          # Save DB before any git operations
           cp jobs_bot.db /tmp/jobs_bot.db
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stash any local changes so checkout doesn't fail
           git stash --include-untracked || true
-
           git fetch origin data:data || true
 
           if git show-ref --verify --quiet refs/heads/data; then
@@ -106,6 +117,7 @@ jobs:
 
           cp /tmp/jobs_bot.db jobs_bot.db
           git add jobs_bot.db
+
           if ! git diff --cached --quiet; then
             git commit -m "jobs_bot.db update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
             git push origin data
