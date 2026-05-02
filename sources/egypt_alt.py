@@ -17,6 +17,7 @@ import re
 import json
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 from models import Job
 from sources.http_utils import get_text, get_json
 
@@ -247,45 +248,75 @@ def _fetch_linkedin_by_governorate():
     return jobs
 
 
-# ── 5. Wuzzuf HTML scrape ────────────────────────────────────
-WUZZUF_QUERIES = [
-    "cybersecurity", "information security", "SOC analyst",
-    "penetration tester", "security engineer", "GRC", "امن معلومات",
+# ── 5. Wuzzuf RSS feed (replaces broken HTML scraper) ────────
+# v37: Switched from HTML scraping (0 jobs — Cloudflare blocked) to RSS feed.
+# RSS feeds are public, no JS challenge, updated frequently.
+WUZZUF_RSS_QUERIES = [
+    "cybersecurity", "information+security", "SOC+analyst",
+    "penetration+tester", "security+engineer", "GRC",
 ]
 
 def _fetch_wuzzuf():
     jobs = []
     seen = set()
-    budget = 30
+    budget = 60  # v37: raised 30→60s for RSS (faster than HTML, more queries)
     t0 = time.time()
-    for q in WUZZUF_QUERIES:
+
+    for q in WUZZUF_RSS_QUERIES:
         if time.time() - t0 > budget:
-            log.warning("egypt_alt/wuzzuf: 30s budget hit — stopping early")
+            log.warning("egypt_alt/wuzzuf: budget hit — stopping early")
             break
-        url  = f"https://wuzzuf.net/search/jobs/?q={urllib.parse.quote(q)}&a=hpb"
-        html = get_text(url, headers=_H)
-        if not html:
+
+        rss_url = f"https://wuzzuf.net/search/jobs/rss?q={q}&country=Egypt"
+        xml_text = get_text(rss_url, headers=_H)
+        if not xml_text:
             continue
-        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if m:
-            try:
-                data  = json.loads(m.group(1))
-                items = (data.get("props", {}).get("pageProps", {})
-                             .get("jobList", {}).get("jobs", []))
-                for item in items:
-                    title   = item.get("title", "").strip()
-                    job_url = "https://wuzzuf.net/jobs/p/" + item.get("slug", "")
-                    company = item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else ""
-                    if not title or job_url in seen or not _is_sec(title):
-                        continue
-                    seen.add(job_url)
-                    jobs.append(Job(
-                        title=title, company=company or "Wuzzuf",
-                        location="Egypt", url=job_url,
-                        source="wuzzuf", tags=["wuzzuf", "egypt"],
-                    ))
-            except Exception:
-                pass
+
+        try:
+            root = ET.fromstring(xml_text)
+            for item in root.findall(".//item"):
+                title   = item.findtext("title", "").strip()
+                job_url = item.findtext("link", "").strip()
+                company_raw = item.findtext("author", "") or item.findtext("{http://purl.org/dc/elements/1.1/}creator", "")
+                company = company_raw.strip() if company_raw else "Wuzzuf"
+                desc    = item.findtext("description", "")
+
+                if not title or not job_url or job_url in seen:
+                    continue
+                if not _is_sec(title) and not _is_sec(desc[:200]):
+                    continue
+
+                seen.add(job_url)
+                jobs.append(Job(
+                    title=title, company=company,
+                    location="Egypt", url=job_url,
+                    source="wuzzuf", tags=["wuzzuf", "egypt"],
+                ))
+        except ET.ParseError:
+            # RSS failed — try JSON fallback from __NEXT_DATA__
+            html = get_text(f"https://wuzzuf.net/search/jobs/?q={q}&a=hpb&country=Egypt", headers=_H)
+            if html:
+                m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+                if m:
+                    try:
+                        data  = json.loads(m.group(1))
+                        items = (data.get("props", {}).get("pageProps", {})
+                                     .get("jobList", {}).get("jobs", []))
+                        for item in items:
+                            t2   = item.get("title", "").strip()
+                            u2   = "https://wuzzuf.net/jobs/p/" + item.get("slug", "")
+                            co   = item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else ""
+                            if not t2 or u2 in seen or not _is_sec(t2):
+                                continue
+                            seen.add(u2)
+                            jobs.append(Job(
+                                title=t2, company=co or "Wuzzuf",
+                                location="Egypt", url=u2,
+                                source="wuzzuf", tags=["wuzzuf", "egypt"],
+                            ))
+                    except Exception:
+                        pass
+
     log.info(f"Wuzzuf Egypt: {len(jobs)} jobs")
     return jobs
 
