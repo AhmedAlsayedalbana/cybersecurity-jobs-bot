@@ -223,7 +223,7 @@ def _fetch_linkedin_eg_security_companies():
     t0 = _time2.time()
     for company_name, slug in LINKEDIN_EG_SECURITY_COMPANIES:
         if _time2.time() - t0 > budget:
-            log.warning("egypt_companies/linkedin: 150s budget hit — stopping early")
+            log.warning("egypt_companies/linkedin: 240s budget hit — stopping early")
             break
         for kw in _COMPANY_KW[:2]:  # 2 keywords max per company to stay under rate limits
             import urllib.parse as _up
