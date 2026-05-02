@@ -1,8 +1,8 @@
-# Cybersecurity Jobs Bot 
+# Cybersecurity Jobs Bot
 
 An automated job aggregator that continuously fetches cybersecurity job postings from 20+ sources across Egypt, the Gulf, and worldwide. It deduplicates, scores, and distributes jobs to a Telegram supergroup via topic-based channels.
 
-Runs on GitHub Actions every **3 hours**.
+Runs on GitHub Actions every **2 hours**.
 
 ---
 
@@ -141,22 +141,36 @@ Apply Now
 ## Deduplication
 
 - **Within a run:** jobs deduped by `title+company` and URL before sending
-- **Across runs:** seen IDs stored in `seen_jobs.json` with timestamps, expire after 7 days
+- **Across runs:** seen IDs stored in `jobs_bot.db` (SQLite) on a separate `data` branch, expire after 7 days
 - **Cross-channel:** each job sent to at most one channel per run
 
 ---
 
 ## Schedule
 
-The bot runs every **3 hours** via GitHub Actions (`cron: '0 */3 * * *'`), plus supports manual dispatch from the Actions tab.
+The bot runs every **2 hours** via GitHub Actions (`cron: '0 */2 * * *'`), plus supports manual dispatch from the Actions tab.
+
+A `concurrency` group prevents simultaneous runs (e.g. manual trigger while the scheduled run is active), eliminating database race conditions.
 
 ---
 
 ## Setup
 
-### Environment Variables
+### 1. Clone & install
 
-| Variable | Description |
+```bash
+git clone https://github.com/your-username/cybersec-bot.git
+cd cybersec-bot
+pip install -r requirements.txt
+```
+
+### 2. Add GitHub Secrets
+
+Go to **Settings → Secrets and variables → Actions → New repository secret** and add the following:
+
+#### Required
+
+| Secret | Description |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | `TELEGRAM_GROUP_ID` | Telegram supergroup ID |
@@ -170,21 +184,51 @@ The bot runs every **3 hours** via GitHub Actions (`cron: '0 */3 * * *'`), plus 
 | `TOPIC_SECENG` | Thread ID for Security Engineering topic |
 | `TOPIC_INTERNSHIPS` | Thread ID for Internships & Entry Level topic |
 | `TOPIC_GULF` | Thread ID for Gulf Jobs topic |
-| `SERPAPI_KEY` | (Optional) Google Jobs via SerpAPI |
-| `RAPIDAPI_KEY` | (Optional) JSearch via RapidAPI |
-| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | (Optional) Adzuna API |
-| `FINDWORK_API_KEY` | (Optional) Findwork API |
-| `JOOBLE_API_KEY` | (Optional) Jooble API |
-| `REED_API_KEY` | (Optional) Reed API |
+
+#### Proxy Rotation (Recommended)
+
+| Secret | Description |
+|---|---|
+| `PROXIES` | Comma-separated list of proxy URLs (see below) |
+
+**Format:**
+```
+http://user:pass@host1:8080,http://user:pass@host2:8080
+```
+
+**Supported protocols:** `http://`, `https://`, `socks5://`
+
+If `PROXIES` is empty or not set, the bot runs on direct connection (no proxies). The proxy pool is fully optional and backward-compatible.
+
+**Recommended provider:** [WebShare](https://www.webshare.io/) — 10 free proxies available, sufficient for low-frequency runs. Paid plan (~$3/month for 100 proxies) recommended for production.
+
+**How proxy rotation works:**
+- The pool rotates between proxies using round-robin
+- If LinkedIn returns a **429** (rate limit) for a specific proxy, that proxy is automatically banned for **5 minutes** then re-admitted
+- If all proxies are banned simultaneously, the bot falls back to direct connection automatically
+- Each LinkedIn bootstrap session is pinned to one proxy to keep cookies consistent
+
+#### Optional API Keys
+
+| Secret | Description |
+|---|---|
+| `SERPAPI_KEY` | Google Jobs via SerpAPI |
+| `RAPIDAPI_KEY` | JSearch via RapidAPI |
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Adzuna API |
+| `FINDWORK_API_KEY` | Findwork API |
+| `JOOBLE_API_KEY` | Jooble API |
+| `REED_API_KEY` | Reed API |
 | `SEED_MODE` | Set `1` on first run to populate seen list without sending |
 
-### First Run (Seed Mode)
+### 3. First Run (Seed Mode)
+
+Populate the deduplication database without sending any messages:
 
 ```bash
 SEED_MODE=1 python main.py
 ```
 
-### Normal Run
+### 4. Normal Run
 
 ```bash
 python main.py
@@ -197,36 +241,61 @@ python main.py
 ```
 ├── main.py                       # Pipeline: fetch → filter → dedup → score → send
 ├── models.py                     # Job dataclass, filter logic
-├── scoring.py                    # Scoring & ranking (updated)
+├── scoring.py                    # Scoring & ranking
 ├── dedup.py                      # Seen-jobs deduplication
 ├── classifier.py                 # Location classifier (Egypt / Gulf / Other)
 ├── telegram_sender.py            # Message formatting & multi-topic sending
 ├── config.py                     # Channels, keywords, environment variables
+├── database.py                   # SQLite DB helpers
 ├── sources/
 │   ├── __init__.py
-│   ├── linkedin.py               # LinkedIn jobs search
+│   ├── http_utils.py             # Shared HTTP helpers + proxy rotation pool
+│   ├── linkedin.py               # LinkedIn jobs search (Guest API)
 │   ├── linkedin_hiring.py        # LinkedIn #Hiring posts
+│   ├── linkedin_posts.py         # LinkedIn posts scraper
+│   ├── linkedin_hr_hunter.py     # LinkedIn HR hunter
+│   ├── linkedin_hr_posts_scraper.py
 │   ├── gov_egypt.py              # Egyptian government / ITIDA / EGCERT
+│   ├── egypt_companies.py        # Egypt company career pages
 │   ├── egypt_alt.py              # Wuzzuf + Egypt alt sources
 │   ├── gov_gulf.py               # Gulf government + enterprise careers
 │   ├── gulf_boards.py            # Gulf job boards
+│   ├── gulf_expanded.py          # Gulf expanded sources
 │   ├── cybersec_boards.py        # CyberSecJobs, Bugcrowd, HackerOne
 │   ├── tech_boards.py            # BuiltIn + Big Tech Greenhouse boards
+│   ├── expanded_sources.py       # Additional aggregated sources
+│   ├── new_sources.py            # Newer source integrations
 │   ├── remotive.py / himalayas.py / jobicy.py / remoteok.py
 │   ├── arbeitnow.py / wwr.py / workingnomads.py
 │   ├── freelance.py              # Mostaql, Khamsat, Truelancer
 │   ├── google_jobs.py            # SerpAPI — Google Jobs
-│   ├── adzuna.py / jooble.py / findwork.py / reed.py / jsearch.py
-│   └── http_utils.py             # Shared HTTP helpers
-└── .github/workflows/job_bot.yml # GitHub Actions — runs every 3 hours
+│   ├── arab_boards.py            # Arab-focused job boards
+│   └── adzuna.py / jooble.py / findwork.py / reed.py / jsearch.py
+└── .github/workflows/job_bot.yml # GitHub Actions — runs every 2 hours
 ```
 
 ---
 
 ## Recent Changes
 
+### v37 — Proxy Rotation + Race Condition Fix
+
 | File | Change |
 |---|---|
-| `.github/workflows/job_bot.yml` | Schedule changed from every hour to **every 3 hours** |
-| `scoring.py` | Egypt boosted to +10, Gulf to +8. SOC / Pentest / Network Security specializations elevated to **+5**. Network Security keywords added (Firewall, Palo Alto, Fortinet, Cisco, Zero Trust, IDS/IPS). |
+| `sources/http_utils.py` | Added `_ProxyPool` class: round-robin proxy rotation, auto-ban on 429 (5-min cooldown), graceful fallback to direct connection when pool is empty |
+| `.github/workflows/job_bot.yml` | Added `concurrency: group` to prevent simultaneous runs and DB race conditions. Added `PROXIES` secret to env block |
+
+### v36
+
+| File | Change |
+|---|---|
+| `sources/linkedin.py` | Increased per-search job limit to 7, raised budget to 15 minutes |
+| `main.py` | Minor pipeline adjustments |
+
+### v35 and earlier
+
+| File | Change |
+|---|---|
+| `.github/workflows/job_bot.yml` | Schedule set to every 2 hours |
+| `scoring.py` | Egypt boosted to +10, Gulf to +8. SOC / Pentest / Network Security elevated to +5. Network Security keywords added |
 | `README.md` | Updated to reflect all current scoring, schedule, and channel configuration |
