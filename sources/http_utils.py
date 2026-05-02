@@ -331,6 +331,20 @@ def _is_gov_url(url: str) -> bool:
     return any(p in url for p in gov_patterns)
 
 
+# v37: Sites that MUST bypass proxy — proxy blocks them or causes 404/403
+# These connect directly regardless of PROXIES setting
+_DIRECT_DOMAINS = [
+    "wuzzuf.net",        # 404 via proxy
+    "remotive.com",      # sometimes blocked via proxy
+    "arbeitnow.com",     # clean public API — no need for proxy
+    "weworkremotely.com", # RSS feed — no need for proxy
+]
+
+def _is_direct_url(url: str) -> bool:
+    """Returns True if the URL should bypass proxies and connect directly."""
+    return any(d in url for d in _DIRECT_DOMAINS)
+
+
 def _request_with_retry(method, url, *, session, params=None, headers=None,
                          json=None, timeout=REQUEST_TIMEOUT,
                          max_retries=4, backoff=5):
@@ -346,8 +360,10 @@ def _request_with_retry(method, url, *, session, params=None, headers=None,
     _throttle_domain(url)
 
     # V17: inject proxy for non-LinkedIn, non-gov requests
+    # v37: also skip proxy for _DIRECT_DOMAINS (wuzzuf, remotive, etc.)
     request_proxy = None
-    if not _is_linkedin_url(url) and not _is_gov_url(url) and _proxy_pool.enabled:
+    if (not _is_linkedin_url(url) and not _is_gov_url(url)
+            and not _is_direct_url(url) and _proxy_pool.enabled):
         request_proxy = _proxy_pool.get()
 
     for attempt in range(max_retries + 1):
