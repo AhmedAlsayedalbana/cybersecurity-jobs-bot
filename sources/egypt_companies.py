@@ -219,7 +219,7 @@ def _fetch_linkedin_eg_security_companies():
     jobs = []
     seen = set()
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    budget = 120  # v33: lowered 240→120s (returns 0 jobs after filter)
+    budget = 240  # v37: raised 120→240s — budget was hitting early due to retry sleep time not counted
     t0 = _time2.time()
     for company_name, slug in LINKEDIN_EG_SECURITY_COMPANIES:
         if _time2.time() - t0 > budget:
