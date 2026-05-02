@@ -151,7 +151,7 @@ LINKEDIN_EG_COMPANIES = [
 def _fetch_egypt_linkedin_companies():
     jobs = []
     seen = set()
-    budget = 300  # v33: raised 150→300s — doubled company list
+    budget = 420  # v37: raised 300→420s — rate-limit retry sleep not counted in elapsed
     t0 = time.time()
 
     for company_name, slug in LINKEDIN_EG_COMPANIES:
@@ -209,7 +209,7 @@ SECURITY_KEYWORDS = [
 def _fetch_linkedin_by_governorate():
     jobs = []
     seen = set()
-    budget = 150  # v33: raised 75→150s — expanded hubs+keywords
+    budget = 240  # v37: raised 150→240s — more coverage for governorates
     t0 = time.time()
 
     for gov in TOP_TECH_HUBS:
