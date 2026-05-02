@@ -147,6 +147,51 @@ def _parse_detail(html: str, job_id: str, search_location: str = "") -> Job | No
     )
 
 
+def _parse_from_list_html(html: str, job_id: str, search_location: str = "") -> Job | None:
+    """
+    v37 FALLBACK: Extract basic job info from the search results list HTML.
+    Used when the detail page fetch fails (rate-limited / network error).
+    Less info than _parse_detail but better than dropping the job entirely.
+    """
+    import re
+
+    # Try to find the specific job block in list HTML
+    # LinkedIn list HTML has li tags with data-entity-urn containing the job ID
+    pattern = rf'data-entity-urn="urn:li:jobPosting:{job_id}".*?</li>'
+    m = re.search(pattern, html, re.DOTALL)
+    block = m.group(0) if m else html
+
+    def clean(text):
+        return re.sub(r'<[^>]+>', '', text).strip()
+
+    # Extract title
+    raw_title = clean(re.search(r'class="[^"]*base-search-card__title[^"]*"[^>]*>(.*?)</[a-z]+>', block, re.DOTALL).group(1)) \
+        if re.search(r'base-search-card__title', block) else ""
+    if not raw_title:
+        raw_title = clean(re.search(r'<h3[^>]*>(.*?)</h3>', block, re.DOTALL).group(1)) \
+            if re.search(r'<h3', block) else ""
+    if not raw_title:
+        return None
+
+    company = clean(re.search(r'class="[^"]*base-search-card__subtitle[^"]*"[^>]*>(.*?)</[a-z]+>', block, re.DOTALL).group(1)) \
+        if re.search(r'base-search-card__subtitle', block) else ""
+
+    location = clean(re.search(r'class="[^"]*job-search-card__location[^"]*"[^>]*>(.*?)</[a-z]+>', block, re.DOTALL).group(1)) \
+        if re.search(r'job-search-card__location', block) else search_location
+
+    return Job(
+        title=match_canonical_title(raw_title),
+        company=company or "Unknown",
+        location=location or search_location or "Not specified",
+        url=f"https://www.linkedin.com/jobs/view/{job_id}/",
+        source="linkedin_hiring",
+        original_source=f"#Hiring — {raw_title}",
+        description="",
+        tags=["#hiring", "linkedin", "hiring-post"],
+        is_remote=bool(re.search(r'remote', block, re.IGNORECASE)),
+    )
+
+
 def fetch_linkedin_hiring() -> list[Job]:
     """
     Fetch cybersecurity hiring posts from LinkedIn.
@@ -214,6 +259,10 @@ def fetch_linkedin_hiring() -> list[Job]:
 
             detail_html = get_text(DETAIL_URL.format(job_id=job_id))
             if not detail_html:
+                # v37 FALLBACK: extract basic info from list HTML instead of skipping
+                job = _parse_from_list_html(html, job_id, search.get("location", ""))
+                if job:
+                    jobs.append(job)
                 continue
 
             job = _parse_detail(detail_html, job_id, search_location=search.get("location", ""))
