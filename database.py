@@ -104,13 +104,27 @@ class JobsDB:
             con.execute("UPDATE jobs SET sent=1 WHERE job_key=?", (job_key,))
 
     def cleanup_old(self, days: int = MEMORY_DAYS):
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        """
+        v37b FIX: Two-tier cleanup.
+        - SENT jobs: keep for 14 days — prevents re-sending old jobs to Telegram
+        - UNSENT jobs (seen but not sent): expire after `days` (3d) — allows
+          re-discovery of jobs that were seen but never sent (e.g. below threshold)
+        """
+        sent_cutoff   = (datetime.now() - timedelta(days=14)).isoformat()
+        unsent_cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         with self._conn() as con:
-            deleted = con.execute(
-                "DELETE FROM jobs WHERE seen_at < ?", (cutoff,)
+            deleted_sent = con.execute(
+                "DELETE FROM jobs WHERE sent=1 AND seen_at < ?", (sent_cutoff,)
             ).rowcount
-        if deleted:
-            log.info(f"[DB] Cleaned {deleted} old job records (>{days}d).")
+            deleted_unsent = con.execute(
+                "DELETE FROM jobs WHERE sent=0 AND seen_at < ?", (unsent_cutoff,)
+            ).rowcount
+        total = deleted_sent + deleted_unsent
+        if total:
+            log.info(
+                f"[DB] Cleaned {total} old records "
+                f"(sent>{14}d: {deleted_sent}, unsent>{days}d: {deleted_unsent})."
+            )
 
     # ── Load/export dict (backward compat with dedup.py) ──────
 
