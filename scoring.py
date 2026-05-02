@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 # WEIGHTS — single place to tune everything
 # =========================================================
 WEIGHTS = {
+    # NOTE: README values may differ from these — this dict is the source of truth.
+    # v37: README said Egypt→+10, Gulf→+8 but actual values are Egypt→+8, Gulf→+6.
+    # TODO: auto-generate README from this dict to keep them in sync.
+
     # Location
     "egypt":         8,
     "gulf":          6,
