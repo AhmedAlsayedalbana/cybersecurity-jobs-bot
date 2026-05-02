@@ -89,7 +89,7 @@ def classify_location(job: Job) -> str:
     # When source is a LinkedIn post scraper, the location IS the search location
     # e.g. location="Egypt" or "Saudi Arabia" — trust it directly
     src = (job.source or "").lower()
-    if src in ("linkedin_posts", "linkedin_hiring", "linkedin_hr"):
+    if src in ("linkedin_posts", "linkedin_hiring", "linkedin_hr", "linkedin_hr_post", "linkedin"):
         if "egypt" in loc or "cairo" in loc or "مصر" in loc:
             return "egypt"
         if any(x in loc for x in ["saudi", "uae", "dubai", "qatar", "kuwait", "bahrain", "oman", "gulf"]):
