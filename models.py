@@ -218,15 +218,15 @@ def is_cybersec_job(job: "Job") -> bool:
 
 def passes_geo_filter(job: "Job") -> bool:
     remote_only_sources = {
-        "remotive", "remoteok", "wwr", "workingnomads", "findwork", "reed",
-        "himalayas", "jobicy", "arbeitnow",
+        # NOTE: Non-LinkedIn sources removed (v36 LinkedIn-only edition)
+        # Keeping empty set to avoid breaking the logic
     }
     if _is_in_egypt(job.location):
         return True
     if job.source in remote_only_sources:
         return True
-    if job.source == "linkedin_hiring":
-        return True  # location unreliable for hiring posts
+    if job.source in ("linkedin_hiring", "linkedin", "linkedin_posts", "linkedin_hr_post"):
+        return True  # LinkedIn: location validated by search query
     if job.source == "linkedin_hr_post":
         return True  # HR posts: location derived from search query, always valid
     if _is_remote(job):
