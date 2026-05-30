@@ -153,11 +153,59 @@ _AKHTABOOT_BOARDS: list[_BoardSpec] = [
     ),
 ]
 
-_DRJOB_BOARDS: list[_BoardSpec] = []
+_DRJOB_BOARDS: list[_BoardSpec] = [
+    _BoardSpec(
+        "https://drjobpro.com/jobs/cybersecurity-jobs/egypt",
+        "DrJobPro", "egypt", "drjobpro",
+        r'href="(https://drjobpro\.com/jobs/[^"]+)"', 20,
+    ),
+    _BoardSpec(
+        "https://drjobpro.com/jobs/cybersecurity-jobs/saudi-arabia",
+        "DrJobPro KSA", "ksa", "drjobpro",
+        r'href="(https://drjobpro\.com/jobs/[^"]+)"', 20,
+    ),
+    _BoardSpec(
+        "https://drjobpro.com/jobs/cybersecurity-jobs/uae",
+        "DrJobPro UAE", "gulf", "drjobpro",
+        r'href="(https://drjobpro\.com/jobs/[^"]+)"', 15,
+    ),
+    _BoardSpec(
+        "https://drjobpro.com/jobs/information-security-jobs/egypt",
+        "DrJobPro InfoSec", "egypt", "drjobpro",
+        r'href="(https://drjobpro\.com/jobs/[^"]+)"', 15,
+    ),
+]
 
-_FORASNA_BOARDS: list[_BoardSpec] = []
+_FORASNA_BOARDS: list[_BoardSpec] = [
+    _BoardSpec(
+        "https://forasna.com/jobs?q=cybersecurity",
+        "Forasna", "egypt", "forasna",
+        r'href="(https://forasna\.com/jobs/[^"?]+)"', 20,
+    ),
+    _BoardSpec(
+        "https://forasna.com/jobs?q=%D8%A3%D9%85%D9%86+%D9%85%D8%B9%D9%84%D9%88%D9%85%D8%A7%D8%AA",
+        "Forasna Arabic", "egypt", "forasna",
+        r'href="(https://forasna\.com/jobs/[^"?]+)"', 15,
+    ),
+]
 
-_TANQEEB_BOARDS: list[_BoardSpec] = []
+_TANQEEB_BOARDS: list[_BoardSpec] = [
+    _BoardSpec(
+        "https://tanqeeb.com/jobs?q=cybersecurity&country=SA",
+        "Tanqeeb KSA", "ksa", "tanqeeb",
+        r'href="(https://tanqeeb\.com/job/[^"]+)"', 20,
+    ),
+    _BoardSpec(
+        "https://tanqeeb.com/jobs?q=cybersecurity&country=AE",
+        "Tanqeeb UAE", "gulf", "tanqeeb",
+        r'href="(https://tanqeeb\.com/job/[^"]+)"', 15,
+    ),
+    _BoardSpec(
+        "https://tanqeeb.com/jobs?q=security+engineer&country=SA",
+        "Tanqeeb SEC", "ksa", "tanqeeb",
+        r'href="(https://tanqeeb\.com/job/[^"]+)"', 15,
+    ),
+]
 
 
 def _scrape_board(spec: _BoardSpec, seen_urls: set[str]) -> list[Job]:
