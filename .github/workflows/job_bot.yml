@@ -1,0 +1,175 @@
+name: Cybersecurity Jobs Bot v45-complete
+
+on:
+  schedule:
+    - cron: "0 */5 * * *"   # ✅ كل 5 ساعات (بدلاً من 4)
+  workflow_dispatch:
+    inputs:
+      seed_mode:
+        description: "SEED MODE — marks seen, no messages sent"
+        required: false
+        default: "false"
+
+concurrency:
+  group: cybersec-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            "requests>=2.31.0" \
+            "urllib3>=2.0.0" \
+            "aiohttp>=3.10.0" \
+            "scikit-learn>=1.5.0" \
+            "joblib>=1.4.0" \
+            "scipy>=1.11.0"
+
+      - name: Restore jobs database from data branch
+        run: |
+          git fetch origin data:data || echo "data branch not found yet"
+          git checkout data -- jobs_bot.db 2>/dev/null || echo "No existing DB in data branch"
+
+      - name: Validate restored database
+        run: |
+          if [ -f jobs_bot.db ]; then
+            ROWS=$(python3 -c "
+          import sqlite3
+          try:
+            c = sqlite3.connect('jobs_bot.db')
+            n    = c.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
+            sent = c.execute('SELECT COUNT(*) FROM jobs WHERE sent=1').fetchone()[0]
+            print(f'{n} total / {sent} sent')
+          except Exception as e:
+            print(f'? ({e})')
+          " 2>/dev/null || echo "?")
+            SIZE=$(wc -c < jobs_bot.db)
+            echo "jobs_bot.db: ${SIZE} bytes | rows: ${ROWS}"
+            if [ "$SIZE" -lt 1000 ]; then
+              echo "DB too small — deleting to force fresh start"
+              rm jobs_bot.db
+            fi
+          else
+            echo "No DB found — fresh start"
+          fi
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_GROUP_ID:     ${{ secrets.TELEGRAM_GROUP_ID }}
+
+          TOPIC_EGYPT:           ${{ secrets.TOPIC_EGYPT }}
+          TOPIC_REMOTE:          ${{ secrets.TOPIC_REMOTE }}
+          TOPIC_PENTEST:         ${{ secrets.TOPIC_PENTEST }}
+          TOPIC_SOC:             ${{ secrets.TOPIC_SOC }}
+          TOPIC_APPSEC:          ${{ secrets.TOPIC_APPSEC }}
+          TOPIC_CLOUDSEC:        ${{ secrets.TOPIC_CLOUDSEC }}
+          TOPIC_GRC:             ${{ secrets.TOPIC_GRC }}
+          TOPIC_SECENG:          ${{ secrets.TOPIC_SECENG }}
+          TOPIC_GULF:            ${{ secrets.TOPIC_GULF }}
+          TOPIC_INTERNSHIPS:     ${{ secrets.TOPIC_INTERNSHIPS }}
+          TOPIC_NETWORKSEC:      ${{ secrets.TOPIC_NETWORKSEC }}
+
+          SERPAPI_KEY:           ${{ secrets.SERPAPI_KEY }}
+          GOOGLE_CSE_API_KEY:    ${{ secrets.GOOGLE_CSE_API_KEY }}
+          GOOGLE_CSE_CX:         ${{ secrets.GOOGLE_CSE_CX }}
+          RAPIDAPI_KEY:          ${{ secrets.RAPIDAPI_KEY }}
+          ADZUNA_APP_ID:         ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY:        ${{ secrets.ADZUNA_APP_KEY }}
+          FINDWORK_API_KEY:      ${{ secrets.FINDWORK_API_KEY }}
+          JOOBLE_API_KEY:        ${{ secrets.JOOBLE_API_KEY }}
+          REED_API_KEY:          ${{ secrets.REED_API_KEY }}
+          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:        ${{ secrets.OPENAI_API_KEY }}
+
+          LI_AT:                 ${{ secrets.LI_AT }}
+          PROXIES:               ${{ secrets.PROXIES }}
+
+          ENABLE_SOURCE_GREENHOUSE_EXPANDED: "true"
+          ENABLE_SOURCE_GULF_MONSTER:        "true"
+          ENABLE_SOURCE_JSEARCH_ENHANCED:    "true"
+          GREENHOUSE_EXPANDED_TIMEOUT_SEC:   "480"
+          JSEARCH_PAGES_LOCAL:               "1"
+          JSEARCH_PAGES_REMOTE:              "1"
+
+          ENTRY_LEVEL_TARGET_RATIO:      "0.60"
+          LINKEDIN_POOL_CAP_RATIO:       "0.50"
+          NON_LINKEDIN_POOL_FLOOR_RATIO: "0.30"
+          MAX_JOBS_PER_RUN:              "260"
+          MAX_JOB_AGE_DAYS:              "7"
+
+          # ✅ كل قناة تستقبل حتى 10 وظائف لكل run
+          MAX_JOBS_PER_CHANNEL:          "10"
+          TARGET_JOBS_PER_CHANNEL:       "10"
+
+          # ✅ نافذة dedup = 5 ساعات تتزامن مع جدول الـ cron
+          DAILY_SEND_HOURS:              "5"
+          GLOBAL_DEDUP_HOURS:            "5"
+
+          LLM_CLASSIFIER_ENABLED:  "true"
+          LLM_CLASSIFIER_PROVIDER: "auto"
+
+          SEED_MODE: ${{ github.event.inputs.seed_mode || 'false' }}
+
+          ENABLE_SOURCE_LINKEDIN_EXTENDED: "true"
+          LINKEDIN_EXTENDED_MAX_JOBS:      "10"
+          ENABLE_JINA_SCRAPER: "true"
+
+        run: python main.py
+
+      - name: Save jobs database to data branch
+        if: always()
+        run: |
+          if [ ! -f jobs_bot.db ]; then
+            echo "No jobs_bot.db to save"
+            exit 0
+          fi
+
+          cp jobs_bot.db /tmp/jobs_bot.db
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+          git stash --include-untracked || true
+          git fetch origin data:data || true
+
+          if git show-ref --verify --quiet refs/heads/data; then
+            git checkout data
+          else
+            git checkout --orphan data
+            git rm -rf . || true
+          fi
+
+          cp /tmp/jobs_bot.db jobs_bot.db
+          git add jobs_bot.db
+
+          if ! git diff --cached --quiet; then
+            git commit -m "jobs_bot.db update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+            git push origin data
+            echo "Saved to data branch"
+          else
+            echo "No DB changes"
+          fi

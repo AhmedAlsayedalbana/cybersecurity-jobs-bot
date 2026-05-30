@@ -1,0 +1,513 @@
+"""
+Job scoring and ranking system � V32
+
+Built on V31, merges the best ideas from V32-Enterprise:
+   phrase_match()        � flexible regex: handles "cloud-security", "cloud/security", spaces
+   Bayesian freshness    � 6 * exp(-age_hours / 72), smooth decay instead of hard steps
+   diversity_rerank()    � prevents one company/title dominating the feed
+   WEIGHTS dict          � single place to tune all numbers
+   Context weighting     � title �2, tags �1.5, description �1
+   Entry-level gate      � boost only when score >= ENTRY_MIN_SCORE
+   score_job() returns   � (int, list[str]) for full explainability
+   score_job_int()       � backward-compat wrapper for main.py / telegram_sender.py
+
+NOT merged from V32-Enterprise (would break the project):
+   Job dataclass         � project uses models.Job with extra fields
+   classify_location()   � project uses classifier.py with full Arabic patterns
+   Remote double-add     � V32 added +5 AND +2 regardless of location logic
+   seen_duplicates       � belongs in dedup.py, not the scorer
+"""
+
+from models import Job, _flatten_tags
+from job_intelligence import (
+    classify_domain,
+    classify_geo,
+    classify_level,
+    is_linkedin_job,
+    is_remote_job,
+)
+from datetime import datetime
+from typing import List, Tuple
+import logging
+import math
+import re
+import config
+
+logger = logging.getLogger(__name__)
+
+# =========================================================
+# WEIGHTS � single place to tune everything
+# =========================================================
+WEIGHTS = {
+    # NOTE: README values may differ from these � this dict is the source of truth.
+    # v37: README said Egypt+10, Gulf+8 but actual values are Egypt+8, Gulf+6.
+    # TODO: auto-generate README from this dict to keep them in sync.
+
+    # Location
+    "egypt":         10,
+    "ksa":           8,
+    "gulf_other":    6,
+    "remote":        4,
+    "global":        0,
+    "hybrid_bonus":  1,
+
+    # Tech
+    "tech_cap":      10,
+    "tech_global":   0.5,   # multiplier for global-onsite jobs
+
+    # Freshness � Bayesian decay: 6 * exp(-age_h / 72)
+    "fresh_peak":    6,
+    "fresh_halflife": 48,   # v32: tighter decay � 48h halflife (was 72h)
+    "fresh_floor":   -8,    # v32: stronger old-job penalty (was -4)
+
+    # Source
+    "src_local":     3,
+    "src_cybersec":  1,
+    "src_direct":    1,
+    "src_li_reg":    1,
+
+    # Company
+    "premium_co":    2,
+
+    # Entry-level
+    "entry_boost":   4,
+    "entry_min":     12,    # v38: raised from 812 � intern jobs need real cyber tech match before getting boost
+    "specialty_boost": 1,
+
+    # Penalties
+    "non_cyber":    -20,
+    "clearance":    -15,
+    "weak_title":    -8,
+    "support_gen":   -4,
+    "guard_title":   -8,
+    "short_title":   -8,
+    "no_url":       -10,
+    "global_onsite": -4,
+    "bad_geo":       -4,
+
+    # Diversity rerank
+    "div_company":   4,     # penalty per company after 2 appearances
+    "div_title":     4,     # penalty per title after 2 appearances
+}
+
+# =========================================================
+# SOURCE TIERS
+# =========================================================
+_SOURCE_LOCAL = {
+    "wuzzuf", "forasna", "drjobpro", "akhtaboot", "bayt", "naukrigulf",
+    "tanqeeb", "arab_boards", "stc_ksa", "tdra_uae", "etisalat_uae",
+    "iti", "depi", "nti", "linkedin_egypt_companies", "linkedin_gulf_companies",
+}
+_SOURCE_CYBERSEC = {
+    "bugcrowd", "hackerone", "infosec_jobs", "infosec_jobs.com",
+    "cybersecjobs", "clearancejobs", "isaca", "isc2", "cybersec_rss",
+}
+_SOURCE_DIRECT = {
+    "greenhouse_expanded", "greenhouse_cybersec", "lever_expanded",
+}
+_PREMIUM_COMPANIES = {
+    "crowdstrike", "palo alto networks", "sentinelone", "zscaler",
+    "cloudflare", "okta", "datadog", "rapid7", "tenable", "qualys",
+    "abnormal security", "huntress", "axonius", "wiz", "snyk",
+    "recorded future", "darktrace", "vectra ai", "illumio",
+    "google", "microsoft", "amazon", "meta", "apple",
+}
+
+# =========================================================
+# DISQUALIFIER LISTS
+# =========================================================
+_CLEARANCE_REQUIRED = [
+    "us clearance", "uk sc clearance", "nato clearance",
+    "security clearance required", "dv clearance", "strap clearance",
+    "active clearance", "ts/sci", "top secret",
+    "must be uk citizen", "must be us citizen",
+    "must hold uk", "must hold us",
+    "eligible to work in the uk", "eligible to work in the us",
+    "right to work in uk", "right to work in us",
+]
+_WEAK_SECURITY_TITLES = [
+    "it support", "helpdesk", "help desk", "desktop support",
+    "system administrator", "sysadmin", "network administrator",
+    "database administrator", "dba", "data entry",
+    "sales engineer", "pre-sales", "presales",
+    "noc engineer", "noc analyst", "network operations",
+    "it manager", "it director", "infrastructure engineer",
+    "devops engineer", "site reliability", "sre",
+    "data analyst", "business analyst", "project manager",
+    "scrum master", "agile coach",
+]
+_NON_CYBER_TITLES = [
+    "physical security", "security guard", "security officer",
+    "building security", "event security", "loss prevention",
+    "security supervisor",
+]
+_IRRELEVANT_GEO = [
+    "london", "new york", "san francisco", "toronto", "sydney",
+    "berlin", "paris", "singapore", "amsterdam", "stockholm",
+]
+
+# =========================================================
+# TECH KEYWORD MAP
+# =========================================================
+TECH_MAP = {
+    # SOC / Blue Team
+    "soc analyst": 6,       "soc engineer": 6,      "security operations center": 5,
+    "soc": 3,               "blue team": 4,          "threat analyst": 4,
+    "siem": 3,              "splunk": 3,              "qradar": 3,         "sentinel": 3,
+    "incident response": 4, "threat hunting": 5,     "threat hunter": 5,
+    "dfir": 5,              "digital forensics": 4,  "malware analyst": 4,
+    "detection engineer": 5,
+    # Pentest / Red Team
+    "penetration tester": 6, "penetration testing": 6, "pentest": 5,
+    "red team": 5,           "offensive security": 4,
+    "ethical hacker": 4,     "bug bounty": 4,
+    "oscp": 3,               "ceh": 2,                "exploit": 3,
+    # Network Security
+    "network security engineer": 6, "network security analyst": 6,
+    "firewall engineer": 5,         "firewall administrator": 4,
+    "intrusion detection": 4,       "intrusion prevention": 4,
+    "ids": 3,     "ips": 3,         "zero trust": 3,
+    "palo alto": 3, "fortinet": 3,  "cisco security": 3,
+    "network defense": 4, "waf engineer": 4, "ddos": 3,
+    # Cloud Security
+    "cloud security": 5, "aws security": 5, "azure security": 5,
+    "kubernetes security": 4, "container security": 3, "cspm": 3,
+    # AppSec
+    "appsec": 4, "application security": 4, "devsecops": 4,
+    "sast": 3,   "dast": 3,                 "owasp": 3,
+    # GRC
+    "grc": 4,       "iso 27001": 3,     "compliance": 2,
+    "nist": 2,      "risk analyst": 3,  "security auditor": 3,
+    # General
+    "information security analyst": 5, "information security engineer": 5,
+    "information security": 3, "cybersecurity analyst": 5, "cybersecurity specialist": 4,
+    "vulnerability": 2, "ciso": 2, "security architect": 4, "cryptograph": 2,
+    # v44: broad title terms missing from TECH_MAP � cause score=10 for valid jobs with empty desc
+    "cybersecurity": 3, "cyber security": 3,
+    "network security": 3,
+    "security engineer": 3, "security manager": 2, "security consultant": 2,
+    "security specialist": 2, "security analyst": 3,
+}
+
+_ENTRY_KW = [
+    "junior", "intern", "internship", "trainee",
+    "fresh grad", "fresh graduate", "entry level", "entry-level",
+    "graduate program", "0-1 years", "0-2 years", "1-2 years",
+]
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def phrase_match(phrase: str, text: str) -> bool:
+    """
+    Flexible word-boundary match from V32-Enterprise.
+    Handles: 'cloud security', 'cloud-security', 'cloud/security'.
+    Prevents false positives like 'ids' matching inside 'considers'.
+    """
+    try:
+        escaped = re.escape(phrase).replace(r"\ ", r"[\s\-_/]*")
+        return bool(re.search(rf"\b{escaped}\b", text))
+    except Exception:
+        return phrase in text
+
+
+def _freshness_score(posted_date) -> Tuple[int, str]:
+    """
+    Freshness scoring � smooth Bayesian decay + gradual stale penalties (V43 style).
+
+    Age  score:
+      0�6h    +6  (brand new)
+      1d      +4
+      2d      +2
+      3d      +1
+      5d       0  (neutral)
+      7d      -4  (stale � reduces below threshold for borderline jobs)
+      10d+    -8  (very stale � effectively blocked)
+
+    Jobs with no posted_date get 0 (neutral � unknown age).
+    This gradual approach preserves high-scoring "golden" jobs even if slightly old,
+    rather than hard-blocking everything past MAX_JOB_AGE_DAYS.
+    """
+    if not posted_date:
+        return 0, ""
+    age_h = (datetime.now() - posted_date).total_seconds() / 3600
+
+    # Bayesian decay component (positive freshness bonus)
+    decay_raw = WEIGHTS["fresh_peak"] * math.exp(-age_h / WEIGHTS["fresh_halflife"])
+    decay_pts = round(decay_raw)  # +6  +0 as age increases
+
+    # Gradual stale penalty � kicks in after 5 days (V43 flexible approach)
+    if age_h > 10 * 24:       # > 10 days
+        penalty = WEIGHTS["fresh_floor"]   # -8
+    elif age_h > 7 * 24:      # > 7 days
+        penalty = -6
+    elif age_h > 5 * 24:      # > 5 days
+        penalty = -4
+    else:
+        penalty = 0
+
+    score = decay_pts + penalty
+
+    # Enforce fresh_floor as the absolute minimum � old jobs never score below this
+    score = max(score, WEIGHTS["fresh_floor"])
+
+    if score > 0:
+        label = f"+{score} fresh ({int(age_h)}h old)"
+    elif score < 0:
+        label = f"{score} stale ({int(age_h//24)}d old)"
+    else:
+        label = ""
+
+    return score, label
+
+
+def _extract_ml_prob(tags) -> float:
+    raw = _flatten_tags(tags).lower()
+    m = re.search(r"ml_prob:(0(?:\.\d+)?|1(?:\.0+)?)", raw)
+    if not m:
+        return -1.0
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return -1.0
+
+
+# =========================================================
+# MAIN SCORER
+# =========================================================
+
+def score_job(job: Job) -> Tuple[int, List[str]]:
+    """
+    Score a job. Returns (score: int, reasons: list[str]).
+
+    Usage:
+        score, reasons = score_job(job)
+        # or for just the number:
+        score = score_job_int(job)
+    """
+    score   = 0
+    reasons = []
+
+    title = (job.title or "").lower()
+    desc  = (job.description or "").lower()
+    tags  = _flatten_tags(job.tags).lower()
+
+    #  0. Hard disqualifiers 
+    if any(phrase_match(k, title) for k in _NON_CYBER_TITLES):
+        has_cyber = any(phrase_match(k, title) for k in
+                        ["cyber", "information", "infosec", "it", "digital"])
+        if not has_cyber:
+            score += WEIGHTS["non_cyber"]
+            reasons.append(f"{WEIGHTS['non_cyber']} non-cyber title")
+
+    quick_scan = title + " " + desc[:200] + " " + tags
+    if any(k in quick_scan for k in _CLEARANCE_REQUIRED):
+        score += WEIGHTS["clearance"]
+        reasons.append(f"{WEIGHTS['clearance']} clearance required")
+
+    #  1. Location 
+    geo_type = classify_geo(job)
+    is_remote = is_remote_job(job)
+
+    if geo_type == "egypt":
+        score += WEIGHTS["egypt"]
+        reasons.append(f"+{WEIGHTS['egypt']} Egypt")
+    elif geo_type == "ksa":
+        score += WEIGHTS["ksa"]
+        reasons.append(f"+{WEIGHTS['ksa']} Saudi")
+    elif geo_type == "gulf_other":
+        score += WEIGHTS["gulf_other"]
+        reasons.append(f"+{WEIGHTS['gulf_other']} Gulf")
+    elif geo_type == "remote" or is_remote:
+        score += WEIGHTS["remote"]
+        reasons.append(f"+{WEIGHTS['remote']} remote")
+    else:
+        score += WEIGHTS["global"]
+        reasons.append(f"+{WEIGHTS['global']} global onsite")
+
+    # Hybrid only when Egypt/Gulf + confirmed remote option
+    if geo_type in ("egypt", "ksa", "gulf_other") and is_remote:
+        score += WEIGHTS["hybrid_bonus"]
+        reasons.append(f"+{WEIGHTS['hybrid_bonus']} hybrid")
+
+    #  2. Tech skills � context-weighted 
+    tech_cap   = WEIGHTS["tech_cap"]
+    tech_score = 0.0
+    matched    = []
+
+    for kw, val in TECH_MAP.items():
+        if tech_score >= tech_cap:
+            break
+        if phrase_match(kw, title):       # title � highest signal
+            tech_score += val * 2
+            matched.append(kw)
+        elif phrase_match(kw, tags):      # tags � medium signal
+            tech_score += val * 1.5
+            matched.append(kw)
+        elif phrase_match(kw, desc):      # description � base signal
+            tech_score += val
+
+    raw_tech = min(int(tech_score), tech_cap)
+
+    if geo_type == "global" and not is_remote:
+        credit = int(raw_tech * WEIGHTS["tech_global"])
+        score += credit
+        if raw_tech:
+            reasons.append(f"+{credit} tech (global penalty, raw={raw_tech})")
+    else:
+        score += raw_tech
+        if raw_tech:
+            top = ", ".join(matched[:3])
+            reasons.append(f"+{raw_tech} tech ({top})" if top else f"+{raw_tech} tech")
+
+    #  2b. Local ML confidence boost (hybrid ranking) 
+    ml_prob = _extract_ml_prob(job.tags)
+    if ml_prob >= config.ML_MIN_PROB:
+        ml_bonus = min(4, max(1, int(round((ml_prob - config.ML_MIN_PROB) * 10))))
+        score += ml_bonus
+        reasons.append(f"+{ml_bonus} ml ({ml_prob:.2f})")
+
+    domain = classify_domain(job)
+    if domain in {"soc", "pentest"}:
+        score += WEIGHTS["specialty_boost"]
+        reasons.append(f"+{WEIGHTS['specialty_boost']} {domain}")
+
+    #  3. Freshness � Bayesian decay 
+    fresh_pts, fresh_label = _freshness_score(job.posted_date)
+    score += fresh_pts
+    if fresh_label:
+        reasons.append(fresh_label)
+
+    #  4. Source quality 
+    src = (job.source or "").lower()
+    if src in _SOURCE_LOCAL:
+        score += WEIGHTS["src_local"]
+        reasons.append(f"+{WEIGHTS['src_local']} local source")
+    elif src in _SOURCE_CYBERSEC:
+        score += WEIGHTS["src_cybersec"]
+        reasons.append(f"+{WEIGHTS['src_cybersec']} cybersec board")
+    elif src in _SOURCE_DIRECT:
+        score += WEIGHTS["src_direct"]
+        reasons.append(f"+{WEIGHTS['src_direct']} direct page")
+    elif is_linkedin_job(job):
+        score += WEIGHTS["src_li_reg"]
+        reasons.append(f"+{WEIGHTS['src_li_reg']} linkedin source")
+
+    company_lower = (job.company or "").lower()
+    if any(c in company_lower for c in _PREMIUM_COMPANIES):
+        score += WEIGHTS["premium_co"]
+        reasons.append(f"+{WEIGHTS['premium_co']} premium company")
+
+    #  5. Entry-level CONDITIONAL 
+    if classify_level(job) == "entry":
+        if score >= WEIGHTS["entry_min"]:
+            score += WEIGHTS["entry_boost"]
+            reasons.append(f"+{WEIGHTS['entry_boost']} entry-level")
+        else:
+            reasons.append("0 entry skipped (score too low)")
+
+    #  6. Penalties 
+    if any(phrase_match(k, title) for k in _WEAK_SECURITY_TITLES):
+        score += WEIGHTS["weak_title"]
+        reasons.append(f"{WEIGHTS['weak_title']} weak title")
+
+    if "support" in title and not any(
+        phrase_match(k, title) for k in ["security", "cyber", "soc", "analyst"]
+    ):
+        score += WEIGHTS["support_gen"]
+        reasons.append(f"{WEIGHTS['support_gen']} generic support")
+
+    if any(phrase_match(k, title) for k in ["guard", "officer"]) and \
+       not any(phrase_match(k, title) for k in
+               ["security engineer", "security analyst", "cyber", "information security"]):
+        score += WEIGHTS["guard_title"]
+        reasons.append(f"{WEIGHTS['guard_title']} guard/officer title")
+
+    if len(job.title) < 5:
+        score += WEIGHTS["short_title"]
+        reasons.append(f"{WEIGHTS['short_title']} title too short")
+
+    if not job.url:
+        score += WEIGHTS["no_url"]
+        reasons.append(f"{WEIGHTS['no_url']} no URL")
+
+    if geo_type == "global" and not is_remote:
+        score += WEIGHTS["global_onsite"]
+        reasons.append(f"{WEIGHTS['global_onsite']} global onsite")
+
+    if any(sig in (job.location or "").lower() for sig in _IRRELEVANT_GEO):
+        if not is_remote:
+            score += WEIGHTS["bad_geo"]
+            reasons.append(f"{WEIGHTS['bad_geo']} bad geo")
+
+    return score, reasons
+
+
+# =========================================================
+# BACKWARD-COMPAT WRAPPER
+# =========================================================
+
+def score_job_int(job: Job) -> int:
+    """Drop-in replacement for the old score_job()  int."""
+    s, _ = score_job(job)
+    return s
+
+
+# =========================================================
+# DIVERSITY RERANK  (from V32-Enterprise)
+# =========================================================
+
+def diversity_rerank(
+    rows: List[Tuple],
+    max_per_company: int = 2,
+    max_per_title: int   = 2,
+) -> List[Tuple]:
+    """
+    Prevents one company or one role from flooding the feed.
+    Applies a soft penalty (not hard filter) so legitimate
+    top-scoring duplicates don't vanish � they just rank lower.
+
+    Input:  [(job, score, reasons), ...]  � already sorted descending
+    Output: re-sorted list after diversity penalty
+    """
+    company_count: dict = {}
+    title_count:   dict = {}
+    result         = []
+
+    for item in rows:
+        job   = item[0]
+        score = item[1]
+        extra = item[2:]   # handles (job, score) or (job, score, reasons)
+
+        c = (job.company or "unknown").lower().strip()
+        t = (job.title   or "").lower().strip()
+
+        penalty = 0
+        if company_count.get(c, 0) >= max_per_company:
+            penalty += WEIGHTS["div_company"]
+        if title_count.get(t, 0) >= max_per_title:
+            penalty += WEIGHTS["div_title"]
+
+        company_count[c] = company_count.get(c, 0) + 1
+        title_count[t]   = title_count.get(t,   0) + 1
+
+        result.append((job, score - penalty) + extra)
+
+    result.sort(key=lambda x: -x[1])
+    return result
+
+
+# =========================================================
+# LOCATION PRIORITY SORT  (used by main.py)
+# =========================================================
+
+def sort_by_location_priority(jobs_with_scores: list) -> list:
+    """Sort (job, score) pairs: Egypt  Gulf  Rest, then by score within each."""
+    def priority(item):
+        job, score = item[0], item[1]
+        geo = classify_geo(job)
+        rank = {"egypt": 0, "ksa": 1, "gulf_other": 2, "remote": 3, "global": 4}.get(geo, 4)
+        return (rank, -score)
+    return sorted(jobs_with_scores, key=priority)
