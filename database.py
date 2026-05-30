@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 DB_PATH     = "jobs_bot.db"
 MEMORY_DAYS = int(os.environ.get("MEMORY_DAYS", "5"))
 DAILY_SEND_HOURS = int(os.environ.get("DAILY_SEND_HOURS", "24"))
+# How long to keep UNSENT jobs before expiring them from tracking.
+# After this many days, an unsent job is forgotten and can re-appear as new.
+# If the job's content changes before expiry, seen_at is reset automatically.
+UNSENT_EXPIRY_DAYS = int(os.environ.get("UNSENT_EXPIRY_DAYS", "2"))
 
 
 class JobsDB:
@@ -61,7 +65,8 @@ class JobsDB:
                     seen_at     TEXT    NOT NULL,
                     sent        INTEGER DEFAULT 0,
                     geo_sent_at TEXT,
-                    topic_sent_at TEXT
+                    topic_sent_at TEXT,
+                    desc_hash   TEXT    DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_key    ON jobs(job_key);
                 CREATE INDEX IF NOT EXISTS idx_jobs_url    ON jobs(url_id);
@@ -182,6 +187,7 @@ class JobsDB:
                 ("source_key", "TEXT"),
                 ("content_type", "TEXT DEFAULT 'job_listing'"),
                 ("origin_priority", "INTEGER DEFAULT 999"),
+                ("desc_hash", "TEXT DEFAULT ''"),
             ):
                 try:
                     con.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
@@ -384,19 +390,28 @@ class JobsDB:
                   title: str = "", company: str = "", location: str = "",
                   source: str = "", sent: bool = False,
                   source_key: str = "", content_type: str = "job_listing",
-                  origin_priority: int = 999):
+                  origin_priority: int = 999, desc_hash: str = ""):
         now = datetime.now().isoformat()
         with self._conn() as con:
             con.execute("""
                 INSERT INTO jobs(
-                    job_key, url_id, fingerprint, title, company, location,
+                    job_key, url_id, fingerprint, desc_hash, title, company, location,
                     source, source_key, content_type, origin_priority, seen_at, sent
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(job_key) DO UPDATE SET
-                    seen_at     = excluded.seen_at,
+                    -- Only reset seen_at when the job content changed (re-post/update).
+                    -- This ensures the 2-day unsent expiry is based on FIRST seen time.
+                    seen_at = CASE
+                        WHEN excluded.desc_hash != ''
+                         AND jobs.desc_hash != ''
+                         AND excluded.desc_hash != jobs.desc_hash
+                        THEN excluded.seen_at
+                        ELSE jobs.seen_at
+                    END,
                     sent        = CASE WHEN jobs.sent = 1 THEN 1 ELSE excluded.sent END,
                     fingerprint = COALESCE(excluded.fingerprint, jobs.fingerprint),
+                    desc_hash   = COALESCE(NULLIF(excluded.desc_hash, ''), jobs.desc_hash),
                     title       = COALESCE(excluded.title, jobs.title),
                     company     = COALESCE(excluded.company, jobs.company),
                     location    = COALESCE(excluded.location, jobs.location),
@@ -408,6 +423,7 @@ class JobsDB:
                 job_key,
                 url_id or "",
                 fingerprint or "",
+                desc_hash or "",
                 title,
                 company,
                 location,
@@ -468,10 +484,11 @@ class JobsDB:
             """, (job_key, url_id or "", dedup_key or "", channel_key, lane, now))
 
     def cleanup_old(self, days: int = None):
-        days = days or MEMORY_DAYS
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        # Unsent jobs expire after UNSENT_EXPIRY_DAYS (default 2 days).
+        # Sent jobs are kept longer for analytics / avoid-resend dedup.
+        unsent_cutoff = (datetime.now() - timedelta(days=UNSENT_EXPIRY_DAYS)).isoformat()
         with self._conn() as con:
-            result = con.execute("DELETE FROM jobs WHERE seen_at < ? AND sent = 0", (cutoff,))
+            result = con.execute("DELETE FROM jobs WHERE seen_at < ? AND sent = 0", (unsent_cutoff,))
             deleted_unsent = result.rowcount
             # Keep sent jobs longer (30 days) for analytics
             result2 = con.execute(
