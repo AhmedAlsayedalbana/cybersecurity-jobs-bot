@@ -11,6 +11,7 @@ IMPROVEMENTS v41:
 import json
 import os
 import re
+import hashlib
 import logging
 from datetime import datetime
 from models import Job
@@ -63,6 +64,16 @@ def _job_fingerprint(job: Job) -> str:
     company = _normalize(job.company)
     city    = _normalize(job.location.split(",")[0]) if job.location else ""
     return f"{title}||{company}||{city}"
+
+
+def _desc_hash(job) -> str:
+    """Short content hash of the job description — used to detect re-posts/updates.
+    If the description changes, mark_seen() will reset seen_at so the job is
+    re-eligible after the 2-day unsent expiry window."""
+    desc = (getattr(job, "description", None) or "").strip()[:2000]
+    if not desc:
+        return ""
+    return hashlib.md5(desc.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 def _fuzzy_match(fp1: str, fp2: str, threshold: float = 0.72) -> bool:
@@ -168,10 +179,12 @@ def mark_as_seen(jobs: list, seen_dict: dict) -> dict:
     now_iso = datetime.now().isoformat()
     for job in jobs:
         fp = _job_fingerprint(job)
+        dh = _desc_hash(job)
         db.mark_seen(
             job_key=job.unique_id,
             url_id=getattr(job, "url_id", ""),
             fingerprint=fp,
+            desc_hash=dh,
             title=job.title, company=job.company,
             location=job.location, source=job.source,
             sent=False,
