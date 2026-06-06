@@ -488,7 +488,10 @@ MAX_JOBS_PER_RUN = int(os.getenv("MAX_JOBS_PER_RUN", "260"))
 MAX_JOB_AGE_DAYS = int(os.getenv("MAX_JOB_AGE_DAYS", "2"))   # ← v50: hard 2-day stale gate
 MAX_JOB_AGE_HOURS = int(os.getenv("MAX_JOB_AGE_HOURS", str(MAX_JOB_AGE_DAYS * 24)))
 LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS", "120"))
-LINKEDIN_TOTAL_BUDGET_SECONDS = int(os.getenv("LINKEDIN_TOTAL_BUDGET_SECONDS", "180"))
+# ✅ v47: Raised from 180 → 240s — the full query plan (CORE+GULF+EXPANSION) needs
+# ~118s for page fetches + ~50s for detail pages at 0.55 RPS, so 180s was consistently
+# being hit. 240s provides enough headroom while still capping runaway sessions.
+LINKEDIN_TOTAL_BUDGET_SECONDS = int(os.getenv("LINKEDIN_TOTAL_BUDGET_SECONDS", "240"))
 LINKEDIN_RATE_MAX_RPS = float(os.getenv("LINKEDIN_RATE_MAX_RPS", "0.55"))
 LINKEDIN_MAX_CONCURRENCY = int(os.getenv("LINKEDIN_MAX_CONCURRENCY", "4"))
 LI_PRIMARY_BUDGET_SECONDS = int(
@@ -526,8 +529,13 @@ TELEGRAM_RETRY_MAX_ATTEMPTS = int(os.getenv("TELEGRAM_RETRY_MAX_ATTEMPTS", "6"))
 TELEGRAM_RETRY_BASE_DELAY_SECONDS = int(os.getenv("TELEGRAM_RETRY_BASE_DELAY_SECONDS", "45"))
 TELEGRAM_RETRY_DRAIN_LIMIT = int(os.getenv("TELEGRAM_RETRY_DRAIN_LIMIT", "25"))
 SOURCE_HEALTH_MIN_SUCCESS = int(os.getenv("SOURCE_HEALTH_MIN_SUCCESS", "1"))
-SOURCE_AUTO_DISABLE_THRESHOLD = int(os.getenv("SOURCE_AUTO_DISABLE_THRESHOLD", "4"))
-SOURCE_QUARANTINE_MINUTES = int(os.getenv("SOURCE_QUARANTINE_MINUTES", "180"))
+# ✅ v47: Lowered from 4 → 3 consecutive failures to auto-disable dead sources faster.
+# Sources like MENA Boards, Jobzella, NaukriGulf return 0 jobs consistently — this
+# reduces wasted time waiting on dead endpoints each run.
+SOURCE_AUTO_DISABLE_THRESHOLD = int(os.getenv("SOURCE_AUTO_DISABLE_THRESHOLD", "3"))
+# ✅ v47: Raised quarantine from 180 → 360 min (6h) — aligns with the 4h run schedule
+# so a failed source is retried after the NEXT run completes, not mid-session.
+SOURCE_QUARANTINE_MINUTES = int(os.getenv("SOURCE_QUARANTINE_MINUTES", "360"))
 ENABLE_SOURCE_PRIORITY_GATING = _env_bool("ENABLE_SOURCE_PRIORITY_GATING", True)
 ALLOW_API_KEY_SOURCES = _env_bool("ALLOW_API_KEY_SOURCES", True)
 ENABLE_UNSTABLE_SOURCES = _env_bool("ENABLE_UNSTABLE_SOURCES", False)
