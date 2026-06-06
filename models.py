@@ -465,19 +465,6 @@ _STRONG_ML_RESCUE_ANCHORS = {
     "insider risk", "insider threat", "data loss prevention", "dlp",
     "it security", "information security", "infosec",
     "ot security", "ics security",
-    # v52 FIX: Add missing anchor terms seen in false-negative production logs.
-    # Without these, the ML rescue guard blocked legitimate cybersec rescues.
-    "security researcher",          # AI Security Researcher, Security Researcher
-    "threat researcher",            # Threat Intelligence Researcher
-    "threat intelligence researcher",
-    "cyber threat intelligence",
-    "phishing analyst",             # Phishing Analyst / Anti-Phishing Analyst
-    "malware researcher",           # Malware Researcher / Reverse Engineer
-    "forensic analyst",             # Digital Forensic Analyst
-    "supply chain security",        # Software Supply Chain Security
-    "security program",             # Security Program Manager
-    "security governance",          # Security Governance Manager (duplicate, kept explicit)
-    "security engineering",         # Security Engineering Manager
 }
 
 _ML_RESCUE_TITLE_BLOCKERS = {
@@ -493,12 +480,7 @@ _ML_RESCUE_TITLE_BLOCKERS = {
     "devops engineer", "site reliability", "cloud engineer", "infrastructure engineer",
     "data engineer", "data scientist", "machine learning engineer", "ml engineer",
     "backend engineer", "backend developer", "ios engineer", "android engineer",
-    "rail telecommunication", "telecom engineer",
-    # NOTE: "network engineer" intentionally NOT blocked here. When the ML gives
-    # ≥0.84 confidence AND the job description contains a strong cyber anchor
-    # (firewalls, security policies, IDS/IPS, etc.) the rescue is legitimate.
-    # The _ml_rescue_guard already protects against description-less false rescues.
-    "network administrator",
+    "rail telecommunication", "telecom engineer", "network engineer",
     "it manager", "it director", "head of information technology",
     "head of it", "it support", "system administrator", "sysadmin",
     "solutions engineer", "field engineer", "implementation engineer",
@@ -522,11 +504,28 @@ def _ml_rescue_guard(job: "Job", ml_prob: float = 1.0) -> tuple[bool, str]:
     Guardrail before ML rescue:
       - block clearly non-cyber titles
       - require strong cyber anchors in title/context
+
+    ✅ v47: Security-prefix bypass — titles starting with "security ", "cybersecurity ",
+    etc. are not blocked by hard_reject_reason even if the suffix matches a generic tech
+    term (e.g. "Security Software Engineer" → "software engineer" in GENERIC_TECH_REJECTS).
+    This is now consistent with the fix in intelligence/intent.py hard_reject_reason().
     """
     full = " ".join([job.title or "", job.description or "", _flatten_tags(job.tags)])
     reject_reason = hard_reject_reason(job)
     if reject_reason:
-        return False, reject_reason
+        # Only block on hard_reject if it's NOT a security-prefixed title that was
+        # misclassified by the generic-tech check. The intent.py fix already handles
+        # this for the keyword filter; we mirror it here for defense-in-depth.
+        title_lower = (job.title or "").lower()
+        _SEC_PREFIXES = (
+            "security ", "cybersecurity ", "cyber security ",
+            "information security ", "appsec ", "devsecops ", "infosec ",
+        )
+        is_sec_prefixed = any(title_lower.startswith(p) for p in _SEC_PREFIXES)
+        if not is_sec_prefixed or reject_reason not in (
+            "reject_generic_tech_title", "reject_generic_solutions_architect"
+        ):
+            return False, reject_reason
     if has_strong_cyber_anchor(job) or _has_any_cyber_anchor(full):
         return True, "accept_ml_guard_central_anchor"
     if ml_prob > 0.85 and not _has_any_cyber_anchor(job.title):
