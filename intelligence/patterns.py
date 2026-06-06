@@ -76,6 +76,8 @@ DOMAIN_PATTERNS: dict[str, list[str]] = {
         "soc operations",                              # ← FIX: "SOC Operations Specialist"
         "security operations center", "security operations analyst",
         "security operations engineer",
+        # ✅ v47: CSOC = Cyber Security Operations Center — was silently failing
+        "csoc analyst", "csoc engineer", "csoc manager", "csoc",
         "siem analyst", "siem administrator", "siem engineer",
         "threat analyst", "threat hunter", "threat hunting",
         "incident response analyst", "incident response engineer",
@@ -86,12 +88,9 @@ DOMAIN_PATTERNS: dict[str, list[str]] = {
         "global soc", "cyber defense analyst", "cyber defence analyst",
         "cyber threat intelligence", "cti analyst",
         "threat intelligence analyst", "threat intelligence engineer",
-        # v52 FIX: "researcher" variants seen rejected in production logs
-        "threat intelligence researcher", "threat researcher",
-        "cyber threat researcher",
-        # v52 FIX: phishing/social-engineering analysts are core SOC roles
-        "phishing analyst", "phishing researcher",
-        "social engineering analyst",
+        # ✅ v47: Embedded detection / insider threat
+        "embedded detection analyst", "insider threat analyst",
+        "security monitoring analyst", "edr analyst",
     ],
 
     # ── Application Security / DevSecOps ─────────────────────────────────────
@@ -173,13 +172,6 @@ DOMAIN_PATTERNS: dict[str, list[str]] = {
         "information security manager",    # ← FIX: common GRC leadership title
         "isms", "vcrm", "tprm",
         "ciso", "deputy ciso", "vp information security",
-        # v52 FIX: security-prefixed manager/director titles that clear GENERIC_TECH_REJECTS
-        # via CYBER_TITLE_OVERRIDE_PATTERNS but had no DOMAIN_PATTERNS anchor to accept them.
-        "security program manager", "security project manager",
-        "cybersecurity program manager", "cybersecurity project manager",
-        "security governance manager", "security governance director",
-        "security governance lead", "security strategy manager",
-        "cyber program manager", "cyber project manager",
     ],
 
     # ── Security Engineering ──────────────────────────────────────────────────
@@ -214,24 +206,16 @@ DOMAIN_PATTERNS: dict[str, list[str]] = {
         "security operations engineer",  # engineering focus (not SOC analyst)
         "soc engineer",                  # engineering role within SOC
         "devsecops engineer",            # engineering focus (not AppSec analyst)
-        # v52 FIX: Common standalone titles rejected in production (too broad to
-        # fit a single sub-domain — "security analyst" can be SOC/GRC/AppSec).
-        # These are catch-all anchors; domain routing happens downstream in scorer.
-        "security analyst",
-        "security researcher",
-        "cybersecurity analyst",
-        "cyber analyst",
-        "information security analyst",
-        "cyber security analyst",
-        # v52 FIX: AI/ML-adjacent security roles increasingly common
-        "ai security researcher", "ai security engineer", "ai security analyst",
-        "ml security researcher",
-        # v52 FIX: security-prefixed engineering leadership roles
-        "security engineering manager", "security engineering director",
-        "security engineering lead", "head of security engineering",
-        # v52 FIX: supply chain security roles
-        "supply chain security", "supply chain security engineer",
-        "supply chain security manager", "software supply chain security",
+        # ✅ v47: Software Supply Chain Security (GitLab SSCS team)
+        "software supply chain security", "supply chain security",
+        "sscs", "ai governance", "ai security",
+        # ✅ v47: Workload & cloud security engineering
+        "cloud workload security", "security analytics",
+        "behavioral security", "security data",
+        # ✅ v47: Security business/program roles
+        "security business enablement", "security program manager",
+        # ✅ v47: Staff-level security platform engineers
+        "security platform and data", "security platform",
     ],
 }
 
@@ -318,14 +302,9 @@ GENERIC_TECH_REJECTS: list[str] = [
     "interior designer", "mechanical engineer", "electrical engineer",
     "civil engineer", "structural engineer", "chemical engineer",
     "nurse", "physician", "pharmacist", "medical", "clinical",
-    "logistics coordinator",
-    # v52 FIX: removed bare "supply chain" — it falsely blocked
-    # "Software Supply Chain Security" and "Supply Chain Security Manager".
-    # Replaced with more specific logistics-only patterns below.
-    "supply chain manager", "supply chain coordinator", "supply chain analyst",
-    "supply chain specialist", "logistics supply chain",
-    "warehouse",
-    "driver", "delivery", "operations manager",
+    "logistics coordinator", "warehouse",
+    "delivery driver", "food delivery", "last mile delivery",  # ✅ v47: was "delivery" — too broad, caught "Continuous Delivery"
+    "operations manager",
     "lab technician", "quality assurance engineer",
     "real estate", "property manager",
     "network team leader", "wan management",
@@ -333,6 +312,10 @@ GENERIC_TECH_REJECTS: list[str] = [
     "managing consultant strategy transformation",
     "managing consultant digital transformation",
     "cabin crew", "student marketeer", "lead generation",
+    # ✅ v47: "supply chain" removed — too broad, caught "Software Supply Chain Security" (GitLab SSCS team)
+    # Use more specific rejects below:
+    "supply chain analyst", "supply chain coordinator", "supply chain manager",
+    "logistics manager", "procurement manager",
 ]
 
 # ---------------------------------------------------------------------------
@@ -376,24 +359,34 @@ CYBER_TITLE_OVERRIDE_PATTERNS: list[str] = [
     "sase", "ztna", "zero trust", "endpoint security", "dns security",
     "product security", "security technical architect", "vulnerability research",
     "security incident response", "sirt", "csirt",
-    # v52 FIX: "security <generic-tech-role>" compound titles.
-    # When "security" prefixes a normally-generic term (program manager, project
-    # manager, engineering manager, etc.) it almost always means a cybersecurity
-    # leadership role, not a generic PM or EM role.
-    "security program",         # Security Program Manager
-    "security project",         # Security Project Manager
-    "security product",         # Security Product Manager
-    "security engineering",     # Security Engineering Manager/Director
-    "security governance",      # Security Governance Manager
-    "security compliance",      # Security Compliance Manager (already in CYBER_RISK_OVERRIDE_PATTERNS)
-    "security strategy",        # Security Strategy Manager
-    "supply chain security",    # Software Supply Chain Security
-    "software supply chain",    # Software Supply Chain Security: Pipeline Security
-    "cyber program",            # Cyber Program Manager
-    "cyber project",            # Cyber Project Manager
-    "cyber engineering",        # Cyber Engineering Manager
-    "cybersecurity program",    # Cybersecurity Program Manager
-    "cybersecurity engineering", # Cybersecurity Engineering Manager
-    "security awareness",       # Security Awareness Program Manager
-    "security risk",            # Security Risk Manager / Security Risk Program
+    # ✅ v47: Security-prefixed technical roles blocked by GENERIC_TECH_REJECTS
+    # e.g. "Security Software Engineer", "Security Program Manager"
+    "security software engineer", "security backend engineer",
+    "security program manager", "security platform engineer",
+    "security product manager", "security engineering manager",
+    "security data engineer", "security machine learning",
+    # ✅ v47: Role-suffix context that makes a title clearly security-focused
+    "corporate security", "detection and response", "behavioral security",
+    "message security", "security products", "security privacy",
+    "cloud workload security", "supply chain security",
+    "software supply chain security",
+    "security analytics", "security analytics infrastructure",
+    "security business enablement",
+    # ✅ v47: AI + security compound titles
+    "ai security", "ai security researcher", "genai security",
+    # ✅ v47: Trust & Safety (has meaningful overlap with security roles)
+    "trust and safety", "trust & safety",
 ]
+
+# Security title prefix bypass — titles starting with these strings are NOT
+# subject to GENERIC_TECH_REJECTS even if the suffix is a generic tech role.
+# e.g. "Security Software Engineer II" starts with "security " → bypass.
+SECURITY_TITLE_PREFIXES: tuple[str, ...] = (
+    "security ",
+    "cybersecurity ",
+    "cyber security ",
+    "information security ",
+    "appsec ",
+    "devsecops ",
+    "infosec ",
+)
