@@ -34,6 +34,7 @@ from intelligence.patterns import (
     ENTRY_RE,
     GENERIC_TECH_REJECTS,
     PHYSICAL_HARD_REJECTS,
+    SECURITY_TITLE_PREFIXES,
     STRONG_TITLE_PATTERNS,
 )
 
@@ -80,8 +81,13 @@ def hard_reject_reason(job: Any) -> str | None:
     if has_any(BUSINESS_RISK_REJECTS, title) and not _has_cyber_override(job):
         return "reject_business_or_credit_risk"
 
+    # ✅ v47: Security-prefixed technical titles bypass the generic-tech reject.
+    # e.g. "Security Software Engineer", "Security Program Manager" are cyber roles.
+    # Check the FULL title string for override patterns first, THEN apply prefix bypass.
     if has_any(GENERIC_TECH_REJECTS, title) and not _has_cyber_override(job):
-        return "reject_generic_tech_title"
+        title_lower = (title or "").lower()
+        if not any(title_lower.startswith(prefix) for prefix in SECURITY_TITLE_PREFIXES):
+            return "reject_generic_tech_title"
 
     if has_any(["application support", "technical support", "help desk", "helpdesk"], title):
         if not has_any(["soc", "siem", "incident response", "security operations", "edr", "xdr"], full):
@@ -209,17 +215,7 @@ def classify_cyber_intent(job: Any, *, use_llm: bool = True) -> CyberIntentDecis
         return CyberIntentDecision(True, "accept_context_stack", 0.82, reasons)
 
     borderline = has_any(
-        [
-            # Core security signals
-            "security", "cyber", "risk", "privacy", "protection",
-            # v52 FIX: These were missing, causing "Threat Intelligence Researcher",
-            # "Malware Analyst", "Phishing Analyst", "Forensic Analyst" etc. to get
-            # reject_no_cyber_signal instead of reject_borderline_without_strong_anchor.
-            # Borderline jobs at least get a second chance through the ML rescue path.
-            "threat", "malware", "forensic", "phishing", "vulnerability",
-            "incident", "pentest", "infiltration", "intrusion",
-        ],
-        title + " " + full[:250],
+        ["security", "cyber", "risk", "privacy", "protection"], title + " " + full[:250]
     )
     if borderline and use_llm:
         llm_result = classify_borderline_with_llm(job)
