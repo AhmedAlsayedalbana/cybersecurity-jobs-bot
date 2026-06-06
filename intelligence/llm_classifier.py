@@ -97,14 +97,16 @@ def _call_openai(job: Any) -> bool | None:
     if not api_key:
         return None
     model = getattr(config, "LLM_CLASSIFIER_MODEL", "") or "gpt-4o-mini"
+    # ✅ v47: Use /v1/chat/completions (correct endpoint for gpt-4o-mini).
+    # The previous code used /v1/responses which is only for the newer o-series models.
     payload = {
         "model": model,
-        "input": _build_prompt(job),
-        "text": {"format": {"type": "json_object"}},
-        "max_output_tokens": 80,
+        "messages": [{"role": "user", "content": _build_prompt(job)}],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 80,
     }
     req = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
+        "https://api.openai.com/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -114,14 +116,11 @@ def _call_openai(job: Any) -> bool | None:
     )
     with urllib.request.urlopen(req, timeout=12) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    text = data.get("output_text") or ""
-    if not text:
-        chunks = []
-        for item in data.get("output", []) or []:
-            for content in item.get("content", []) or []:
-                if content.get("text"):
-                    chunks.append(content["text"])
-        text = "\n".join(chunks)
+    text = (
+        (data.get("choices") or [{}])[0]
+        .get("message", {})
+        .get("content", "")
+    )
     parsed = json.loads(re.sub(r"```json|```", "", text).strip())
     return bool(parsed.get("is_cybersecurity"))
 
@@ -130,7 +129,7 @@ def _call_anthropic(job: Any) -> bool | None:
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         return None
-    model = getattr(config, "LLM_CLASSIFIER_MODEL", "") or "claude-haiku-4-5-20251001"
+    model = getattr(config, "LLM_CLASSIFIER_MODEL", "") or "claude-3-5-haiku-latest"
     payload = {
         "model": model,
         "max_tokens": 80,
