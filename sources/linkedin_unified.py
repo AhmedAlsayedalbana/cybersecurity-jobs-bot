@@ -101,8 +101,11 @@ GULF_QUERIES: list[QuerySpec] = [
 
 EXPANSION_QUERIES: list[QuerySpec] = [
     # ── Egypt expanded ───────────────────────────────────────────────────
-    QuerySpec("application security", "Egypt", pages=(0, 25), priority=40),
-    QuerySpec("cloud security", "Egypt", pages=(0, 25), priority=41),
+    # ✅ v47: Reduced pages from (0,25) → (0,) for lower-priority expansion queries.
+    # The CORE queries cover the primary Egypt/Gulf searches at multi-page depth.
+    # Expansion queries are supplementary — a single page per query is sufficient.
+    QuerySpec("application security", "Egypt", pages=(0,), priority=40),
+    QuerySpec("cloud security", "Egypt", pages=(0,), priority=41),
     QuerySpec("threat intelligence", "Egypt", pages=(0,), priority=42),
     QuerySpec("devsecops", "Egypt", pages=(0,), priority=43),
     QuerySpec("vulnerability management", "Egypt", pages=(0,), priority=44),
@@ -112,8 +115,8 @@ EXPANSION_QUERIES: list[QuerySpec] = [
     QuerySpec("أمن معلومات", "مصر", pages=(0,), priority=47),
     QuerySpec("أمن سيبراني", "القاهرة", pages=(0,), priority=48),
     # ── Remote / Global ──────────────────────────────────────────────────
-    QuerySpec("cybersecurity engineer", remote=True, pages=(0, 25), priority=50, source_key="linkedin_remote"),
-    QuerySpec("SOC analyst", remote=True, pages=(0, 25), priority=51, source_key="linkedin_remote"),
+    QuerySpec("cybersecurity engineer", remote=True, pages=(0,), priority=50, source_key="linkedin_remote"),
+    QuerySpec("SOC analyst", remote=True, pages=(0,), priority=51, source_key="linkedin_remote"),
     QuerySpec("application security", remote=True, pages=(0,), priority=52, source_key="linkedin_remote"),
     QuerySpec("GRC analyst", remote=True, pages=(0,), priority=53, source_key="linkedin_remote"),
     QuerySpec("threat intelligence analyst", remote=True, pages=(0,), priority=54, source_key="linkedin_remote"),
