@@ -1,0 +1,169 @@
+name: Cybersecurity Jobs Bot v56 (merged)
+
+on:
+  schedule:
+   - cron: "0 */4 * * *"   # Every 4 hours
+  workflow_dispatch:
+
+concurrency:
+  group: cybersec-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # The official-careers connector imports Playwright lazily and only for
+      # JS-only, publicly accessible portals.  Keeping Chromium available in
+      # CI avoids silently treating those portals as successful empty sources.
+      - name: Install Chromium for official careers fallbacks
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run strict pipeline tests
+        run: python -m pytest -q
+
+      # SOURCE OF TRUTH = DATA BRANCH
+      - name: Restore jobs database from data branch
+        run: |
+          git fetch origin data:data || echo "⚠️ data branch not found yet"
+          git checkout data -- jobs_bot.db 2>/dev/null || echo "ℹ️ No existing DB found in data branch"
+
+      - name: Validate restored database
+        run: |
+          if [ -f jobs_bot.db ]; then
+            ROWS=$(python3 -c "
+          import sqlite3
+          c = sqlite3.connect('jobs_bot.db')
+          try:
+            n = c.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
+            sent = c.execute('SELECT COUNT(*) FROM jobs WHERE sent=1').fetchone()[0]
+          except:
+            n, sent = '?', '?'
+          print(f'{n} total / {sent} sent')
+          " 2>/dev/null || echo "?")
+            SIZE=$(wc -c < jobs_bot.db)
+            echo "✅ jobs_bot.db: ${SIZE} bytes | rows: ${ROWS}"
+            if [ "$SIZE" -lt 1000 ]; then
+              echo "⚠️ DB too small — may be empty or corrupt, deleting to force fresh start"
+              rm jobs_bot.db
+            fi
+          else
+            echo "ℹ️ No DB found — fresh start (SEED MODE will run)"
+          fi
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # v56: your repo secret is named TELEGRAM_GROUP_ID — passed through
+          # here and read as a fallback in config.py. TELEGRAM_CHAT_ID is
+          # also passed in case you rename/add that secret later; it takes
+          # priority over TELEGRAM_GROUP_ID if both are set.
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_GROUP_ID:  ${{ secrets.TELEGRAM_GROUP_ID }}
+
+          # Topics
+          TOPIC_EGYPT:         ${{ secrets.TOPIC_EGYPT }}
+          TOPIC_REMOTE:        ${{ secrets.TOPIC_REMOTE }}
+          TOPIC_PENTEST:       ${{ secrets.TOPIC_PENTEST }}
+          TOPIC_SOC:           ${{ secrets.TOPIC_SOC }}
+          TOPIC_APPSEC:        ${{ secrets.TOPIC_APPSEC }}
+          TOPIC_CLOUDSEC:      ${{ secrets.TOPIC_CLOUDSEC }}
+          TOPIC_GRC:           ${{ secrets.TOPIC_GRC }}
+          TOPIC_SECENG:        ${{ secrets.TOPIC_SECENG }}
+          TOPIC_GULF:          ${{ secrets.TOPIC_GULF }}
+          TOPIC_INTERNSHIPS:   ${{ secrets.TOPIC_INTERNSHIPS }}
+          TOPIC_NETWORKSEC:    ${{ secrets.TOPIC_NETWORKSEC }}
+          TOPIC_TEST:          ${{ secrets.TOPIC_TEST }}
+
+          # API Keys
+          SERPAPI_KEY:         ${{ secrets.SERPAPI_KEY }}
+          GOOGLE_CSE_API_KEY:  ${{ secrets.GOOGLE_CSE_API_KEY }}
+          GOOGLE_CSE_CX:       ${{ secrets.GOOGLE_CSE_CX }}
+          RAPIDAPI_KEY:        ${{ secrets.RAPIDAPI_KEY }}
+          ADZUNA_APP_ID:       ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY:      ${{ secrets.ADZUNA_APP_KEY }}
+          FINDWORK_API_KEY:    ${{ secrets.FINDWORK_API_KEY }}
+          JOOBLE_API_KEY:      ${{ secrets.JOOBLE_API_KEY }}
+          REED_API_KEY:        ${{ secrets.REED_API_KEY }}
+
+          LI_AT:               ${{ secrets.LI_AT }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # Optional rotating-proxy pool. Leave the repo secret empty/unset
+          # to keep the default direct-only connection mode.
+          PROXIES:             ${{ secrets.PROXIES }}
+          ENABLE_PROXY_POOL:   "false"
+
+          # v56: DRY_RUN switched to "false" — the pipeline was already
+          # producing a clean, well-distributed pool (18 jobs: 5 EG / 6 KSA /
+          # 7 Gulf / 1 Remote) on every run but DRY_RUN was silently
+          # discarding it and never marking anything as seen, so the same
+          # jobs kept reappearing "new" run after run with 0 ever sent.
+          # If you want one more manual safety check before going live,
+          # temporarily set TELEGRAM_CANARY to "true" for a single run first
+          # (sends one isolated test message to TOPIC_TEST, not a real job).
+          DRY_RUN:             "false"
+          TELEGRAM_CANARY:     "false"
+          STRICT_PUBLIC_ONLY:  "true"
+
+        run: python main.py
+
+      # FALLBACK PERSISTENCE = DATA BRANCH
+      - name: Save jobs database to data branch
+        if: always()
+        run: |
+          if [ ! -f jobs_bot.db ]; then
+            echo "ℹ️ No jobs_bot.db to save — skipping"
+            exit 0
+          fi
+
+          cp jobs_bot.db /tmp/jobs_bot.db
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # ✅ FIX: embed token in remote URL so push has write permission
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+          git stash --include-untracked || true
+          git fetch origin data:data || true
+
+          if git show-ref --verify --quiet refs/heads/data; then
+            git checkout data
+          else
+            git checkout --orphan data
+            git rm -rf . || true
+          fi
+
+          cp /tmp/jobs_bot.db jobs_bot.db
+          git add jobs_bot.db
+
+          if ! git diff --cached --quiet; then
+            git commit -m "jobs_bot.db update [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+            git push origin data
+            echo "✅ jobs_bot.db saved to data branch"
+          else
+            echo "ℹ️ No changes in DB"
+          fi
