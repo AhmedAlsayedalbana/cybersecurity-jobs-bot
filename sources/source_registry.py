@@ -29,6 +29,8 @@ from sources.linkedin_unified import fetch_linkedin_unified_async
 from sources.mena_boards import fetch_mena_boards
 from sources.new_sources import _fetch_greenhouse_cybersec
 from sources.tech_boards import fetch_tech_boards
+from sources.recruitment_agencies import fetch_recruitment_agencies
+from sources.arab_careers import fetch_arab_careers
 from sources.marketplace_sources import PUBLIC_SPECS, RESTRICTED_SPECS, fetcher_for
 from sources.official_careers import OFFICIAL_SOURCES, fetcher_for as official_fetcher_for
 from sources.priority_sources import (
@@ -117,6 +119,18 @@ def _build_specs() -> list[SourceSpec]:
             fetch_wazzif, 41, "egypt", "silver",
             allow_empty_runs=True, supports_geo_hint=True,
             enabled=getattr(config, "ENABLE_SOURCE_WAZZIF", True)),
+
+        # Arab company careers
+        SourceSpec("arab_careers", "Arab Company Careers",
+            fetch_arab_careers, 38, "gulf", "silver",
+            allow_empty_runs=True, supports_geo_hint=True,
+            enabled=getattr(config, "ENABLE_SOURCE_ARAB_CAREERS", True)),
+
+        # Recruitment agencies
+        SourceSpec("recruitment_agencies", "Recruitment Agencies (MENA)",
+            fetch_recruitment_agencies, 39, "gulf", "bronze",
+            allow_empty_runs=True, supports_geo_hint=True,
+            enabled=getattr(config, "ENABLE_SOURCE_RECRUITMENT", True)),
 
         # ── TIER 7: Community ─────────────────────────────────────────────────
         SourceSpec("telegram_channels", "Telegram Channels",
