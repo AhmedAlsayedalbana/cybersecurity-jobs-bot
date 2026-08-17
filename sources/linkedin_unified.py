@@ -528,12 +528,144 @@ def _build_arab_focus_lanes(rotation_slot: int) -> list[QuerySpec]:
     return lanes
 
 
+# ============================================================
+# v62: YIELD-BASED LANE PRIORITIZATION
+# ============================================================
+
+# In-memory yield history: canonical_query -> {unique, dup, runs}
+_LANE_YIELD_HISTORY: dict[str, dict] = {}
+
+
+def _load_lane_yield_history() -> dict[str, dict]:
+    """Load yield history from previous runs (in-memory cross-run persistence).
+    For now, this is populated at the end of each run from telemetry."""
+    return dict(_LANE_YIELD_HISTORY)
+
+
+def _save_lane_yield_history(telemetry: dict) -> None:
+    """Update yield history from current run's telemetry."""
+    global _LANE_YIELD_HISTORY
+    for cq, yield_data in telemetry.get("query_yield", {}).items():
+        if cq not in _LANE_YIELD_HISTORY:
+            _LANE_YIELD_HISTORY[cq] = {"unique": 0, "dup": 0, "runs": 0}
+        if isinstance(yield_data, dict):
+            _LANE_YIELD_HISTORY[cq]["unique"] += yield_data.get("unique", 0)
+            _LANE_YIELD_HISTORY[cq]["dup"] += yield_data.get("dup", 0)
+        else:
+            # Legacy: yield_data was an int (unique count only)
+            _LANE_YIELD_HISTORY[cq]["unique"] += int(yield_data)
+        _LANE_YIELD_HISTORY[cq]["runs"] += 1
+
+
+def _compute_lane_score(spec: QuerySpec, yield_history: dict[str, dict]) -> float:
+    """Score a lane for priority ordering. Higher = run sooner.
+
+    Factors:
+    - CORE lanes get a base bonus (never demoted below rotating)
+    - Historical unique_jobs yield gets positive weight
+    - Historical duplicate ratio gets negative weight
+    - Exploration bonus: lanes never seen get a small bonus to encourage discovery
+    """
+    cq = _canonicalize_query(spec.keywords, spec.location, spec.remote)
+    history = yield_history.get(cq)
+
+    # Base priority from QuerySpec
+    base = 100 - min(spec.priority, 99)
+
+    # CORE lane bonus — always run these first
+    if spec.lane_type == "core":
+        base += 50
+    elif spec.lane_type == "high_value":
+        base += 20
+    elif spec.lane_type == "company":
+        base += 10
+
+    if not history:
+        # Never seen — exploration bonus (moderate, not too high)
+        base += 5
+        return base
+
+    runs = max(1, history.get("runs", 1))
+    unique = history.get("unique", 0)
+    dup = history.get("dup", 0)
+    avg_unique = unique / runs
+    avg_dup = dup / runs
+
+    # Positive yield: lanes that produce unique jobs get higher priority
+    if avg_unique > 5:
+        base += 30
+    elif avg_unique > 2:
+        base += 15
+    elif avg_unique > 0:
+        base += 5
+    else:
+        # Zero-yield lanes get a small penalty (but not removed — exploration)
+        base -= 10
+
+    # Duplicate penalty: lanes with high dup/unique ratio get demoted
+    if avg_unique > 0:
+        dup_ratio = avg_dup / avg_unique
+        if dup_ratio > 5:
+            base -= 25  # Heavy duplicate lane — strong demotion
+        elif dup_ratio > 3:
+            base -= 15  # Moderate duplicate lane
+        elif dup_ratio > 1.5:
+            base -= 5   # Mild duplicate lane
+    elif avg_dup > 10:
+        # Zero unique but many duplicates — pure waste
+        base -= 20
+
+    return base
+
+
+def _sort_plan_by_yield(plan: list[QuerySpec], yield_history: dict[str, dict]) -> list[QuerySpec]:
+    """Sort query plan by yield score while preserving lane-type diversity.
+
+    Strategy: interleave high-yield and exploration lanes so we don't
+    starve any lane type. CORE lanes always come first in their group.
+    """
+    scored = [(q, _compute_lane_score(q, yield_history)) for q in plan]
+    # Sort by score descending
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Group by lane_type to ensure diversity
+    type_groups: dict[str, list[tuple[QuerySpec, float]]] = {}
+    for spec, score in scored:
+        lt = spec.lane_type
+        if lt not in type_groups:
+            type_groups[lt] = []
+        type_groups[lt].append((spec, score))
+
+    # Interleave: take one from each type group in round-robin fashion
+    # Order groups by their best score
+    group_order = sorted(type_groups.keys(), key=lambda t: max(s for _, s in type_groups[t]), reverse=True)
+    result: list[QuerySpec] = []
+    iterators = {t: iter(type_groups[t]) for t in group_order}
+    while iterators:
+        to_remove = []
+        for t in group_order:
+            it = iterators[t]
+            try:
+                result.append(next(it)[0])
+            except StopIteration:
+                to_remove.append(t)
+        for t in to_remove:
+            del iterators[t]
+            group_order.remove(t)
+
+    return result
+
+
 def _build_query_plan(rotation_slot: int) -> list[QuerySpec]:
     """Build the full query plan with all lane types.
 
     Ensures every lane type (including skills and remote) is represented
     by splitting high_value into always-on and rotating halves.
+    v62: Applies yield-based prioritization from historical telemetry.
     """
+    # Load yield history from previous runs
+    yield_history = _load_lane_yield_history()
+
     # 1. CORE: always on — Egypt highest-yield + Arab focus rotation
     core = _build_core_lanes()
     arab_focus = _build_arab_focus_lanes(rotation_slot)
@@ -571,6 +703,9 @@ def _build_query_plan(rotation_slot: int) -> list[QuerySpec]:
         rotation = rotation_slot % max(1, len(rotating_pool))
         rotated_pool = rotating_pool[rotation:] + rotating_pool[:rotation]
         plan = always_on + rotated_pool[:remaining]
+
+    # v62: Apply yield-based reordering
+    plan = _sort_plan_by_yield(plan, yield_history)
 
     return plan
 
@@ -843,6 +978,7 @@ async def _fetch_linkedin_unified_impl() -> list[Job]:
                     return
                 empty_page_streak = 0
                 query_new = 0
+                query_dup = 0
                 for page_start in _expanded_pages(query):
                     if time.time() - start_ts > budget_seconds:
                         telemetry["partial"] = True
@@ -898,6 +1034,7 @@ async def _fetch_linkedin_unified_impl() -> list[Job]:
                             seen_ids.add(jid)
                         telemetry["details"] = int(telemetry["details"]) + len(new_ids)
                         telemetry["duplicate_jobs"] = int(telemetry.get("duplicate_jobs", 0)) + len(dup_ids)
+                        query_dup += len(dup_ids)
 
                     async def _load_one(job_id: str) -> Job | None:
                         async with sem:
@@ -942,9 +1079,9 @@ async def _fetch_linkedin_unified_impl() -> list[Job]:
             finally:
                 async with results_lock:
                     telemetry["queries_completed"] = int(telemetry["queries_completed"]) + 1
-                    # v61: Track query yield
+                    # v62: Track per-lane yield with unique/dup breakdown
                     cq = _canonicalize_query(query.keywords, query.location, query.remote)
-                    telemetry["query_yield"][cq] = query_new
+                    telemetry["query_yield"][cq] = {"unique": query_new, "dup": query_dup}
 
     query_tasks: list[asyncio.Task] = []
     try:
@@ -1003,6 +1140,31 @@ async def _fetch_linkedin_unified_impl() -> list[Job]:
         telemetry["hr_recruiter_yield"] = hr_telemetry.get("recruiter_yield", {})
     telemetry["jobs"] = len(all_jobs)
     _LINKEDIN_TELEMETRY = telemetry
+
+    # v62: Compute yield_by_lane summary from query_yield
+    yield_by_lane: dict[str, dict] = {}
+    for cq, yield_data in telemetry.get("query_yield", {}).items():
+        if isinstance(yield_data, dict):
+            unique = yield_data.get("unique", 0)
+            dup = yield_data.get("dup", 0)
+        else:
+            unique = int(yield_data)
+            dup = 0
+        # Derive lane_type from canonical query
+        lane_type = "unknown"
+        for q in plan:
+            if _canonicalize_query(q.keywords, q.location, q.remote) == cq:
+                lane_type = q.lane_type
+                break
+        if lane_type not in yield_by_lane:
+            yield_by_lane[lane_type] = {"unique_jobs": 0, "duplicate_jobs": 0, "lanes": 0}
+        yield_by_lane[lane_type]["unique_jobs"] += unique
+        yield_by_lane[lane_type]["duplicate_jobs"] += dup
+        yield_by_lane[lane_type]["lanes"] += 1
+    telemetry["yield_by_lane"] = yield_by_lane
+
+    # v62: Save yield history for next run's prioritization
+    _save_lane_yield_history(telemetry)
 
     log.info("LinkedIn unified: collected %d jobs/posts total", len(all_jobs))
     return all_jobs
