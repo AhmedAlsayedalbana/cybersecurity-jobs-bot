@@ -99,6 +99,44 @@ OFFICIAL_SOURCES: tuple[CareerSource, ...] = (
     CareerSource("ibm_egypt", "IBM Egypt Careers", "IBM", "egypt", "html", "https://www.ibm.com/careers/search", "egypt", page_param="page"),
     CareerSource("microsoft_egypt", "Microsoft Egypt Careers", "Microsoft", "egypt", "eightfold", "https://apply.careers.microsoft.com/careers", "egypt", page_param="page"),
     CareerSource("siemens_egypt", "Siemens Egypt Careers", "Siemens", "egypt", "html", "https://jobs.siemens.com/en_US/externaljobs/SearchJobs", "egypt", page_param="page"),
+    # ── Egypt blocked-source fallbacks ─────────────────────────────────────
+    CareerSource("cib_egypt_wd", "CIB Careers (Workday)", "Commercial International Bank", "egypt", "workday", "https://cibeg.wd1.myworkdayjobs.com/en-US/cib_jobs", "egypt", tenant="cibeg", site="cib_jobs"),
+    CareerSource("nbe_html", "NBE Careers (HTML)", "National Bank of Egypt", "egypt", "html", "https://www.nbe.com.eg/en/Pages/Default.aspx", "egypt", page_param="page"),
+    CareerSource("we_jina", "WE Telecom Egypt (Alt)", "Telecom Egypt", "egypt", "html", "https://te.eg/wps/portal/te/Personal/Careers/!ut/p/z1/", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("qnb_global", "QNB Global Careers", "QNB Egypt", "egypt", "html", "https://careers.qnb.com/", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt banking sector ────────────────────────────────────────────────
+    CareerSource("aaib", "AAIB Careers", "Arab African International Bank", "egypt", "html", "https://aaib.com.eg/en/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("credit_agricole_egypt", "Crédit Agricole Egypt Careers", "Crédit Agricole Egypt", "egypt", "html", "https://www.ca-egypt.com/en/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("hsbc_egypt", "HSBC Egypt Careers", "HSBC Egypt", "egypt", "html", "https://www.hsbc.com/careers", "egypt", page_param="page"),
+    CareerSource("adib_egypt", "ADIB Egypt Careers", "Abu Dhabi Islamic Bank Egypt", "egypt", "html", "https://www.adib.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("fabmisr", "FABMISR Careers", "FABMISR", "egypt", "html", "https://www.fabmisr.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("hdb", "HDB Careers", "Housing and Development Bank", "egypt", "html", "https://www.hdb-egypt.com/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("emirates_nbd_egypt", "Emirates NBD Egypt Careers", "Emirates NBD Egypt", "egypt", "html", "https://www.emiratesnbd.com/egypt/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("mashreq_egypt", "Mashreq Egypt Careers", "Mashreq Egypt", "egypt", "html", "https://www.mashreq.com/egypt/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("al_baraka_bank", "Al Baraka Bank Careers", "Al Baraka Bank", "egypt", "html", "https://www.albarakabank.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("bank_abc", "Bank ABC Careers", "Bank ABC", "egypt", "html", "https://www.bankabc.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("saib", "SAIB Careers", "SAIB", "egypt", "html", "https://www.saib.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("bank_nxt", "Bank NXT Careers", "Bank NXT", "egypt", "html", "https://banknxt.com/careers", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt telecom / digital sector ─────────────────────────────────────
+    CareerSource("raya", "Raya Careers", "Raya", "egypt", "html", "https://www.raya.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("vois", "VOIS Careers", "VOIS (Vodafone Intelligent Solutions)", "egypt", "html", "https://vois.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("etisalat_egypt", "e& Egypt Careers", "e& Egypt", "egypt", "html", "https://careers.etisalat.com.eg", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt IT / software / cloud ─────────────────────────────────────────
+    CareerSource("itida", "ITIDA Careers", "ITIDA", "egypt", "html", "https://www.itida.gov.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("smart_village", "Smart Village Careers", "Smart Village", "egypt", "html", "https://www.smart-village.com/careers", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt cybersecurity ─────────────────────────────────────────────────
+    CareerSource("cybershield", "CyberShield Careers", "CyberShield", "egypt", "html", "https://www.cybershield.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("eset_egypt", "ESET Egypt Careers", "ESET Egypt", "egypt", "html", "https://www.eset.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt consulting (Big Four) ────────────────────────────────────────
+    CareerSource("pwc_egypt", "PwC Egypt Careers", "PwC Egypt", "egypt", "html", "https://www.pwc.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("deloitte_egypt", "Deloitte Egypt Careers", "Deloitte Egypt", "egypt", "html", "https://www2.deloitte.com/eg/careers", "egypt", page_param="page"),
+    CareerSource("ey_egypt", "EY Egypt Careers", "EY Egypt", "egypt", "html", "https://www.ey.com/eg/careers", "egypt", page_param="page"),
+    CareerSource("kpmg_egypt", "KPMG Egypt Careers", "KPMG Egypt", "egypt", "html", "https://www.kpmg.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt engineering / manufacturing ───────────────────────────────────
+    CareerSource("orascom_construction", "Orascom Construction Careers", "Orascom Construction", "egypt", "html", "https://www.orascom.com/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("elsewedy_electric", "Elsewedy Electric Careers", "Elsewedy Electric", "egypt", "html", "https://www.elsewedy.com/careers", "egypt", page_param="page", browser_fallback=True),
+    # ── Egypt pharma / healthcare ───────────────────────────────────────────
+    CareerSource("pharco", "Pharco Careers", "Pharco", "egypt", "html", "https://www.pharco.com/careers", "egypt", page_param="page", browser_fallback=True),
     # Gulf job boards
     CareerSource("naukrigulf", "NaukriGulf", "NaukriGulf", "gulf", "html", "https://www.naukrigulf.com/jobs", "gulf", page_param="pageNo"),
     CareerSource("jobzella", "Jobzella", "Jobzella", "gulf", "html", "https://www.jobzella.com/jobs", "gulf", page_param="page"),
@@ -157,6 +195,26 @@ def fetcher_for(source_key: str) -> Callable[[], SourceResult]:
     return _fetch
 
 
+_ZERO_JOBS_BLOCKED_CODES = frozenset({"http_403", "http_401", "http_429", "http_407", "proxy_402", "proxy_407"})
+_ZERO_JOBS_TIMEOUT_CODES = frozenset({"timeout", "connectionerror", "connecttimeout", "readtimeout", "proxy_error"})
+
+
+def _classify_zero_jobs_reason(error_code: str, parsed: bool, no_active_jobs: bool) -> str:
+    """Return a structured zero-jobs audit reason code."""
+    if no_active_jobs:
+        return "EMPTY_REAL"
+    if not error_code:
+        return "PARSE_CHANGED" if parsed else "BLOCKED"
+    lower = error_code.lower()
+    if any(lower.endswith(c) or lower == c for c in _ZERO_JOBS_BLOCKED_CODES):
+        return "BLOCKED"
+    if any(lower.endswith(c) or lower == c for c in _ZERO_JOBS_TIMEOUT_CODES):
+        return "TIMEOUT"
+    if parsed:
+        return "PARSE_CHANGED"
+    return "BLOCKED"
+
+
 def fetch_source(source_key: str) -> SourceResult:
     """Fetch one official source and report an honest health status."""
     source = SOURCES_BY_KEY[source_key]
@@ -169,10 +227,12 @@ def fetch_source(source_key: str) -> SourceResult:
             attempted_urls=(source.url,),
         )
     if outcome.no_active_jobs:
+        reason = _classify_zero_jobs_reason(outcome.error_code, outcome.parsed, outcome.no_active_jobs)
+        log.info("%s: zero-jobs audit reason=%s error_code=%s", source_key, reason, outcome.error_code or "-")
         return SourceResult(
             status="empty",
             transport="direct",
-            error_code="no_active_jobs",
+            error_code=f"{reason}:{outcome.error_code}" if outcome.error_code and reason != "EMPTY_REAL" else reason,
             attempted_urls=(source.url,),
         )
 
@@ -186,20 +246,24 @@ def fetch_source(source_key: str) -> SourceResult:
                 attempted_urls=(source.url,),
             )
         if browser_outcome.no_active_jobs:
+            reason = _classify_zero_jobs_reason(browser_outcome.error_code, browser_outcome.parsed, browser_outcome.no_active_jobs)
+            log.info("%s: zero-jobs audit (playwright) reason=%s error_code=%s", source_key, reason, browser_outcome.error_code or "-")
             return SourceResult(
                 status="empty",
                 transport="playwright",
-                error_code="no_active_jobs",
+                error_code=f"{reason}:{browser_outcome.error_code}" if browser_outcome.error_code and reason != "EMPTY_REAL" else reason,
                 attempted_urls=(source.url,),
             )
         if browser_outcome.error_code:
             outcome = browser_outcome
 
+    reason = _classify_zero_jobs_reason(outcome.error_code, outcome.parsed, False)
+    log.info("%s: zero-jobs audit reason=%s error_code=%s parsed=%s", source_key, reason, outcome.error_code or "-", outcome.parsed)
     status = "parse_changed" if outcome.parsed else "blocked"
     return SourceResult(
         status=status,
         transport="direct",
-        error_code=outcome.error_code or status,
+        error_code=f"{reason}:{outcome.error_code}" if outcome.error_code else reason,
         attempted_urls=(source.url,),
     )
 
