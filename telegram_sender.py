@@ -121,7 +121,20 @@ def _has_publishable_cyber_evidence(job) -> bool:
 
 
 def _telegram_ineligibility_reason(job) -> str | None:
-    """Explain the hard delivery gate without exposing a bypass path."""
+    """Explain the hard delivery gate without exposing a bypass path.
+
+    The verdict and the evidence gate are now one consistent contract:
+
+    * ``CYBER_CONFIRMED`` was already approved by the classifier with full
+      anchor evidence. Re-applying the delivery evidence gate to such a job
+      produced contradictory outcomes (confirmed upstream, rejected at
+      delivery for the same role), which hid real vacancies from the
+      channel. With a valid delivery location and an exact posting
+      identity, ``CYBER_CONFIRMED`` is final — delivery trusts it.
+    * ``CYBER_LIKELY`` remains below the confirmation threshold, so it is
+      still required to demonstrate publish-grade domain evidence at
+      delivery through the existing ``_publishable_cyber_evidence`` gate.
+    """
     verdict = getattr(job, "cyber_verdict", "")
     if verdict not in {CyberVerdict.CONFIRMED.value, CyberVerdict.LIKELY.value}:
         return "non_cyber_or_unclassified"
@@ -130,6 +143,11 @@ def _telegram_ineligibility_reason(job) -> str | None:
         return location.reason_code
     if not _delivery_identity(job):
         return "missing_exact_posting_identity"
+    # v62 verdict consistency: a confirmed classification is never rejected
+    # again by a conflicting delivery-level evidence gate. Likelies keep the
+    # full evidence requirement.
+    if verdict == CyberVerdict.CONFIRMED.value:
+        return None
     evidence, _ = _publishable_cyber_evidence(job)
     if evidence == "insufficient_cyber_evidence":
         return evidence
@@ -359,6 +377,8 @@ def send_jobs(jobs, *, dry_run: bool = False):
     KEY GUARANTEES:
     - NON_CYBER and unclassified jobs never enter a Telegram queue.
     - CYBER_LIKELY jobs require publish-grade domain evidence before routing.
+    - CYBER_CONFIRMED jobs with a valid location and posting identity pass
+      delivery without a second evidence evaluation (v62 consistency).
     - A job appears in at most 1 GEO channel + at most 1 TOPIC channel (NEVER repeated).
     - Jobs older than config.MAX_JOB_AGE_DAYS (default 3 days / 72h) are
       HARD-BLOCKED from sending, regardless of source.
@@ -1362,7 +1382,7 @@ def _send_to_topic(message, thread_id=None, db: JobsDB | None = None, channel_ke
             # row or a delivery whose one retry was already exhausted.
             log.info("Telegram delivery already sent/retry-exhausted for [%s]", channel_key)
             if lifecycle is not None:
-                lifecycle["already_sent_or_retry_exhausted"] += 1
+                lifecycle["already_sent"] += 1
             return False
         if lifecycle is not None:
             lifecycle["reserved"] += 1
