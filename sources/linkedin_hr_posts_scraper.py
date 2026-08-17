@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import random
 import re
 import time
@@ -45,6 +46,67 @@ log = logging.getLogger(__name__)
 _GOOGLE_CSE_DISABLED = False
 _SEARCH_BACKEND_WARNING_EMITTED = False
 _HR_TELEMETRY: dict[str, object] = {}
+
+# v65: backend-level cooldowns replace hard per-run bans.
+# A backend that fails or comes back genuinely empty is cooled down for a
+# bounded window — long enough to stop burning budget on a dead backend,
+# short enough that a temporary blip (transient CSE 4xx, an empty search
+# results page) never silences the backend for the whole run.
+_BACKEND_EMPTY_STREAK_LIMIT = int(os.getenv("HR_BACKEND_EMPTY_STREAK_LIMIT", "4"))
+_BACKEND_COOLDOWN_SECONDS = int(os.getenv("HR_BACKEND_COOLDOWN_SECONDS", "60"))
+_backend_cooldown_until: dict[str, float] = {}
+_backend_empty_cooldown: set[str] = set()
+_backend_empty_streak: dict[str, int] = {}
+_cse_backoff_until = 0.0
+_cse_backoff_count = 0
+
+
+def _backend_cooldown_expired(backend: str) -> bool:
+    return time.time() >= _backend_cooldown_until.get(backend, 0.0)
+
+
+def _mark_backend_empty(backend: str) -> None:
+    streak = _backend_empty_streak.get(backend, 0) + 1
+    _backend_empty_streak[backend] = streak
+    if streak >= max(1, _BACKEND_EMPTY_STREAK_LIMIT):
+        _backend_cooldown_until[backend] = time.time() + max(5.0, float(_BACKEND_COOLDOWN_SECONDS))
+        # v65: remember that this cooldown came from genuinely empty responses
+        # — the stall-relaxation path only rechecks backends flagged here so
+        # that short transient-failure backoffs (CSE) are never picked.
+        _backend_empty_cooldown.add(backend)
+        log.info(
+            "LinkedIn HR Posts: backend '%s' empty %d times in a row; "
+            "cooled down for %ds (recheck resumes automatically).",
+            backend, streak, _BACKEND_COOLDOWN_SECONDS,
+        )
+
+
+def _mark_backend_hit(backend: str) -> None:
+    _backend_empty_streak[backend] = 0
+    _backend_cooldown_until.pop(backend, None)
+    _backend_empty_cooldown.discard(backend)
+
+
+def _is_backend_warm(backend: str) -> bool:
+    return _backend_cooldown_expired(backend)
+
+
+def _set_cse_backoff(seconds: float) -> None:
+    """v65: CSE failures trigger a bounded backoff instead of a run-wide
+    permanent disable — transient API errors must not silence the primary
+    backend for every remaining query."""
+    global _cse_backoff_until, _cse_backoff_count
+    _cse_backoff_count += 1
+    # Backoff grows with consecutive failures but never exceeds 2 minutes
+    # and the remaining HR budget is always respected by the request layer.
+    backoff = min(120.0, 15.0 * min(_cse_backoff_count, 8))
+    _cse_backoff_until = time.time() + max(5.0, float(seconds) if seconds > 0 else backoff)
+    # Share the same cooldown map used by the other backends so the
+    # orchestrator's warm/skip logic sees CSE too — but CSE is explicitly
+    # excluded from the empty-response flag so stall-relaxation never
+    # picks its short failure backoff as the forced recheck.
+    _backend_cooldown_until["google_cse"] = _cse_backoff_until
+    _backend_empty_cooldown.discard("google_cse")
 
 # ============================================================
 # v61: DISCOVERY QUERY MATRICES
@@ -399,8 +461,25 @@ def _normalize_candidate_link(url: str) -> str:
 
 
 def _search_via_google_cse(query: str) -> list[tuple[str, str]]:
-    global _GOOGLE_CSE_DISABLED
+    # v65: backoff state is shared module-level state — the function both
+    # reads and (on success) clears it.
+    global _GOOGLE_CSE_DISABLED, _cse_backoff_until, _cse_backoff_count
+    # v65: bounded backoff replaces the permanent run-wide disable — a
+    # transient CSE failure must not silence the primary backend for the
+    # rest of the run.  The old flag remains respected for callers that set
+    # it directly, but backoff expiry overrides it once it is reset.
+    if _GOOGLE_CSE_DISABLED and _cse_backoff_until <= time.time():
+        # v65: backoff expiry re-enables CSE on BOTH the legacy flag and the
+        # shared cooldown map — the orchestrator's warm check reads the map,
+        # so clearing only the flag would keep CSE skipped forever.
+        _GOOGLE_CSE_DISABLED = False
+        _cse_backoff_until = 0.0
+        _cse_backoff_count = 0
+        _backend_cooldown_until.pop("google_cse", None)
+        _backend_empty_cooldown.discard("google_cse")
     if _GOOGLE_CSE_DISABLED:
+        return []
+    if not _is_backend_warm("google_cse"):
         return []
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX:
         return []
@@ -415,17 +494,31 @@ def _search_via_google_cse(query: str) -> list[tuple[str, str]]:
         "https://www.googleapis.com/customsearch/v1",
         params=params,
         max_retries=1,
-        budget_phase="linkedin",
+        budget_phase="linkedin_hr",
     )
     if not data:
-        _GOOGLE_CSE_DISABLED = True
-        log.warning("LinkedIn HR Posts: Google CSE unavailable/blocked; disabled for this run.")
+        # v65: transient backoff instead of a run-wide ban (default 15s
+        # growing to 120s with consecutive failures).  The request layer
+        # already caps each attempt to the remaining HR budget.
+        _set_cse_backoff(0.0)
+        log.warning(
+            "LinkedIn HR Posts: Google CSE request failed; backed off for "
+            "up to 120s — remaining queries will retry after the window.",
+        )
         return []
     out: list[tuple[str, str]] = []
     for item in data.get("items", []):
         canonical = _normalize_candidate_link(item.get("link", ""))
         if canonical:
             out.append((canonical, "google_cse"))
+    if out:
+        # v65: a healthy CSE response clears its own backoff so the primary
+        # backend returns to the rotation immediately.
+        _cse_backoff_until = 0.0
+        _cse_backoff_count = 0
+        _backend_cooldown_until.pop("google_cse", None)
+        _backend_empty_cooldown.discard("google_cse")
+        _GOOGLE_CSE_DISABLED = False
     return out
 
 
@@ -445,7 +538,7 @@ def _search_via_serpapi(query: str) -> list[tuple[str, str]]:
         "https://serpapi.com/search",
         params=params,
         max_retries=0,
-        budget_phase="linkedin",
+        budget_phase="linkedin_hr",
     )
     if not data:
         return []
@@ -465,7 +558,7 @@ def _search_via_bing_html(query: str) -> list[tuple[str, str]]:
         timeout=8,
         max_retries=0,
         use_proxy=False,
-        budget_phase="linkedin",
+        budget_phase="linkedin_hr",
     )
     if not html:
         return []
@@ -493,12 +586,64 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
             _SEARCH_BACKEND_WARNING_EMITTED = True
     for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_bing_html):
         backend = search_fn.__name__.removeprefix("_search_via_")
+        # v65: skip cooled-down backends — the orchestrator re-runs them on
+        # later queries once their bounded window expires.
+        if not _is_backend_warm(backend):
+            continue
         _increment_counter("search_backend_attempts", backend)
         urls = search_fn(query)
         if urls:
+            # v65: a real hit clears the backend's empty streak and any
+            # cooldown — the backend is healthy again for the rest of the
+            # query plan.
+            _mark_backend_hit(backend)
             _increment_counter("search_backend_hits", backend, len(urls))
             return urls
+        _mark_backend_empty(backend)
         _increment_counter("search_backend_empty", backend)
+    # v65: if every backend is currently cooled down, briefly relax the
+    # warmest one (smallest cooldown) so the query plan can never fully
+    # stall — at least one backend always remains callable.
+    living = [
+        b for b in ("google_cse", "serpapi", "bing_html")
+        if _backend_cooldown_until.get(b, 0.0) > 0.0
+    ]
+    if living and not any(_is_backend_warm(b) for b in living):
+        # v65: stall-relaxation rechecks a backend whose cooldown came from
+        # genuinely empty responses — never the short transient-failure
+        # backoff of CSE — otherwise the relaxed slot keeps bouncing
+        # between failure backoffs and the query plan livelocks.
+        # Stall-relaxation only rechecks backends whose cooldown came from
+        # genuinely empty responses; a backend whose cooldown came from a
+        # short transient failure (CSE) is not rechecked — re-hitting a
+        # known-failing API endpoint advances nothing.
+        eligible = [b for b in living if b in _backend_empty_cooldown]
+        if not eligible:
+            return []
+        relaxed = min(eligible, key=lambda b: _backend_cooldown_until[b])
+        log.info(
+            "LinkedIn HR Posts: all search backends cooled down; forcing one "
+            "recheck for backend '%s' so the query plan never fully stalls.",
+            relaxed,
+        )
+        _backend_cooldown_until[relaxed] = 0.0
+        _backend_empty_cooldown.discard(relaxed)
+        for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_bing_html):
+            if search_fn.__name__.removeprefix("_search_via_") == relaxed:
+                _increment_counter("search_backend_attempts", relaxed)
+                urls = search_fn(query)
+                if urls:
+                    # v65: a forced recheck that produces results clears the
+                    # backend's streak and cooldown, same as the normal loop.
+                    _mark_backend_hit(relaxed)
+                    _increment_counter("search_backend_hits", relaxed, len(urls))
+                    return urls
+                # v65: a forced recheck that comes back empty is registered
+                # like any other empty response — the streak grows and the
+                # backend re-enters cooldown so the plan never livelocks on
+                # a repeatedly empty backend.
+                _mark_backend_empty(relaxed)
+                _increment_counter("search_backend_empty", relaxed)
     return []
 
 
@@ -770,7 +915,7 @@ def _fetch_via_jina(url: str) -> str | None:
             },
             timeout=20,
             max_retries=0,
-            budget_phase="linkedin",
+            budget_phase="linkedin_hr",
         )
         return result
     except Exception:
