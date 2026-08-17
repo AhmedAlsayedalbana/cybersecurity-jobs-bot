@@ -252,10 +252,17 @@ def _record_source_timeout(
             error_code="source_timeout", elapsed_ms=elapsed_ms,
         )
     if hasattr(db, "update_source_health_state"):
+        # v63: ``source_timeout`` here is the orchestrator's deadline firing,
+        # not the source's own transport failure — it must never strand the
+        # source in quarantine.  Egyptian priority sources additionally keep
+        # their full 90s attempt without auto-disable.
+        is_egypt = spec.key in (config.EGYPT_PRIORITY_SOURCE_KEYS or set())
         db.update_source_health_state(
             spec.key, success=False, jobs_count=0, error_code="source_timeout",
             auto_disable_threshold=config.SOURCE_AUTO_DISABLE_THRESHOLD,
             quarantine_minutes=config.SOURCE_QUARANTINE_MINUTES,
+            deadline_timeout=True,
+            is_priority_source=is_egypt,
         )
 
 
