@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from html import unescape
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -228,10 +229,29 @@ def _classify_zero_jobs_reason(error_code: str, parsed: bool, no_active_jobs: bo
 
 
 def _source_budget_seconds(source: CareerSource) -> float:
-    """Per-source cooperative ceiling, honoring the Egyptian priority budget."""
-    if source.key in config.EGYPT_PRIORITY_SOURCE_KEYS:
-        return float(config.EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS)
+    """Per-source cooperative ceiling.
+
+    v64: the ceiling covers a fast cascade, never a long wait.  Egyptian
+    priority sources get a dedicated cap that stays short enough that a
+    failing bank can never drain the run budget; the generic 40s cap is also
+    respected because priority still cannot exceed the shared ceiling plus
+    one small buffer.
+    """
+    is_priority = source.key in config.EGYPT_PRIORITY_SOURCE_KEYS
+    if is_priority:
+        # 45s total: official endpoint/search (fast) + lightweight HTML + one
+        # short JS-only Playwright pass.  A failing bank stops losing time
+        # after this, and the orchestrator's own wait_for deadline (same cap)
+        # then moves on to the next source immediately.
+        return min(float(config.EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS), 45.0)
     return float(config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS)
+
+
+# v64 per-attempt caps: a failing route in the cascade must give up fast —
+# ``connecttimeout`` on a dead portal is retried once with the same short
+# cap, never held open until the source deadline burns away.
+_FAST_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("CAREERS_FAST_ATTEMPT_TIMEOUT_SECONDS", "8"))
+_FAST_ATTEMPT_SECOND_CAP_SECONDS = float(os.getenv("CAREERS_FAST_ATTEMPT_SECOND_CAP_SECONDS", "10"))
 
 
 def fetch_source(source_key: str) -> SourceResult:
@@ -411,8 +431,24 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
     parsed_any = False
     seen_page_fingerprints: set[tuple[str, ...]] = set()
 
+    # v64: transport errors (connection refused/reset, dead portal) stop the
+    # page loop immediately after one short retry with the same short cap —
+    # keeping the socket open at the default 25s per page is what let
+    # connectionerror pileups burn 20-60s on dead banks in the 2026-08-17
+    # runs.  Content that arrives stays paginated as before.
+    page_transport_failures = 0
     while True:
-        result = get_text_result(_page_url(source, page), timeout=25, max_retries=2)
+        result = get_text_result(_page_url(source, page), timeout=int(_FAST_ATTEMPT_TIMEOUT_SECONDS), max_retries=1)
+        if not result.text:
+            page_transport_failures += 1
+            if page_transport_failures > 1:
+                return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code=result.error_code or "official_page_unavailable")
+            if page > source.page_start:
+                # First page answered (parsed already happened); a later
+                # page failing to connect does not invalidate the jobs we
+                # already have, but it also does not deserve a long retry.
+                return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code=result.error_code or "official_page_unavailable")
+            result = get_text_result(_page_url(source, page), timeout=int(_FAST_ATTEMPT_SECOND_CAP_SECONDS), max_retries=1)
         if not result.text:
             return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code=result.error_code or "official_page_unavailable")
         page_jobs, parsed = _jobs_from_html(result.text, source, base_url=source.url)
@@ -462,12 +498,19 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
                     all_jobs: list[Job] = []
                     parsed_any = False
                     page_fingerprints: set[tuple[str, ...]] = set()
+                    # v64: every Playwright navigation is capped at 15s per
+                    # page regardless of the source's total ceiling — a bank
+                    # SPA that cannot finish its JS bundle in 15s will not
+                    # finish it in 60s either, and the 15s cap is what cut
+                    # the observed 46-89s per failed bank down to a fixed
+                    # known cost.  Startup time still counts against the
+                    # source's own ceiling.
+                    page.set_default_timeout(15000)
                     while True:
                         # Keep every JS navigation inside the source's own
-                        # ceiling (generic 40s, Egyptian priority 90s).  A
-                        # direct attempt may already have consumed part of
-                        # that ceiling, so never let a browser fallback
-                        # borrow time from later sources.
+                        # ceiling.  A direct attempt may already have
+                        # consumed part of that ceiling, so never let a
+                        # browser fallback borrow time from later sources.
                         local_remaining = budget_seconds - (time.monotonic() - start_at)
                         remaining_seconds = min(local_remaining, source_remaining())
                         if remaining_seconds <= 0.05:
@@ -478,10 +521,7 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
                         page.goto(
                             _page_url(source, page_number),
                             wait_until="networkidle",
-                            timeout=max(50, min(
-                                config.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
-                                int(remaining_seconds * 1000),
-                            )),
+                            timeout=max(50, min(15000, int(remaining_seconds * 1000))),
                         )
                         html = page.content()
                         jobs, parsed = _jobs_from_html(html, source, base_url=source.url)
