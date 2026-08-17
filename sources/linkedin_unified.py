@@ -895,6 +895,15 @@ async def _fetch_linkedin_unified_impl() -> list[Job]:
     if aiohttp is None:
         return all_jobs
 
+    # v65: HR posts get their OWN budget phase — sharing the "linkedin" phase
+    # with the unified crawler meant the crawler's requests drained the
+    # shared window, so every HR search backend started returning
+    # ``run_budget_exhausted`` and the run ended with 0 HR posts.  A
+    # dedicated phase guarantees HR backends their full 90s regardless of
+    # how heavy the parallel jobs crawl is.
+    from run_budget import start_phase as _start_hr_phase
+    _start_hr_phase("linkedin_hr", float(config.LINKEDIN_HR_POSTS_BUDGET_SECONDS))
+
     # Start HR posts in parallel with jobs crawl.
     async def _fetch_hr_posts_with_timing() -> tuple[list[Job], float]:
         started = time.time()
