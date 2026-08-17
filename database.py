@@ -353,6 +353,19 @@ class JobsDB:
                     next_retry_at TEXT NOT NULL
                 )""",
                 "CREATE INDEX IF NOT EXISTS idx_retry_due ON telegram_retry_queue(status, next_retry_at)",
+                # v64: recovery/fallback rotation — an important priority source
+                # that fails repeatedly is moved out of the main rotation and
+                # retried on a sparse schedule instead of burning the shared
+                # budget every run.  Never deletes the source; just paces it.
+                """CREATE TABLE IF NOT EXISTS source_recovery_state (
+                    source_key TEXT PRIMARY KEY,
+                    entered_at TEXT NOT NULL,
+                    recheck_every_n_runs INTEGER NOT NULL DEFAULT 3,
+                    recheck_run_counter INTEGER NOT NULL DEFAULT 0,
+                    last_recovery_at TEXT,
+                    recovery_status TEXT NOT NULL DEFAULT 'pending'
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_source_recovery_status ON source_recovery_state(recovery_status)",
             ]
             for stmt in new_tables:
                 try:
@@ -990,10 +1003,14 @@ class JobsDB:
         # v63: a run-phase deadline (budget exhaustion) is not the source's
         # own fault — it must never compound into quarantine, and priority
         # sources are additionally exempt from auto-disable because they are
-        # the highest-value supply and the 90s budget already gives them a
-        # fair full attempt.  Only real transport-level failures quarantine.
+        # the highest-value supply and the short per-run budget already gives
+        # them a fair full attempt.  Only real transport-level failures quarantine.
+        # v64: priority sources that still fail with real transport errors are
+        # not deleted — they enter the recovery/fallback rotation (a sparse
+        # recheck schedule) instead of consuming the shared budget every run.
         deadline_timeout: bool = False,
         is_priority_source: bool = False,
+        recovery_run_fail_threshold: int = 3,
     ) -> None:
         now = datetime.now()
         now_iso = now.isoformat()
@@ -1023,6 +1040,10 @@ class JobsDB:
                         None,
                     ),
                 )
+                # v64: even the first observed success of a priority source
+                # guarantees it is not parked in the recovery rotation.
+                if success and is_priority_source and hasattr(self, "_leave_recovery_rotation"):
+                    self._leave_recovery_rotation(con, source_key)
                 return
 
             success_streak = int(row["success_streak"] or 0)
@@ -1042,6 +1063,10 @@ class JobsDB:
                     total_success += 1
                 if jobs_count > 0 or success:
                     quarantined_until = None
+                # v64: a real fetch after recovery rotation succeeds → the
+                # source graduates back into the main rotation automatically.
+                if is_priority_source and (jobs_count > 0 or success):
+                    self._leave_recovery_rotation(con, source_key)
             else:
                 success_streak = 0
                 failure_streak += 1
@@ -1050,6 +1075,17 @@ class JobsDB:
                     quarantined_until = (
                         now + timedelta(minutes=max(1, quarantine_minutes))
                     ).isoformat()
+                # v64: a priority source with repeated real failures does not
+                # stay in the main rotation burning budget every run — it
+                # moves into the recovery/fallback rotation (never deleted).
+                if (
+                    is_priority_source
+                    and failure_streak >= max(1, recovery_run_fail_threshold)
+                    and not deadline_timeout
+                ):
+                    self._enter_recovery_rotation(
+                        con, source_key, recheck_every_n_runs=3,
+                    )
 
             con.execute(
                 """
@@ -1096,6 +1132,82 @@ class JobsDB:
         for row in rows:
             out[row["source_key"]] = dict(row)
         return out
+
+    # ── v64 recovery/fallback rotation ──────────────────────────────────────
+
+    @staticmethod
+    def _enter_recovery_rotation(
+        con: sqlite3.Connection,
+        source_key: str,
+        recheck_every_n_runs: int = 3,
+    ) -> None:
+        """Move a failing priority source into the sparse recovery rotation.
+
+        The source is never deleted from the registry; it is simply rechecked
+        every ``recheck_every_n_runs`` main rotation runs instead of every
+        run, so repeated failures cost a fixed small known budget rather than
+        the full per-run allocation.  Idempotent on repeated failures.
+        """
+        now_iso = datetime.now().isoformat()
+        con.execute(
+            """INSERT INTO source_recovery_state(
+                source_key, entered_at, recheck_every_n_runs,
+                recheck_run_counter, last_recovery_at, recovery_status
+            ) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                entered_at=excluded.entered_at,
+                recheck_run_counter=source_recovery_state.recheck_run_counter""",
+            (source_key, now_iso, max(1, recheck_every_n_runs), 0, None, "pending"),
+        )
+        log.info(
+            "[DB] source %s entered recovery rotation (recheck every %d runs)",
+            source_key, recheck_every_n_runs,
+        )
+
+    @staticmethod
+    def _leave_recovery_rotation(
+        con: sqlite3.Connection, source_key: str,
+    ) -> None:
+        """A recovery recheck that actually fetched jobs graduates the source."""
+        con.execute("DELETE FROM source_recovery_state WHERE source_key=?", (source_key,))
+
+    def enter_recovery_rotation(self, source_key: str, *, recheck_every_n_runs: int = 3) -> None:
+        with self._conn() as con:
+            self._enter_recovery_rotation(con, source_key, recheck_every_n_runs)
+
+    def graduate_from_recovery_rotation(self, source_key: str) -> None:
+        with self._conn() as con:
+            self._leave_recovery_rotation(con, source_key)
+
+    def get_recovery_sources(self) -> list[dict]:
+        """All sources currently parked in the recovery/fallback rotation."""
+        with self._conn() as con:
+            rows = con.execute("SELECT * FROM source_recovery_state").fetchall()
+        return [dict(row) for row in rows]
+
+    def bump_recovery_counters(self) -> None:
+        """Increment every recovery source's counter once at run start.
+
+        Call exactly once per main run before deciding which sources to
+        execute.  Sources whose counter has rolled over to 0 (counter is a
+        multiple of recheck_every_n_runs) are due for a recovery recheck in
+        this run.
+        """
+        with self._conn() as con:
+            con.execute(
+                "UPDATE source_recovery_state SET recheck_run_counter = recheck_run_counter + 1",
+            )
+            con.commit()
+
+    def recovery_due_sources(self) -> list[str]:
+        """Recovery sources due for a recheck in the current run."""
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT source_key, recheck_every_n_runs, recheck_run_counter "
+                "FROM source_recovery_state"
+            ).fetchall()
+        return [r["source_key"] for r in rows
+                if (int(r["recheck_run_counter"]) % max(1, int(r["recheck_every_n_runs"]))) == 0]
 
     def record_training_sample(
         self,
