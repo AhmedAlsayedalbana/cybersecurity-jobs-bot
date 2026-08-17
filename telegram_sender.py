@@ -824,11 +824,12 @@ def send_jobs(jobs, *, dry_run: bool = False):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
     log.info(
-        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d%s",
+        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d delivery_pending=%d%s",
         delivery_lifecycle["eligible"], delivery_lifecycle["routed"],
         delivery_lifecycle["reserved"], delivery_lifecycle["sent"],
         delivery_lifecycle["failed"], delivery_lifecycle["channel_mismatch"],
         delivery_lifecycle["already_sent"],
+        delivery_lifecycle["delivery_pending"],
         f" would_send={delivery_lifecycle['would_send']}" if dry_run else "",
     )
 
@@ -1380,8 +1381,33 @@ def _send_to_topic(message, thread_id=None, db: JobsDB | None = None, channel_ke
         ):
             # ``reserve_telegram_delivery`` only rejects a confirmed sent
             # row or a delivery whose one retry was already exhausted.
-            log.info("Telegram delivery already sent/retry-exhausted for [%s]", channel_key)
-            if lifecycle is not None:
+            # v66: a legacy exhausted row can still reach here in two
+            # distinct cases.  The outbox resets one fresh attempt at the
+            # start of each run, so a NEW candidate blocked by a terminal
+            # channel state must never be silently dropped: it is recorded
+            # as delivery_pending so the next run visibly retries it —
+            # and it is never counted as a success.
+            pending_logged = False
+            if (
+                config.TELEGRAM_DELIVERY_PENDING_ON_TERMINAL_STATE
+                and delivery_id
+                and hasattr(db, "mark_delivery_pending")
+                and lifecycle is not None
+            ):
+                try:
+                    db.mark_delivery_pending(delivery_id)
+                    pending_logged = True
+                except Exception:
+                    pending_logged = False
+            if pending_logged:
+                log.info(
+                    "Telegram delivery blocked by terminal channel state for "
+                    "[%s]; candidate queued as delivery_pending for the next "
+                    "run (never silently dropped).", channel_key,
+                )
+                lifecycle["delivery_pending"] += 1
+            else:
+                log.info("Telegram delivery already sent/retry-exhausted for [%s]", channel_key)
                 lifecycle["already_sent"] += 1
             return False
         if lifecycle is not None:
