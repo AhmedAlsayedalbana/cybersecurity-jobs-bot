@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import threading
+import time
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
@@ -29,6 +30,17 @@ import config
 from sources.http_utils import get_json, get_text_result, post_json
 from sources.marketplace_sources import SourceResult
 from run_budget import source_remaining
+
+# CareerSource keys whose official page is a JavaScript SPA: the HTML client
+# reliably returns zero listings, and a Playwright render is the only real
+# way to read the portal. Everything else stays endpoint-only — a browser
+# render on an endpoint that already answered is noise, never supply.
+_JS_ONLY_SOURCE_KEYS: frozenset[str] = frozenset({
+    "nbe", "we_jina", "qnb_egypt", "cib_egypt", "banque_misr",
+    "banque_du_caire", "aaib", "adib_egypt", "etisalat_egypt",
+    "emirates_nbd_egypt", "mashreq_egypt", "bank_nxt", "itida",
+    "smart_village", "pharco", "raya",
+})
 
 log = logging.getLogger(__name__)
 
@@ -215,8 +227,22 @@ def _classify_zero_jobs_reason(error_code: str, parsed: bool, no_active_jobs: bo
     return "BLOCKED"
 
 
+def _source_budget_seconds(source: CareerSource) -> float:
+    """Per-source cooperative ceiling, honoring the Egyptian priority budget."""
+    if source.key in config.EGYPT_PRIORITY_SOURCE_KEYS:
+        return float(config.EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS)
+    return float(config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS)
+
+
 def fetch_source(source_key: str) -> SourceResult:
-    """Fetch one official source and report an honest health status."""
+    """Fetch one official source and report an honest health status.
+
+    Official endpoint/API comes FIRST.  Playwright is reserved for sources
+    whose careers page is genuinely JavaScript-only: a SPA that an HTTP
+    client cannot parse and whose anchor links do not carry job postings.
+    A portal that answered the endpoint with real content is never given a
+    browser fallback — that is a duplicate scan, not a rescue.
+    """
     source = SOURCES_BY_KEY[source_key]
     outcome = _fetch_direct(source)
     if outcome.jobs:
@@ -236,8 +262,18 @@ def fetch_source(source_key: str) -> SourceResult:
             attempted_urls=(source.url,),
         )
 
-    if source.browser_fallback:
-        browser_outcome = _fetch_with_browser(source)
+    # Playwright is permitted only when the source is actually JS-only. An
+    # endpoint that parsed real structure (parsed=True) but exposed no
+    # listings genuinely has none — re-rendering the same page in a browser
+    # cannot create jobs, and only burns budget. Same when the endpoint
+    # already returned a hard HTTP failure: the portal is blocking clients,
+    # and JS-render does not bypass server-side blocks.
+    js_only = (
+        source_key in _JS_ONLY_SOURCE_KEYS
+        and not outcome.parsed
+    )
+    if source.browser_fallback and js_only:
+        browser_outcome = _fetch_with_browser(source, budget_seconds=_source_budget_seconds(source))
         if browser_outcome.jobs:
             return SourceResult(
                 jobs=browser_outcome.jobs,
@@ -400,12 +436,16 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
     return _Outcome(jobs, parsed=parsed_any, no_active_jobs=parsed_any and not jobs)
 
 
-def _fetch_with_browser(source: CareerSource) -> _Outcome:
+def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = None) -> _Outcome:
     """Render only after a direct public-data request failed.
 
     The import and browser startup are deliberately lazy so normal JSON/ATS
-    connectors do not pay a browser cost.
+    connectors do not pay a browser cost.  ``budget_seconds`` is the
+    per-source ceiling the browser render borrows — Egyptian priority
+    sources get a dedicated 90s ceiling so a JS-only careers SPA is never
+    killed by the generic 40s playwright cap.
     """
+    budget_seconds = budget_seconds or _source_budget_seconds(source)
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -418,15 +458,18 @@ def _fetch_with_browser(source: CareerSource) -> _Outcome:
                 try:
                     page = browser.new_page(locale="en-US")
                     page_number = source.page_start
+                    start_at = time.monotonic()
                     all_jobs: list[Job] = []
                     parsed_any = False
                     page_fingerprints: set[tuple[str, ...]] = set()
                     while True:
-                        # Keep every JS navigation inside the source's shared
-                        # 40-second ceiling.  A direct attempt may already
-                        # have consumed part of that ceiling, so never let a
-                        # browser fallback borrow time from later sources.
-                        remaining_seconds = source_remaining()
+                        # Keep every JS navigation inside the source's own
+                        # ceiling (generic 40s, Egyptian priority 90s).  A
+                        # direct attempt may already have consumed part of
+                        # that ceiling, so never let a browser fallback
+                        # borrow time from later sources.
+                        local_remaining = budget_seconds - (time.monotonic() - start_at)
+                        remaining_seconds = min(local_remaining, source_remaining())
                         if remaining_seconds <= 0.05:
                             return _Outcome(
                                 _dedupe_jobs(all_jobs), parsed=parsed_any,
