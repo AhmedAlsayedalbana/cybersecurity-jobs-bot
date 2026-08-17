@@ -14,6 +14,8 @@ import logging
 import os
 import json
 from datetime import datetime, timedelta
+
+import config
 from contextlib import contextmanager
 
 log = logging.getLogger(__name__)
@@ -944,6 +946,24 @@ class JobsDB:
                 ),
             )
 
+    def mark_delivery_pending(self, delivery_key: str) -> None:
+        """v66: a NEW candidate that reached the send loop but is blocked by a
+        terminal channel state (sent/retry-exhausted from an earlier run)
+        must never be silently dropped. Its outbox row is set to
+        ``delivery_pending`` so the per-run outbox reset hands it a fresh
+        attempt at the start of the next run — visible in the lifecycle
+        counter ``delivery_pending``, never counted as success.
+        """
+        now_iso = datetime.now().isoformat()
+        with self._conn() as con:
+            con.execute(
+                """UPDATE telegram_delivery_outbox
+                SET status='delivery_pending', last_error=NULL,
+                    updated_at=?, next_retry_at=NULL
+                WHERE delivery_key=?""",
+                (now_iso, delivery_key),
+            )
+
     def get_due_safe_delivery_retries(self, limit: int = 25) -> list[dict]:
         now = datetime.now().isoformat()
         with self._conn() as con:
@@ -1042,8 +1062,16 @@ class JobsDB:
                 )
                 # v64: even the first observed success of a priority source
                 # guarantees it is not parked in the recovery rotation.
-                if success and is_priority_source and hasattr(self, "_leave_recovery_rotation"):
+                # v66: any source with recent proven yield that succeeds
+                # (jobs > 0) graduates out of the recovery rotation — a
+                # proven supplier must not stay parked after a transient
+                # incident once it starts delivering again.
+                if success and (is_priority_source or jobs_count > 0) and hasattr(self, "_leave_recovery_rotation"):
                     self._leave_recovery_rotation(con, source_key)
+                # v66: a brand-new source whose first run failed stays in the
+                # main rotation — a single failure means "retry next run", it
+                # is only repeated failures (the existing-row verdict path
+                # below) that graduate into the recovery/fallback rotation.
                 return
 
             success_streak = int(row["success_streak"] or 0)
@@ -1065,7 +1093,11 @@ class JobsDB:
                     quarantined_until = None
                 # v64: a real fetch after recovery rotation succeeds → the
                 # source graduates back into the main rotation automatically.
-                if is_priority_source and (jobs_count > 0 or success):
+                # v66: graduation applies to every source that fetched jobs
+                # successfully, not only Egyptian priority keys — yield is
+                # the separation criterion between health, yield and
+                # scheduling, not the region tag.
+                if jobs_count > 0 or success:
                     self._leave_recovery_rotation(con, source_key)
             else:
                 success_streak = 0
@@ -1078,13 +1110,41 @@ class JobsDB:
                 # v64: a priority source with repeated real failures does not
                 # stay in the main rotation burning budget every run — it
                 # moves into the recovery/fallback rotation (never deleted).
+                # v66: three upgrades to the rotation policy.
+                #  (a) A source that produced jobs recently (proven yield)
+                #      must never be parked — a transient failure window
+                #      must not strand a proven supplier on a sparse
+                #      schedule, and a source is never parked simply
+                #      because it was not executed in the current run.
+                #  (b) Entry is re-check on real failure verdicts only.
+                #  (c) The recheck interval is graduated from the current
+                #      consecutive-failure streak: 1 → every run, 2 → every
+                #      2 runs, 3+ → every 3-5 runs; a success resets it.
                 if (
+                    failure_streak >= max(1, recovery_run_fail_threshold)
+                    and not deadline_timeout
+                ) and not bool(self.recent_source_yield(source_key)):
+                    interval = self.graduated_recovery_interval(failure_streak) if config.RECOVERY_GRADUATED_COOLDOWN else 3
+                    self._enter_recovery_rotation(
+                        con, source_key, recheck_every_n_runs=interval,
+                    )
+                    # v66: the rotation row may already exist (stale state)
+                    # with an outdated recheck interval — re-apply the
+                    # graduated interval for the current failure streak so
+                    # the schedule always reflects the latest verdict.
+                    self._update_recovery_interval(con, source_key, interval)
+                elif (
                     is_priority_source
                     and failure_streak >= max(1, recovery_run_fail_threshold)
                     and not deadline_timeout
                 ):
-                    self._enter_recovery_rotation(
-                        con, source_key, recheck_every_n_runs=3,
+                    interval = self.graduated_recovery_interval(failure_streak) if config.RECOVERY_GRADUATED_COOLDOWN else 3
+                    self._update_recovery_interval(con, source_key, interval)
+                    log.info(
+                        "[DB] source %s has recent yield (%d jobs) — "
+                        "kept in the main rotation, recovery interval "
+                        "updated to every %d runs instead of parking",
+                        source_key, self.recent_source_yield(source_key), interval,
                     )
 
             con.execute(
@@ -1175,6 +1235,35 @@ class JobsDB:
         with self._conn() as con:
             self._enter_recovery_rotation(con, source_key, recheck_every_n_runs)
 
+    @staticmethod
+    def _update_recovery_interval(
+        con: sqlite3.Connection, source_key: str, recheck_every_n_runs: int,
+    ) -> None:
+        """Tighten or loosen an existing rotation entry's recheck interval.
+        Used by the graduated cooldown policy (v66) after a run records a
+        new failure streak: the next recheck pacing follows the streak.
+        """
+        con.execute(
+            "UPDATE source_recovery_state SET recheck_every_n_runs=? "
+            "WHERE source_key=?",
+            (max(1, int(recheck_every_n_runs)), source_key),
+        )
+
+    def update_recovery_schedule(self, source_key: str) -> None:
+        """Recompute a parked source's recheck interval from its current
+        consecutive-failure streak (v66 graduated cooldown).
+        """
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT failure_streak FROM source_health_state WHERE source_key=?",
+                (source_key,),
+            ).fetchone()
+            if row is None or int(row["failure_streak"] or 0) == 0:
+                self._leave_recovery_rotation(con, source_key)
+                return
+            interval = self.graduated_recovery_interval(int(row["failure_streak"] or 0))
+            self._update_recovery_interval(con, source_key, interval)
+
     def graduate_from_recovery_rotation(self, source_key: str) -> None:
         with self._conn() as con:
             self._leave_recovery_rotation(con, source_key)
@@ -1185,9 +1274,44 @@ class JobsDB:
             rows = con.execute("SELECT * FROM source_recovery_state").fetchall()
         return [dict(row) for row in rows]
 
+        # v66: graduated cooldown after consecutive failures. The user spec is
+    # 1 failure → retry next run, 2 consecutive → every 2 runs,
+    # 3+ failures → every 3-5 runs, and a successful run resets the counter.
+    @staticmethod
+    def graduated_recovery_interval(consecutive_failures: int) -> int:
+        failures = max(0, int(consecutive_failures))
+        if failures <= 0:
+            return 1
+        if failures == 1:
+            return 1   # retry next run
+        if failures == 2:
+            return 2   # every 2 runs
+        # 3+ consecutive failures → every 3..5 runs, capped at 5
+        return min(5, 2 + failures)
+
+    def recent_source_yield(self, source_key: str) -> int:
+        """Jobs fetched by the source in the recent yield window (v66).
+        A source with recent positive yield is protected from parking: its
+        failure streak at entry time reflects a transient incident, not a
+        structural loss of supply.
+        """
+        try:
+            memory_days = max(1, int(config.RECOVERY_RECENT_YIELD_MEMORY_DAYS))
+            min_jobs = max(1, int(config.RECOVERY_RECENT_YIELD_MIN_JOBS))
+        except Exception:
+            memory_days, min_jobs = 7, 1
+        cutoff = (datetime.now() - timedelta(days=memory_days)).isoformat()
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT COALESCE(SUM(count), 0) AS total FROM source_stats "
+                "WHERE source=? AND run_at >= ? AND failed = 0",
+                (source_key, cutoff),
+            ).fetchone()
+        total = int(row["total"] or 0)
+        return total
+
     def bump_recovery_counters(self) -> None:
         """Increment every recovery source's counter once at run start.
-
         Call exactly once per main run before deciding which sources to
         execute.  Sources whose counter has rolled over to 0 (counter is a
         multiple of recheck_every_n_runs) are due for a recovery recheck in
