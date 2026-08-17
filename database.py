@@ -840,15 +840,30 @@ class JobsDB:
                                   thread_id: int | None, payload: dict) -> bool:
         """Reserve one exact ``(job_id, channel)`` delivery attempt.
 
-        A reservation is not a send.  Only a row with both ``status='sent'``
-        and ``sent_at`` prevents a later attempt.  Failed sends receive one
-        retry (two network attempts total); interrupted reservations resume.
+        A reservation is not a send, and nothing that is not a confirmed send
+        is allowed to block the first real delivery:
+
+        * Only a row with both ``status='sent'`` and a ``sent_at`` proof
+          permanently prevents a repeat on the same ``(job, channel)`` pair.
+        * ``send_failed`` with ``attempts >= 2`` (retry-exhausted) only
+          suppresses delivery **within the same run**: each new run grants
+          the pair one fresh attempt (up to 3 network calls per run), so a
+          transient outage in run N can never strand the first real send in
+          run N+1.
+        * ``retry_429`` rows are handled outside this path by the safe
+          retry-drain queue; they never reach a hard reject here.
+        * Legacy ambiguous rows (``sent`` without ``sent_at``, unknown
+          statuses) were never confirmed and always resume.
         """
-        now = datetime.now().isoformat()
+        now = datetime.now()
+        now_iso = now.isoformat()
+        # ``run_at`` is the current run's start; rows created after it belong
+        # to this run and share its fresh retry budget.
+        run_at = _delivery_run_at()
         encoded_payload = json.dumps(payload, ensure_ascii=False)
         with self._conn() as con:
             row = con.execute(
-                """SELECT status, sent_at, attempts
+                """SELECT status, sent_at, attempts, created_at
                 FROM telegram_delivery_outbox WHERE delivery_key=?""",
                 (delivery_key,),
             ).fetchone()
@@ -858,7 +873,7 @@ class JobsDB:
                         delivery_key, channel_key, thread_id, payload_json, status,
                         created_at, updated_at, sent_at
                     ) VALUES(?,?,?,?, 'reserved', ?, ?, NULL)""",
-                    (delivery_key, channel_key, thread_id, encoded_payload, now, now),
+                    (delivery_key, channel_key, thread_id, encoded_payload, now_iso, now_iso),
                 )
                 return True
 
@@ -867,10 +882,27 @@ class JobsDB:
             if row["status"] == "sent" and row["sent_at"]:
                 return False
 
-            # ``send_failed`` is deliberately retry-once: attempts is bumped
-            # when a network call completes, not when it is merely reserved.
-            if row["status"] == "send_failed" and int(row["attempts"] or 0) >= 2:
-                return False
+            status = row["status"] or "reserved"
+            attempts = int(row["attempts"] or 0)
+            created_at = row["created_at"] or ""
+            same_run = bool(run_at) and created_at >= run_at
+
+            # ``send_failed`` keeps its retry-once semantics, but the budget
+            # now resets at the start of each new run instead of permanently
+            # stranding the ``(job, channel)`` pair.  Within the same run an
+            # exhausted pair (2 network calls already made) is rejected once
+            # more so a flapping connector cannot loop forever.
+            if status == "send_failed" and attempts >= 2:
+                if same_run:
+                    return False
+                # New run: hand the pair one fresh attempt and reset the
+                # attempt counter so the lifecycle stays auditable.
+                con.execute(
+                    """UPDATE telegram_delivery_outbox
+                    SET attempts=0, last_error=NULL, updated_at=?, next_retry_at=NULL
+                    WHERE delivery_key=?""",
+                    (now_iso, delivery_key),
+                )
 
             # Legacy ambiguous/failed rows were never confirmed sent.  They
             # get the remaining retry budget under the new lifecycle.
@@ -879,7 +911,7 @@ class JobsDB:
                 SET channel_key=?, thread_id=?, payload_json=?, status='reserved',
                     last_error=NULL, updated_at=?, next_retry_at=NULL, sent_at=NULL
                 WHERE delivery_key=?""",
-                (channel_key, thread_id, encoded_payload, now, delivery_key),
+                (channel_key, thread_id, encoded_payload, now_iso, delivery_key),
             )
             return True
 
@@ -1233,3 +1265,19 @@ def get_db(db_path: str = DB_PATH) -> "JobsDB":
     if _singleton is None or _singleton.db_path != db_path:
         _singleton = JobsDB(db_path)
     return _singleton
+
+
+# Shared, per-process anchor for the current run so outbox retries can
+# distinguish a legacy exhausted row (eligible for a fresh attempt) from an
+# in-run exhaustion (still suppressed).  main.py sets it at run start.
+_current_delivery_run_at: str | None = None
+
+
+def set_delivery_run_at(run_at: str | None) -> None:
+    """Record the current run's start time for outbox retry semantics."""
+    global _current_delivery_run_at
+    _current_delivery_run_at = run_at
+
+
+def _delivery_run_at() -> str | None:
+    return _current_delivery_run_at
