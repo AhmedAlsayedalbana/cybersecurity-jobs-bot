@@ -25,6 +25,7 @@ import config
 from sources import SourceSpec, get_source_specs
 from models import CyberVerdict, classify_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent, smart_expire
+import database
 from database import JobsDB, get_db, set_delivery_run_at
 from telegram_sender import send_jobs, send_test_canary
 from scoring import score_job_int as score_job, diversity_rerank
@@ -209,6 +210,66 @@ def _log_recency_audit(rejected_jobs: list) -> None:
         )
 
 
+# ── v64 yield-based execution priority ─────────────────────────────────────
+
+# Connectors that demonstrably supply unique, fresh cyber jobs — the observed
+# run confirmed FABMISR, Vodafone Egypt, QNB Global, Greenhouse, Cloudflare,
+# Wiz, Tenable, Bugcrowd, and HackerOne, and the dynamic boost rewards any
+# connector that keeps delivering the same way.  Static registry priority is
+# preserved; this only nudges proven suppliers higher inside the run plan.
+_YIELD_BOOST_MIN_RECENT_JOBS = int(os.getenv("YIELD_BOOST_MIN_RECENT_JOBS", "3"))
+_YIELD_BOOST_MEMORY_DAYS = int(os.getenv(
+    "YIELD_BOOST_MEMORY_DAYS", str(getattr(database, "MEMORY_DAYS", 5))
+))
+_YIELD_PROVEN_SOURCE_KEYS = {
+    "fabmisr", "vodafone_egypt", "qnb_global", "greenhouse_bigtech",
+    "greenhouse_expanded", "greenhouse_cybersec", "cloudflare",
+    "wiz", "tenable", "bugcrowd", "hackerone",
+    "github_security", "telegram_channels", "forasna",
+}
+
+
+def _apply_yield_priority_boost(specs: list["SourceSpec"], db: JobsDB) -> None:
+    """Boost registry priority for connectors with proven recent yield.
+
+    Read from ``source_stats`` (the durable per-run yield ledger): any source
+    whose total recent successful-job count is at least
+    ``_YIELD_BOOST_MIN_RECENT_JOBS`` over the last ``_YIELD_BOOST_MEMORY_DAYS``
+    days has its spec priority improved by up to 12 slots.  Order remains
+    deterministic and the boost is capped so LinkedIn/HR lanes are untouched.
+    """
+    try:
+        memory_days = max(1, _YIELD_BOOST_MEMORY_DAYS)
+        cutoff = (datetime.now() - timedelta(days=memory_days)).isoformat()
+        yields: dict[str, int] = {}
+        with db._conn() as con:  # type: ignore[attr-defined]
+            rows = con.execute(
+                "SELECT source, SUM(count) AS total FROM source_stats "
+                "WHERE run_at >= ? AND failed = 0 GROUP BY source",
+                (cutoff,),
+            ).fetchall()
+        for row in rows:
+            yields[row["source"]] = int(row["total"] or 0)
+
+        boosted = 0
+        for spec in specs:
+            total = yields.get(spec.key) or yields.get(spec.name) or 0
+            if total < max(1, _YIELD_BOOST_MIN_RECENT_JOBS):
+                continue
+            static = spec.priority
+            proven = spec.key in _YIELD_PROVEN_SOURCE_KEYS
+            # Proven suppliers jump to the front of the common-pool rotation;
+            # other proven-yield sources get a moderate lift.
+            target = 10 if proven else min(static, 20)
+            if target < static:
+                spec.priority = target
+                boosted += 1
+        if boosted:
+            log.info("[v64] yield boost applied to %d proven source(s)", boosted)
+    except Exception as exc:  # noqa: BLE001 — never let yield stats break the run
+        log.warning("[v64] yield priority boost skipped: %s", exc)
+
+
 # ── Source health gating ───────────────────────────────────────────────────
 
 def _source_enabled_by_health(spec: SourceSpec, db: JobsDB) -> bool:
@@ -252,10 +313,10 @@ def _record_source_timeout(
             error_code="source_timeout", elapsed_ms=elapsed_ms,
         )
     if hasattr(db, "update_source_health_state"):
-        # v63: ``source_timeout`` here is the orchestrator's deadline firing,
-        # not the source's own transport failure — it must never strand the
-        # source in quarantine.  Egyptian priority sources additionally keep
-        # their full 90s attempt without auto-disable.
+        # v63/v64: ``source_timeout`` here is the orchestrator's deadline
+        # firing, not the source's own transport failure — it must never
+        # strand the source in quarantine.  Egyptian priority sources keep
+        # their short dedicated attempt (45s ceiling) without auto-disable.
         is_egypt = spec.key in (config.EGYPT_PRIORITY_SOURCE_KEYS or set())
         db.update_source_health_state(
             spec.key, success=False, jobs_count=0, error_code="source_timeout",
@@ -286,8 +347,13 @@ async def _fetch_with_source_deadline(
         return []
 
 
+def _is_priority_source(spec: SourceSpec) -> bool:
+    return spec.key in (config.EGYPT_PRIORITY_SOURCE_KEYS or set())
+
+
 async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[str, dict]) -> list:
     name = spec.name
+    is_egypt_priority = _is_priority_source(spec)
     fetcher = spec.fetcher
     t0 = time.time()
     try:
@@ -349,6 +415,9 @@ async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[st
             error_code="" if source_reachable else empty_reason,
             auto_disable_threshold=config.SOURCE_AUTO_DISABLE_THRESHOLD,
             quarantine_minutes=config.SOURCE_QUARANTINE_MINUTES,
+            # v64: priority sources with real failures enter the recovery
+            # rotation instead of degrading silently forever.
+            is_priority_source=is_egypt_priority,
         )
         reason = f" reason={result.error_code}" if result.error_code else ""
         log.info(
@@ -379,21 +448,56 @@ async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[st
             error_code=type(e).__name__,
             auto_disable_threshold=config.SOURCE_AUTO_DISABLE_THRESHOLD,
             quarantine_minutes=config.SOURCE_QUARANTINE_MINUTES,
+            # v64: same recovery-rotation treatment for unexpected crashes.
+            is_priority_source=is_egypt_priority,
         )
         return []
 
 
 async def fetch_all_async(stats: dict, db: JobsDB, reports: dict[str, dict]) -> list:
-    specs = get_source_specs()
+    specs = list(get_source_specs())
     if not specs:
         return []
     log.info(f"✅ Priority fetch plan loaded: {len(specs)} source(s)")
+
+    # v64: yield-based execution priority.  The registry's static priority is
+    # now boosted for connectors that proved their yield recently (fresh +
+    # unique cyber jobs across the last MEMORY_DAYS days).  The observed run
+    # confirmed the proven suppliers — FABMISR, Vodafone Egypt, QNB Global,
+    # Greenhouse, Cloudflare, Wiz, Tenable, Bugcrowd, HackerOne — and the
+    # dynamic boost rewards exactly that behavior: the same sources, in the
+    # same order, only when they keep delivering.
+    _apply_yield_priority_boost(specs, db)
+
+    # v64: failing priority sources enter the recovery/fallback rotation —
+    # they stay registered and are rechecked on a sparse schedule instead of
+    # consuming the shared budget every run.  Bump counters once per run
+    # before computing who is due.
+    if hasattr(db, "bump_recovery_counters"):
+        db.bump_recovery_counters()
+    recovery_due: set[str] = set()
+    if hasattr(db, "recovery_due_sources"):
+        recovery_due = set(db.recovery_due_sources())
+    if recovery_due:
+        log.info(
+            "Recovery rotation due this run (%d): %s",
+            len(recovery_due), ", ".join(sorted(recovery_due)),
+        )
 
     normally_enabled = [s for s in specs if _source_enabled_by_health(s, db)]
     quarantined = [s for s in specs if s not in normally_enabled]
     probe_limit = max(0, config.QUARANTINED_SOURCE_PROBE_LIMIT)
     recovery_probes = sorted(quarantined, key=lambda spec: spec.priority)[:probe_limit]
-    run_specs = normally_enabled + recovery_probes
+    # v64: recovery-rotation members (not quarantined — parked) run only when due.
+    in_rotation = [s for s in normally_enabled if s.key in recovery_due]
+    parked = [s for s in normally_enabled if s.key not in recovery_due]
+    # v64: sort the run plan by priority so yield-proven and priority sources
+    # start earlier — the shared phase budget and per-source cooperative
+    # deadline both favor sources that begin first, and the proven suppliers
+    # confirmed by the observed run (FABMISR, Vodafone, QNB Global,
+    # Greenhouse, Cloudflare, Wiz, Tenable, Bugcrowd, HackerOne) must not
+    # arrive late after the slow ones have eaten the budget.
+    run_specs = sorted(parked + recovery_probes + in_rotation, key=lambda s: (s.priority, s.name))
     skipped = [s.name for s in quarantined if s not in recovery_probes]
     if skipped:
         log.warning(f"Quarantined sources ({len(skipped)}): {', '.join(skipped[:8])}")
@@ -401,6 +505,11 @@ async def fetch_all_async(stats: dict, db: JobsDB, reports: dict[str, dict]) -> 
         log.info(
             "Recovery probes for %d quarantined source(s): %s",
             len(recovery_probes), ", ".join(source.name for source in recovery_probes),
+        )
+    if parked:
+        log.info(
+            "Parked in recovery rotation this run (%d): %s",
+            len(parked), ", ".join(s.name for s in parked[:10]),
         )
 
     all_jobs = []
