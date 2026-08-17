@@ -178,20 +178,42 @@ def _build_specs() -> list[SourceSpec]:
     # separate source.  This preserves independent health/quarantine state and
     # makes a zero-job result traceable to the actual employer or job board.
     for official in OFFICIAL_SOURCES:
+        is_egypt_priority = (
+            config.ENABLE_EGYPT_PRIORITY_SOURCES
+            and official.key in config.EGYPT_PRIORITY_SOURCE_KEYS
+        )
+        # Egyptian priority sources get a dedicated execution budget so the
+        # official endpoint attempt and a genuinely JS-only Playwright render
+        # are never killed by the generic 40s cap. Non-LinkedIn sources still
+        # keep one shared, source-deadline-isolated ceiling — the priority
+        # budget only makes that ceiling larger for the priority set.
+        if is_egypt_priority:
+            timeout = max(
+                config.EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS,
+                config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS,
+            )
+            # Priority sources earn a better queue position than the generic
+            # official default (20) without ever beating LinkedIn (10). A
+            # higher rank means the orchestrator keeps them alive under the
+            # global phase deadline before lower-priority connectors.
+            priority = min(config.source_priority(official.key, 999), 18)
+        else:
+            timeout = (
+                config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS
+                if official.browser_fallback else config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
+            )
+            priority = config.source_priority(official.key, 20)
         specs.append(SourceSpec(
             official.key,
             official.name,
             official_fetcher_for(official.key),
-            config.source_priority(official.key, 20),
+            priority,
             official.lane,
             "gold",
             allow_empty_runs=True,
             supports_geo_hint=True,
             requires_login=False,
-            source_timeout_seconds=(
-                config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS
-                if official.browser_fallback else config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
-            ),
+            source_timeout_seconds=timeout,
         ))
 
     # ── OPTIONAL AKM sources — added only if installed ───────────────────────
