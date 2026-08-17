@@ -587,7 +587,7 @@ FALLBACK_BUDGET_SECONDS = int(os.getenv("FALLBACK_BUDGET_SECONDS", "30"))
 FILTERING_BUDGET_SECONDS = int(os.getenv("FILTERING_BUDGET_SECONDS", "90"))
 # A small delivery extension lets a healthy, already-qualified queue finish
 # fairly. It changes no cyber filter, channel cap, or dedup rule.
-TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "60"))
+TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "180"))
 # v61: 2x LinkedIn capacity — budget raised to ~1800s for jobs, 90s for HR.
 # Query lanes: ~70-75 with curated high-yield combinations.
 # Page/detail caps scaled proportionally to budget.
@@ -819,6 +819,8 @@ ENABLE_SOURCE_MENA_BOARDS       = _env_bool("ENABLE_SOURCE_MENA_BOARDS", False)
 # v56: Wazzif (وظف) is registered on its own — it does not overlap
 # mena_boards.py (see source_registry.py) so it is safe to leave on by default.
 ENABLE_SOURCE_WAZZIF            = _env_bool("ENABLE_SOURCE_WAZZIF", True)
+ENABLE_SOURCE_ARAB_CAREERS       = _env_bool("ENABLE_SOURCE_ARAB_CAREERS", True)
+ENABLE_SOURCE_RECRUITMENT       = _env_bool("ENABLE_SOURCE_RECRUITMENT", True)
 LINKEDIN_EXTENDED_MAX_JOBS      = int(os.getenv("LINKEDIN_EXTENDED_MAX_JOBS", "10"))
 
 # Cyber verdict and human-review controls.  LIKELY is a maximum fill policy:
