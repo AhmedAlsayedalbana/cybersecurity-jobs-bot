@@ -868,3 +868,24 @@ REVIEW_SAMPLE_SIZE = int(os.getenv("REVIEW_SAMPLE_SIZE", "80"))
 # No extra flag is needed to "turn it on" — presence of PROXIES is the
 # switch. sources/regional_boards.py explicitly opts individual calls out of
 # the pool (use_proxy=False) for boards that reject proxied traffic.
+
+# ── v66: recovery scheduling separation ──────────────────────────────────────
+# A source enters the sparse recovery rotation ONLY on real transport-level
+# failures (blocked / repeated timeout / parser failure / circuit-open) and
+# NEVER simply because it was not executed in the current run. Proven-yield
+# sources that fetched jobs recently are protected from parking.
+RECOVERY_RECENT_YIELD_MEMORY_DAYS: int = 7
+RECOVERY_RECENT_YIELD_MIN_JOBS: int = 1
+# v66: graduated cooldown after consecutive failures:
+#   1 failure  → recheck next run
+#   2 failures → every 2 runs
+#   3+ failures → every 3..5 runs (capped at 5)
+RECOVERY_GRADUATED_COOLDOWN: bool = True
+# v66: an HR search backend that stays empty after this many consecutive
+# checks (including forced stall-relaxation rechecks) is parked for the
+# remainder of the run instead of being rechecked every query.
+HR_BACKEND_MAX_EMPTY_STREAK_BEFORE_PARK: int = 8
+# v66: a job that reaches the Telegram send loop eligible and routed but is
+# blocked by a terminal channel state is recorded as delivery_pending so it
+# is retried next run — never silently dropped and never counted as success.
+TELEGRAM_DELIVERY_PENDING_ON_TERMINAL_STATE: bool = True
