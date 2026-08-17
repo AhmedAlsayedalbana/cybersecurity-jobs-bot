@@ -722,11 +722,13 @@ EGYPT_PRIORITY_SOURCE_KEYS = {
     "itida", "smart_village", "elsewedy_electric", "pharco",
     "orascom_construction",
 }
-# Per-source ceiling applied to Egyptian priority careers connectors.
-# Covers the official endpoint attempt and, only when truly needed, a JS-only
-# Playwright render.  Never below the generic playwright cap.
+# v64: per-source ceiling for Egyptian priority careers connectors.
+# Covers the official endpoint attempt and, only when truly needed, one
+# short JS-only Playwright pass.  Never below the generic playwright cap.
+# A failing Egyptian bank must never consume more than this per run; the
+# orchestrator's own deadline enforces the same cap.
 EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS = float(
-    os.getenv("EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS", "90")
+    os.getenv("EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS", "45")
 )
 
 ENABLE_EGYPT_PRIORITY_SOURCES = _env_bool("ENABLE_EGYPT_PRIORITY_SOURCES", True)
