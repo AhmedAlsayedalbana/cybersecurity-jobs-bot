@@ -91,7 +91,10 @@ RESTRICTED_SPECS: tuple[MarketplaceSpec, ...] = (
     MarketplaceSpec("toptal", "Toptal", (), "service_offer", "remote", 20, False),
 )
 SPECS_BY_KEY = {spec.key: spec for spec in (*PUBLIC_SPECS, *RESTRICTED_SPECS)}
-_TARGET_PARSER_KEYS = frozenset({"wuzzuf", "tanqeeb", "upwork", "freelancer", "akhtaboot"})
+_TARGET_PARSER_KEYS = frozenset({
+    "wuzzuf", "tanqeeb", "upwork", "freelancer", "akhtaboot",
+    "mostaql", "gulftalent", "bayt", "contra", "guru",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,10 @@ class _TargetParseOutcome:
     recognizable_listings: int = 0
     incomplete_security_listings: int = 0
     explicit_empty: bool = False
+    cards_found: int = 0
+    cards_parsed: int = 0
+    cards_rejected: int = 0
+    parse_success_rate: float = 0.0
 
 
 class _JinaLimiter:
