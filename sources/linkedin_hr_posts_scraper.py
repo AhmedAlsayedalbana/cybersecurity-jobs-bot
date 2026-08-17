@@ -750,6 +750,197 @@ def _rank_queries_by_yield(queries: list[dict]) -> list[dict]:
 # POST SCRAPING AND VALIDATION
 # ============================================================
 
+def _fetch_via_jina(url: str) -> str | None:
+    """Fetch a LinkedIn post URL via Jina reader for text extraction fallback."""
+    try:
+        from sources.marketplace_sources import _fetch_via_jina as _jina_fetch
+        return _jina_fetch(url)
+    except Exception:
+        pass
+    # Direct Jina call as second option
+    try:
+        result = get_text(
+            f"https://r.jina.ai/{url}",
+            headers={
+                "Accept": "text/markdown, text/plain, */*",
+                "X-Respond-With": "markdown",
+                "X-Engine": "browser",
+                "X-Cache-Tolerance": "300",
+                "X-Max-Tokens": "12000",
+            },
+            timeout=20,
+            max_retries=0,
+            budget_phase="linkedin",
+        )
+        return result
+    except Exception:
+        return None
+
+
+def _extract_text_from_jina(markdown: str) -> str:
+    """Extract post text from Jina markdown output."""
+    # Jina returns markdown; the post content is usually the main body
+    # Skip navigation/header/footer noise lines
+    lines = markdown.split("\n")
+    content_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip common Jina noise
+        if stripped.startswith("[") and stripped.endswith("]"):
+            continue
+        if any(skip in stripped.lower() for skip in [
+            "linkedin", "sign in", "join now", "cookies", "privacy policy",
+            "terms of service", "skip to content", "language",
+        ]):
+            continue
+        if len(stripped) < 3:
+            continue
+        content_lines.append(stripped)
+    return " ".join(content_lines)
+
+
+def _extract_metadata_from_jina(markdown: str) -> dict:
+    """Extract metadata from Jina markdown output."""
+    meta: dict = {}
+    # Jina sometimes puts title on first non-empty line
+    lines = [l.strip() for l in markdown.split("\n") if l.strip()]
+    if lines:
+        meta["title_hint"] = lines[0][:200]
+    # Look for date patterns in Jina output
+    for line in lines:
+        date_m = re.search(r"(\d{4}-\d{2}-\d{2})", line)
+        if date_m:
+            try:
+                meta["posted_at"] = datetime.fromisoformat(date_m.group(1)).replace(tzinfo=None)
+                break
+            except ValueError:
+                continue
+    return meta
+
+
+def _extract_text_from_html(html: str) -> str:
+    """Extract post text from HTML using multiple strategies."""
+    raw_text = ""
+    # Strategy 1: og:description
+    og_desc = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"', html)
+    if og_desc:
+        raw_text = og_desc.group(1)
+    # Strategy 2: og:title (shorter but sometimes the only text)
+    if not raw_text:
+        og_title = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html)
+        if og_title:
+            raw_text = og_title.group(1)
+    # Strategy 3: <article> tag
+    if not raw_text:
+        article = re.search(r"<article[^>]*>(.*?)</article>", html, re.DOTALL)
+        if article:
+            raw_text = re.sub(r"<[^>]+>", " ", article.group(1))
+    # Strategy 4: LinkedIn-specific: comment-content div
+    if not raw_text:
+        comment_div = re.search(
+            r'<div[^>]*class="[^"]*comment[^>]*"[^>]*>(.*?)</div>',
+            html, re.DOTALL | re.IGNORECASE,
+        )
+        if comment_div:
+            raw_text = re.sub(r"<[^>]+>", " ", comment_div.group(1))
+    # Strategy 5: Any meta description
+    if not raw_text:
+        meta_desc = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]+)"', html, re.IGNORECASE)
+        if meta_desc:
+            raw_text = meta_desc.group(1)
+    # Strategy 6: JSON-LD
+    if not raw_text:
+        ld_match = re.search(
+            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+            html, re.DOTALL | re.IGNORECASE,
+        )
+        if ld_match:
+            try:
+                import json as _json
+                ld_data = _json.loads(ld_match.group(1))
+                if isinstance(ld_data, dict):
+                    raw_text = ld_data.get("description", "") or ld_data.get("text", "")
+                    if not raw_text and "articleBody" in ld_data:
+                        raw_text = ld_data["articleBody"]
+                elif isinstance(ld_data, list):
+                    for item in ld_data:
+                        if isinstance(item, dict):
+                            raw_text = item.get("description", "") or item.get("text", "") or item.get("articleBody", "")
+                            if raw_text:
+                                break
+            except Exception:
+                pass
+    # Strategy 7: <title> tag (broader — strip LinkedIn suffix)
+    if not raw_text or len(raw_text) < 20:
+        title_m = re.search(r"<title>(.*?)</title>", html, re.DOTALL | re.IGNORECASE)
+        if title_m:
+            t = unescape(re.sub(r"<[^>]+>", " ", title_m.group(1))).strip()
+            t = re.sub(r"\s*[|\-–—]\s*LinkedIn.*$", "", t, flags=re.IGNORECASE).strip()
+            if len(t) > len(raw_text):
+                raw_text = t
+    # Strategy 8: LinkedIn update-card / feed-update div
+    if not raw_text or len(raw_text) < 20:
+        feed_div = re.search(
+            r'<div[^>]*class="[^"]*(?:update-|feed-)component[^>]*"[^>]*>(.*?)</div>',
+            html, re.DOTALL | re.IGNORECASE,
+        )
+        if feed_div:
+            candidate = re.sub(r"<[^>]+>", " ", feed_div.group(1)).strip()
+            candidate = re.sub(r"\s+", " ", candidate)
+            if len(candidate) > len(raw_text):
+                raw_text = candidate
+    # Strategy 9: Broader — any <p> or <span> block with substantial text
+    if not raw_text or len(raw_text) < 20:
+        blocks = re.findall(r"<(?:p|div|span)[^>]*>(.*?)</(?:p|div|span)>", html, re.DOTALL | re.IGNORECASE)
+        best = ""
+        for b in blocks:
+            clean = re.sub(r"<[^>]+>", " ", b).strip()
+            clean = re.sub(r"\s+", " ", clean)
+            if len(clean) > len(best) and len(clean) >= 30:
+                # Skip navigation/footer noise
+                if any(skip in clean.lower() for skip in [
+                    "sign in", "join now", "cookies", "privacy", "terms",
+                    "linkedin", "language", "skip to",
+                ]):
+                    continue
+                best = clean
+        if len(best) > len(raw_text):
+            raw_text = best
+    return unescape(raw_text).strip()
+
+
+def _extract_metadata_from_html(html: str) -> dict:
+    """Extract post metadata (canonical URL, post_id, author, date, etc.) from HTML."""
+    meta: dict = {}
+    # canonical URL
+    canonical_m = re.search(r'<link[^>]+rel="canonical"[^>]+href="([^"]+)"', html)
+    if canonical_m:
+        meta["canonical_url"] = unescape(canonical_m.group(1))
+    # post_id from URN
+    urn_m = re.search(r'urn:li:activity:(\d+)', html)
+    if urn_m:
+        meta["post_id"] = urn_m.group(1)
+    # author name
+    author_m = re.search(r'<meta[^>]+name="author"[^>]+content="([^"]+)"', html)
+    if not author_m:
+        author_m = re.search(r'<a[^>]+data-test-id="entity-name"[^>]*>(.*?)</a>', html)
+    if author_m:
+        meta["author"] = unescape(author_m.group(1).strip())
+    # posted date
+    date_m = re.search(
+        r'(?:datePublished|article:published_time)"?\s*(?:content=|:)\s*"([^"]+)"',
+        html,
+    )
+    if date_m:
+        try:
+            meta["posted_at"] = datetime.fromisoformat(date_m.group(1).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            pass
+    return meta
+
+
 def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
     headers = {
         "User-Agent": (
@@ -759,22 +950,45 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
         "Accept-Language": "ar,en;q=0.9",
     }
     html = get_text(url, headers=headers, budget_phase="linkedin")
-    if not html or len(html) < 500:
+    if not html or len(html) < 200:
         _record_rejection("post_page_unavailable")
         return None
 
-    raw_text = ""
-    og_desc = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"', html)
-    if og_desc:
-        raw_text = og_desc.group(1)
-    else:
-        article = re.search(r"<article[^>]*>(.*?)</article>", html, re.DOTALL)
-        if article:
-            raw_text = re.sub(r"<[^>]+>", " ", article.group(1))
+    raw_text = _extract_text_from_html(html)
+    meta = _extract_metadata_from_html(html)
 
-    raw_text = unescape(raw_text).strip()
+    # Fallback 1: Jina reader
     if len(raw_text) < 20:
-        _record_rejection("missing_post_text")
+        log.debug("HR post: direct fetch yielded insufficient text, trying Jina fallback for %s", url)
+        jina_html = _fetch_via_jina(url)
+        if jina_html and len(jina_html) > 100:
+            jina_text = _extract_text_from_jina(jina_html)
+            if len(jina_text) > len(raw_text):
+                raw_text = jina_text
+                jina_meta = _extract_metadata_from_jina(jina_html)
+                meta = {**meta, **jina_meta}
+
+    # Fallback 2: Mobile user-agent fetch (different rendering)
+    if len(raw_text) < 20:
+        log.debug("HR post: Jina also insufficient, trying mobile UA fetch for %s", url)
+        mobile_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            ),
+            "Accept-Language": "ar,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+        mobile_html = get_text(url, headers=mobile_headers, budget_phase="linkedin")
+        if mobile_html and len(mobile_html) > 200:
+            mobile_text = _extract_text_from_html(mobile_html)
+            if len(mobile_text) > len(raw_text):
+                raw_text = mobile_text
+                mobile_meta = _extract_metadata_from_html(mobile_html)
+                meta = {**meta, **mobile_meta}
+
+    if len(raw_text) < 20:
+        _record_rejection("fetch_failed")
         return None
 
     title = ""
@@ -817,16 +1031,17 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
         )
         return None
 
-    posted_date = None
-    date_match = re.search(
-        r'(?:datePublished|article:published_time)"?\s*(?:content=|:)\s*"([^"]+)"',
-        html,
-    )
-    if date_match:
-        try:
-            posted_date = datetime.fromisoformat(date_match.group(1).replace("Z", "+00:00")).replace(tzinfo=None)
-        except ValueError:
-            posted_date = None
+    posted_date = meta.get("posted_at")
+    if posted_date is None:
+        date_match = re.search(
+            r'(?:datePublished|article:published_time)"?\s*(?:content=|:)\s*"([^"]+)"',
+            html,
+        )
+        if date_match:
+            try:
+                posted_date = datetime.fromisoformat(date_match.group(1).replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                posted_date = None
 
     # v61: Hard validation gates (unchanged from before, but with clear documentation)
     missing_evidence: list[str] = []
@@ -867,12 +1082,14 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
         "raw_text": raw_text,
         "apply_info": apply_info,
         "posted_date": posted_date,
-        "url": url,
+        "url": meta.get("canonical_url") or url,
         "backend": backend,
         "hiring_score": hiring_score,
         "role_score": role_score,
         "confidence": confidence,
         "post_confidence": post_confidence,
+        "post_id": meta.get("post_id"),
+        "author": meta.get("author"),
     }
 
 
