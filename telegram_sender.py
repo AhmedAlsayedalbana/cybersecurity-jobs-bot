@@ -1,0 +1,1412 @@
+"""
+Telegram message formatting and multi-topic sending.
+KEY FEATURE: balanced per-channel sending with per-channel dedup.
+Format: matches reference telegram_sender exactly.
+"""
+
+import re
+import time
+import logging
+import requests
+import config
+from collections import Counter
+from datetime import datetime, timedelta
+from models import CyberVerdict, Job, _flatten_tags
+from config import (
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_SEND_DELAY,
+    CHANNELS, get_topic_thread_id,
+    DAILY_SEND_HOURS, MAX_JOBS_PER_CHANNEL,
+    TELEGRAM_RETRY_MAX_ATTEMPTS, TELEGRAM_RETRY_BASE_DELAY_SECONDS,
+    TELEGRAM_RETRY_DRAIN_LIMIT,
+)
+from database import JobsDB, get_db
+from intelligence.pool_builder import freshness_sort_key
+from run_budget import cap_timeout, remaining as budget_remaining
+from job_intelligence import (
+    classify_domain as classify_intelligence_domain,
+    classify_delivery_geo,
+    classify_level as classify_intelligence_level,
+    has_channel_evidence,
+    is_remote_job as intelligence_is_remote_job,
+    is_true_security_internship,
+    resolve_delivery_location,
+    validate_location_for_channel,
+)
+
+log = logging.getLogger(__name__)
+
+
+# 
+#  Geo Helpers
+# 
+
+def _is_egypt_job(job):
+    return classify_delivery_geo(job) == "egypt"
+
+def _is_arab_region_job(job):
+    return classify_delivery_geo(job) == "arab"
+
+def _is_remote_job(job):
+    return intelligence_is_remote_job(job)
+
+
+def _is_true_internship_job(job) -> bool:
+    """Strict internship check to avoid leaking generic jobs into internships channel."""
+    return is_true_security_internship(job)
+
+
+def _delivery_identity(job) -> str:
+    """Exact posting identity used for every delivery-dedup decision."""
+    url_id = getattr(job, "url_id", "") or ""
+    if url_id:
+        return url_id
+    canonical = getattr(job, "canonical_url", "") or getattr(job, "url", "") or ""
+    return re.sub(r"[?#].*$", "", canonical.lower().rstrip("/"))
+
+
+_TITLE_CYBER_EVIDENCE = (
+    "vulnerability management", "identity and access management", "identity & access",
+    "identity governance", "security operations", "penetration testing", "pentest",
+    "red team", "application security", "appsec", "incident response",
+    "threat intelligence", "threat hunting", "security engineering",
+    "network security", "cloud security", "devsecops", "security architecture",
+    "detection engineering", "security monitoring", "security analyst",
+    "security engineer", "vulnerability research", "cybersecurity", "cyber security",
+    "information security", "infosec", r"\biam\b", r"\biga\b", r"\bsoc\b",
+)
+_CYBER_SKILL_EVIDENCE = (
+    "iam", "iga", "saviynt", "okta", "ping identity", "cyberark", "sailpoint",
+    "siem", "splunk", "qradar", "sentinel", "edr", "xdr", "cspm", "cnapp",
+    "cwpp", "burp", "nmap", "metasploit", "oscp", "sast", "dast", "owasp",
+)
+
+
+def _publishable_cyber_evidence(job) -> tuple[str, tuple[str, ...]]:
+    """Return an auditable evidence code without widening the Cyber verdict gate.
+
+    Generic job nouns (Engineer/Analyst/Consultant/Support/Solutions) never
+    count on their own.  A title carrying an explicit security domain does.
+    """
+    title = (getattr(job, "title", "") or "").lower()
+    tags = _flatten_tags(getattr(job, "tags", [])).lower()
+    description = (getattr(job, "description", "") or "").lower()
+    domain = classify_intelligence_domain(job)
+
+    for anchor in _TITLE_CYBER_EVIDENCE:
+        if anchor.startswith("\\b"):
+            if re.search(anchor, title):
+                return "title_cyber_evidence", ()
+        elif anchor in title:
+            return "title_cyber_evidence", ()
+    if domain and has_channel_evidence(job, domain):
+        return "title_cyber_evidence", ()
+    if any(anchor in tags for anchor in _CYBER_SKILL_EVIDENCE):
+        return "skill_cyber_evidence", ()
+    # Description evidence needs a separately security-specific title/context;
+    # this preserves the block on generic Solutions/Support roles that merely
+    # discuss a cloud-security product.
+    if any(anchor in description for anchor in _CYBER_SKILL_EVIDENCE) and any(
+        anchor in title for anchor in ("security", "cyber", "iam", "iga", "soc", "pentest", "appsec")
+    ):
+        return "description_cyber_evidence", ()
+    source_key = (getattr(job, "source_key", "") or getattr(job, "source", "") or "").lower()
+    content_type = (getattr(job, "content_type", "") or "").lower()
+    if content_type == "security_job_listing" or source_key.startswith("cybersecurity_"):
+        return "source_cyber_evidence", ()
+    return "insufficient_cyber_evidence", ("explicit_title_or_domain", "cyber_skill", "verified_security_context")
+
+
+def _has_publishable_cyber_evidence(job) -> bool:
+    return _publishable_cyber_evidence(job)[0] != "insufficient_cyber_evidence"
+
+
+def _telegram_ineligibility_reason(job) -> str | None:
+    """Explain the hard delivery gate without exposing a bypass path."""
+    verdict = getattr(job, "cyber_verdict", "")
+    if verdict not in {CyberVerdict.CONFIRMED.value, CyberVerdict.LIKELY.value}:
+        return "non_cyber_or_unclassified"
+    location = resolve_delivery_location(job)
+    if not location.eligible:
+        return location.reason_code
+    if not _delivery_identity(job):
+        return "missing_exact_posting_identity"
+    evidence, _ = _publishable_cyber_evidence(job)
+    if evidence == "insufficient_cyber_evidence":
+        return evidence
+    return None
+
+
+def _is_telegram_eligible(job) -> bool:
+    """Enforce the cyber-verdict gate before any Telegram routing.
+
+    ``NON_CYBER`` and unclassified rows are never delivery candidates. Every
+    accepted verdict must also demonstrate publish-grade cyber-role evidence,
+    so a generic support, solutions, commercial, or ERP-admin role cannot
+    enter a geographic channel merely through classifier affinity.
+    """
+    return _telegram_ineligibility_reason(job) is None
+
+
+# 
+#  Routing � which channels gets this job
+# 
+
+def _channel_priority(ch_key: str) -> int:
+    """
+    Returns priority rank for a channel key.
+    Lower number = higher specificity = wins when a job matches multiple channels.
+    Specialty topic channels beat geo channels beat catch-all.
+    
+    FIXED v38: internships now has lowest topic priority (3) � it only receives
+    jobs that didn't match any specific domain channel. This prevents a
+    "Junior Penetration Tester" from appearing in both pentest AND internships.
+    """
+    PRIORITY = {
+        # Most specific specialty topics first (level 1)
+        "networksec":  1,
+        "pentest":     1,
+        "soc":         1,
+        "appsec":      1,
+        "cloudsec":    1,
+        "grc":         1,
+        # Broad specialty (level 2)
+        "seceng":      2,
+        # Catch-all topic � only gets jobs that didn't match anything above (level 3)
+        "internships": 3,
+        # Geo channels (level 4 � separate pool, not competing with topics)
+        "egypt":       4,
+        "gulf":        4,
+        "remote":      4,
+    }
+    return PRIORITY.get(ch_key, 5)
+
+
+def route_job(job):
+    """
+    Route a job to channels — v50 model:
+
+    GEO channels  (egypt / arab / remote): based on location only.
+    TOPIC channels (soc / grc / pentest / ...): based on keywords only.
+
+    A job CAN and SHOULD appear in BOTH a geo channel AND ONE topic channel.
+    Example: "GRC Analyst in Cairo" → egypt + grc
+
+    INTERNSHIP ROUTING: True internship jobs go to BOTH their geo channel AND
+    the internships topic channel (instead of a specialty domain channel).
+    Within topic channels, a job goes to exactly ONE channel.
+    """
+    # Geo routing: one geo lane only. ``classify_delivery_geo`` gives explicit
+    # remote work precedence over an employer's Egypt/Arab office address.
+    geo_result = []
+    geo = classify_delivery_geo(job)
+    if geo == "egypt":
+        geo_result = ["egypt"]
+    elif geo == "arab":
+        geo_result = ["gulf"]
+    elif geo == "remote":
+        geo_result = ["remote"]
+
+    # Topic routing: exactly one specialty topic.
+    topic_result = []
+    topic_channel = _topic_channel_for_job(job, "")
+    if topic_channel and topic_channel in CHANNELS:
+        topic_result = [topic_channel]
+
+    # Final router safety check.  The sender repeats it immediately before
+    # enqueue and send so future fallback code cannot bypass this decision.
+    return [
+        channel for channel in (geo_result + topic_result)
+        if validate_location_for_channel(job, channel)[0]
+    ]
+
+
+def _topic_channel_for_job(job, searchable: str) -> str | None:
+    """Choose one specialty channel only when the role proves cyber relevance."""
+    domain = classify_intelligence_domain(job)
+    if domain and has_channel_evidence(job, domain):
+        return domain
+    if domain:
+        log.debug(
+            "Topic route withheld (description-only or generic evidence): domain=%s title=%s",
+            domain,
+            getattr(job, "title", ""),
+        )
+    return None
+
+
+def _post_telegram_payload(payload: dict) -> tuple[bool, int, str, int | None]:
+    """
+    Returns: (success, status_code, error_text, retry_after_seconds)
+    """
+    if budget_remaining("telegram") <= 0:
+        return False, 0, "telegram_budget_exhausted", None
+    try:
+        resp = requests.post(
+            "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage",
+            json=payload,
+            timeout=cap_timeout(10, phase="telegram"),
+        )
+        if resp.status_code == 200:
+            return True, 200, "", None
+        retry_after = None
+        if resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = int((data.get("parameters") or {}).get("retry_after") or 0) or None
+            except Exception:
+                retry_after = None
+        return False, resp.status_code, (resp.text or "")[:300], retry_after
+    except Exception as exc:
+        return False, 0, str(exc), None
+
+
+def _compute_retry_delay(attempts: int, retry_after: int | None = None) -> int:
+    if retry_after and retry_after > 0:
+        return min(600, max(10, retry_after + 2))
+    base = max(10, TELEGRAM_RETRY_BASE_DELAY_SECONDS)
+    return min(900, base * (2 ** max(0, attempts)))
+
+
+def _drain_retry_queue(db: JobsDB) -> int:
+    """Retry one previously rate-limited Telegram delivery, at most once."""
+    sent = 0
+    for row in db.get_due_safe_delivery_retries(limit=TELEGRAM_RETRY_DRAIN_LIMIT):
+        if budget_remaining("telegram") <= 0:
+            break
+        payload = row.get("payload") or {}
+        ok, status, err, retry_after = _post_telegram_payload(payload)
+        if ok:
+            db.mark_telegram_delivery(row["delivery_key"], status="sent")
+            sent += 1
+            time.sleep(0.7)
+            continue
+        if status == 429:
+            db.mark_telegram_delivery(
+                row["delivery_key"], status="retry_429",
+                error=f"status={status} {err}".strip(),
+                delay_seconds=_compute_retry_delay(row.get("attempts", 0), retry_after=retry_after),
+            )
+        else:
+            db.mark_telegram_delivery(
+                row["delivery_key"], status="send_failed",
+                error=f"status={status} {err}".strip(),
+            )
+    return sent
+
+
+def _domain_affinity_score(job, ch_key: str) -> int:
+    """
+    Score how well a job matches a topic channel for smart fallback ordering.
+    Used only when a channel has no direct-match jobs.
+
+    Returns:
+        3  — job domain exactly matches the channel
+        2  — job is broad seceng / general cyber
+        1  — any other accepted cyber job
+        0  — internship channel (never use random fallback)
+    """
+    if ch_key == "internships":
+        return 0
+    job_domain = classify_intelligence_domain(job)
+    if job_domain == ch_key:
+        return 3
+    if job_domain == "seceng":
+        return 2
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Channel→Domain affinity map for smart fallback
+# Defines which domain classifications are "close enough" to fill a channel
+# when there are no direct-match jobs.
+# ---------------------------------------------------------------------------
+_CHANNEL_DOMAIN_AFFINITY: dict[str, list[str]] = {
+    # A channel is filled only by its proven specialty. Generic SecEng cannot
+    # stand in for CloudSec/AppSec/etc.; it has its own channel. Geo + topic
+    # cross-posting remains intentional and is unaffected.
+    "soc":       ["soc"],
+    "pentest":   ["pentest"],
+    "appsec":    ["appsec"],
+    "cloudsec":  ["cloudsec"],
+    "networksec":["networksec"],
+    "grc":       ["grc"],
+    "seceng":    ["seceng"],
+    # internships: NEVER use fallback — only true internship jobs
+}
+
+
+def send_jobs(jobs, *, dry_run: bool = False):
+    """
+    Send jobs to Telegram channels — v50 rules:
+
+    KEY GUARANTEES:
+    - NON_CYBER and unclassified jobs never enter a Telegram queue.
+    - CYBER_LIKELY jobs require publish-grade domain evidence before routing.
+    - A job appears in at most 1 GEO channel + at most 1 TOPIC channel (NEVER repeated).
+    - Jobs older than config.MAX_JOB_AGE_DAYS (default 3 days / 72h) are
+      HARD-BLOCKED from sending, regardless of source.
+    - A job is never re-sent to the SAME channel within config.DAILY_SEND_HOURS
+      (default 168h / 7 days) — see database.was_sent_to_channel_recently().
+    - Source priority order within each channel: LinkedIn → Egyptian boards → Freelance → others.
+    - Fallback jobs (affinity-based) are tracked globally: once a job is used as fallback
+      in ONE topic channel, it CANNOT be reused in any other topic channel.
+    - Internships channel ONLY receives true internship/junior security jobs.
+    - MAX_JOBS_PER_CHANNEL = 10 per run.
+    """
+    from scoring import score_job_int
+    from datetime import datetime, timedelta
+    import config as _cfg
+
+    # ── Hard stale gate — kept in sync with config.MAX_JOB_AGE_DAYS ─────────
+    SEND_STALE_HOURS = int(getattr(_cfg, "MAX_JOB_AGE_HOURS", 72))  # jobs older than this are never sent
+    now = datetime.now()
+
+    def _is_too_old_to_send(job) -> bool:
+        """Block jobs older than 48 hours from being sent to any channel."""
+        posted = getattr(job, "posted_date", None)
+        if posted:
+            if getattr(posted, "tzinfo", None) is not None:
+                from datetime import timezone
+                posted = posted.astimezone(timezone.utc).replace(tzinfo=None)
+            return (now - posted) > timedelta(hours=SEND_STALE_HOURS)
+        # No date → treat as fresh (pass through)
+        return False
+
+    # ── Source priority key (lower = higher priority in channel queue) ──────
+    # LinkedIn: 10, Wuzzuf/Egyptian: 15-22, Freelance: 20-22, Others: 30+
+    def _source_priority_key(job) -> int:
+        return int(getattr(job, "origin_priority", 999) or 999)
+
+    total_sent = 0
+    channel_summary = {}
+    # Counters are explicit about the delivery unit: routed/reserved/sent/
+    # failed are exact ``(job_id, channel)`` pairs.  This makes a clean
+    # four-route run auditable as four reservations and four sends.
+    delivery_lifecycle: Counter[str] = Counter()
+
+    GEO_CHANNELS   = ["remote", "egypt", "gulf"]
+    TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
+    send_order     = GEO_CHANNELS + TOPIC_CHANNELS
+
+    active = list(send_order) if dry_run else [k for k in send_order if get_topic_thread_id(k)]
+    missing = [] if dry_run else [k for k in send_order if not get_topic_thread_id(k)]
+    log.info(f" Active channels ({len(active)}): {', '.join(active)}")
+    if missing:
+        log.warning(f"  Missing thread IDs for: {', '.join(missing)} — skipping those")
+
+    # ── Sort: quality verdict → freshness → requested source order → score ──
+    # A just-posted role must never sit behind an older one merely because its
+    # source has a higher historic priority.  Unknown dates remain last.
+    def _verdict_rank(job) -> int:
+        return 1 if getattr(job, "cyber_verdict", "") == "CYBER_LIKELY" else 0
+
+    def _freshness_key(job):
+        bucket, age = freshness_sort_key(job, now=now)
+        # Freshness is still exact inside the published buckets: a 15-minute
+        # board job must not sit behind a 20-hour LinkedIn job. LinkedIn breaks
+        # otherwise comparable freshness ties without letting old roles win.
+        return (bucket, age, _source_priority_key(job))
+
+    eligibility_reasons: Counter[str] = Counter()
+    location_telemetry: Counter[str] = Counter()
+    withheld_examples: list[tuple[str, str, str, str]] = []
+    eligible_jobs = []
+    for job in jobs:
+        reason = _telegram_ineligibility_reason(job)
+        location = resolve_delivery_location(job)
+        location_telemetry[location.reason_code] += 1
+        if reason:
+            eligibility_reasons[reason] += 1
+            title = (getattr(job, "title", "") or "Unknown title").replace("\n", " ")[:70]
+            company = (getattr(job, "company", "") or "Unknown company").replace("\n", " ")[:45]
+            evidence, missing_evidence = _publishable_cyber_evidence(job)
+            detail = (
+                f"location={getattr(job, 'location', '')!s:.45} type={location.location_type} "
+                f"country={location.normalized_country or '-'} verdict={getattr(job, 'cyber_verdict', '') or '-'} "
+                f"source={getattr(job, 'source_key', '') or getattr(job, 'source', '') or '-'} "
+                f"score={score_job_int(job)} evidence={evidence}"
+            )
+            if missing_evidence:
+                detail += f" missing={','.join(missing_evidence)}"
+            withheld_examples.append((title, company, reason, detail))
+        else:
+            eligible_jobs.append(job)
+    withheld = len(jobs) - len(eligible_jobs)
+    if withheld:
+        breakdown = ", ".join(
+            f"{reason}={count}" for reason, count in sorted(eligibility_reasons.items())
+        )
+        log.info(
+            " Delivery cyber gate: eligible=%d withheld=%d [%s].",
+            len(eligible_jobs), withheld, breakdown,
+        )
+        example_limit = max(1, int(getattr(config, "DELIVERY_WITHHELD_LOG_LIMIT", 8)))
+        examples = " | ".join(
+            f"{title} @ {company} — {reason} [{detail}]"
+            for title, company, reason, detail in withheld_examples[:example_limit]
+        )
+        suffix = " (truncated)" if len(withheld_examples) > example_limit else ""
+        log.info(" Delivery withheld details: %s%s", examples, suffix)
+    log.info(
+        " Location delivery telemetry: accepted=%d rejected=%d unknown=%d "
+        "physical_outside_region=%d hybrid_outside_region=%d remote_worldwide=%d",
+        len(eligible_jobs),
+        len(jobs) - len(eligible_jobs),
+        location_telemetry["unknown_location"],
+        location_telemetry["physical_outside_region"],
+        location_telemetry["hybrid_outside_region"],
+        location_telemetry["remote_worldwide"],
+    )
+
+    jobs_scored = sorted(
+        eligible_jobs,
+        key=lambda j: (_verdict_rank(j), _freshness_key(j), _source_priority_key(j), -score_job_int(j))
+    )
+
+    # ── Domain cache to avoid repeated classification per job ───────────────
+    _domain_cache: dict[int, str | None] = {}
+
+    def _job_domain(j) -> str | None:
+        jid = id(j)
+        if jid not in _domain_cache:
+            _domain_cache[jid] = classify_intelligence_domain(j)
+        return _domain_cache[jid]
+
+    # Pre-compute domains for all jobs
+    for j in jobs_scored:
+        _job_domain(j)
+
+    # ── Build per-channel queues (primary routing — exact domain match) ─────
+    channel_queues: dict[str, list] = {key: [] for key in CHANNELS.keys()}
+    channel_match_reasons: Counter[str] = Counter()
+    delivery_location_blocks: list[str] = []
+    for job in jobs_scored:
+        for ch_key in route_job(job):
+            allowed, location = validate_location_for_channel(job, ch_key)
+            if not allowed:
+                delivery_location_blocks.append(
+                    f"{getattr(job, 'title', '')[:55]} channel={ch_key} "
+                    f"type={location.location_type} country={location.normalized_country or '-'} "
+                    f"reason={location.reason_code}"
+                )
+                continue
+            if ch_key in channel_queues:
+                channel_queues[ch_key].append(job)
+                channel_match_reasons[
+                    "remote_match" if ch_key == "remote"
+                    else "location_match" if ch_key in GEO_CHANNELS
+                    else "specialization_match"
+                ] += 1
+    routed_identities = {
+        _delivery_identity(job)
+        for queue in channel_queues.values()
+        for job in queue
+        if _delivery_identity(job)
+    }
+    queue_summary = ", ".join(
+        f"{key}={len(channel_queues[key])}" for key in send_order
+    )
+    log.info(
+        " Channel matching: eligible=%d routed=%d unrouted=%d queues=[%s] reasons=[%s] location_blocked_at_delivery=%d",
+        len(eligible_jobs), len(routed_identities),
+        len(eligible_jobs) - len(routed_identities), queue_summary,
+        ", ".join(f"{key}={value}" for key, value in sorted(channel_match_reasons.items())),
+        len(delivery_location_blocks),
+    )
+    delivery_lifecycle["eligible"] = len(eligible_jobs)
+    delivery_lifecycle["channel_mismatch"] = max(0, len(eligible_jobs) - len(routed_identities))
+    if delivery_location_blocks:
+        log.warning(" location_blocked_at_delivery: %s", " | ".join(delivery_location_blocks[:8]))
+
+    # ── Smart Fallback: STRICT one-job-one-channel enforcement ─────────────
+    # Track which jobs are already claimed by a direct-match queue.
+    # A fallback job may only be used in ONE topic channel.
+    direct_claimed: set[str] = set()
+    for ch_key in TOPIC_CHANNELS:
+        for job in channel_queues.get(ch_key, []):
+            key = _delivery_identity(job)
+            if key:
+                direct_claimed.add(key)
+
+    # fallback_globally_claimed tracks jobs used as fallback across all topic channels
+    fallback_globally_claimed: set[str] = set()
+
+    for ch_key in TOPIC_CHANNELS:
+        if not dry_run and not get_topic_thread_id(ch_key):
+            continue
+        if channel_queues[ch_key]:
+            continue  # has direct-match jobs — no fallback needed
+
+        if ch_key == "internships":
+            log.info(f" [{ch_key}] No true internship/entry-level jobs — channel skipped (correct)")
+            continue
+
+        affinity_domains = _CHANNEL_DOMAIN_AFFINITY.get(ch_key, [])
+        if not affinity_domains:
+            continue
+
+        # Candidates: must be in affinity domain, NOT already claimed by another channel
+        candidates = []
+        for j in jobs_scored:
+            jkey = _delivery_identity(j)
+            if jkey in direct_claimed or jkey in fallback_globally_claimed:
+                continue  # already used elsewhere — skip
+            domain = _job_domain(j)
+            if domain in affinity_domains and has_channel_evidence(j, ch_key):
+                candidates.append(j)
+
+        fallback = sorted(
+            candidates,
+            key=lambda j: (
+                affinity_domains.index(_job_domain(j))
+                if _job_domain(j) in affinity_domains else 99,
+                _freshness_key(j),
+                _source_priority_key(j),   # LinkedIn first within fallback
+                -score_job_int(j),
+            ),
+        )[:20]
+
+        if fallback:
+            channel_queues[ch_key] = fallback
+            # Claim these jobs so no other topic channel uses the same ones
+            for j in fallback:
+                jkey = _delivery_identity(j)
+                if jkey:
+                    fallback_globally_claimed.add(jkey)
+            domains_found = list(dict.fromkeys(_job_domain(j) for j in fallback[:5]))
+            log.info(
+                f" [{ch_key}] No direct-match jobs — using {len(fallback)} "
+                f"domain-affinity fallback jobs (domains: {', '.join(d for d in domains_found if d)})"
+            )
+        else:
+            log.info(f" [{ch_key}] No direct-match or affinity jobs — channel skipped")
+
+    # Include the fallback queues as well: this is the exact number of
+    # independently deliverable ``(job_id, channel)`` pairs, before ordinary
+    # capacity/dedup checks.  It intentionally matches sent on an error-free,
+    # uncapped run rather than hiding cross-posting behind identity counts.
+    delivery_lifecycle["routed"] = sum(len(queue) for queue in channel_queues.values())
+
+    # ── Global topic dedup: prevents same job in >1 topic channel ──────────
+    # Once a job (dedup_key) is sent to any topic channel, it's locked for all others.
+    topic_globally_sent: set[str] = set()
+
+    limit = MAX_JOBS_PER_CHANNEL
+    sent_records = []
+    db = get_db()
+    retried_sent = 0 if dry_run else _drain_retry_queue(db)
+    if retried_sent:
+        log.info(f" Retry queue: resent {retried_sent} pending Telegram message(s)")
+    channel_cursors = {k: 0 for k in send_order}
+    channel_dedup_sent = {k: set() for k in send_order}
+    channel_summary = {k: 0 for k in send_order}
+    likely_sent = {k: 0 for k in send_order}
+    likely_limit = max(0, int(limit * max(0.0, min(1.0, config.CYBER_LIKELY_MAX_SHARE))))
+
+    for ch_key in send_order:
+        if not dry_run and not get_topic_thread_id(ch_key):
+            continue
+        if not channel_queues.get(ch_key):
+            ch_name = CHANNELS.get(ch_key, {}).get("name", ch_key)
+            log.info(f" [{ch_key}] {ch_name}: 0 matching jobs this run")
+
+    stale_skipped_total = 0
+
+    # Round-robin send loop for fair per-channel distribution.
+    while True:
+        if budget_remaining("telegram") <= 0:
+            log.warning("Telegram send budget exhausted; remaining channel queues will wait for the next run.")
+            break
+        progress = False
+        for ch_key in send_order:
+            thread_id = get_topic_thread_id(ch_key)
+            if not thread_id and not dry_run:
+                continue
+            if dry_run:
+                thread_id = thread_id or 0
+            if channel_summary[ch_key] >= limit:
+                continue
+            queue = channel_queues.get(ch_key, [])
+            if not queue:
+                continue
+
+            is_geo = ch_key in GEO_CHANNELS
+            is_topic = not is_geo
+            lane = "geo" if is_geo else "topic"
+            sent_job = False
+
+            while channel_cursors[ch_key] < len(queue):
+                job = queue[channel_cursors[ch_key]]
+                channel_cursors[ch_key] += 1
+
+                # Defense in depth: a fallback or future queue change must
+                # never bypass the cyber-verdict gate.
+                if not _is_telegram_eligible(job):
+                    continue
+                allowed, location = validate_location_for_channel(job, ch_key)
+                if not allowed:
+                    log.warning(
+                        " location_blocked_at_delivery: title=%s channel=%s type=%s country=%s reason=%s",
+                        getattr(job, "title", "")[:70], ch_key, location.location_type,
+                        location.normalized_country or "-", location.reason_code,
+                    )
+                    continue
+
+                is_likely = getattr(job, "cyber_verdict", "") == "CYBER_LIKELY"
+                # The likely cap is an upper bound on *remaining* capacity,
+                # never a target and never a reservation that displaces a
+                # confirmed candidate.  Queue ordering guarantees confirmed
+                # items are exhausted first.
+                if is_likely and likely_sent[ch_key] >= likely_limit:
+                    continue
+
+                # ── 2-day stale gate ─────────────────────────────────────
+                if _is_too_old_to_send(job):
+                    stale_skipped_total += 1
+                    continue
+
+                url_id = getattr(job, "url_id", "")
+                job_dedup_key = _delivery_identity(job)
+
+                # ── Per-channel dedup ────────────────────────────────────
+                if job_dedup_key in channel_dedup_sent[ch_key]:
+                    continue
+
+                # ── Cross-topic global dedup (CORE FIX) ─────────────────
+                # A job may appear in ONE geo + ONE topic only.
+                # Within topic channels: never repeat across channels.
+                if is_topic and job_dedup_key in topic_globally_sent:
+                    continue
+
+                if db.was_sent_to_channel_recently(
+                    job_key=job_dedup_key,
+                    url_id=url_id,
+                    channel_key=ch_key,
+                    dedup_key=job_dedup_key,
+                    hours=DAILY_SEND_HOURS,
+                ):
+                    delivery_lifecycle["already_sent"] += 1
+                    continue
+
+                message = format_job_message(job)
+                if dry_run:
+                    # Preview follows the full router but does not reserve,
+                    # post, or mutate the outbox.
+                    delivery_lifecycle["would_send"] += 1
+                    success = True
+                else:
+                    success = _send_to_topic(
+                        message,
+                        thread_id=thread_id,
+                        db=db,
+                        channel_key=ch_key,
+                        delivery_key=job_dedup_key,
+                        lifecycle=delivery_lifecycle,
+                    )
+                if not success:
+                    continue
+
+                channel_summary[ch_key] += 1
+                if is_likely:
+                    likely_sent[ch_key] += 1
+                total_sent += 1
+                sent_records.append((job, lane, ch_key))
+                channel_dedup_sent[ch_key].add(job_dedup_key)
+                # Lock this job from all other topic channels
+                if is_topic and job_dedup_key:
+                    topic_globally_sent.add(job_dedup_key)
+
+                # Log source type for visibility
+                src_priority = _source_priority_key(job)
+                src_tag = (
+                    "LI" if src_priority <= 12 else
+                    "EG" if src_priority <= 22 else
+                    "FL" if src_priority <= 25 else
+                    "SRC"
+                )
+                log.info(
+                    f"   [{'DRY_RUN ' if dry_run else ''}{ch_key}] {channel_summary[ch_key]}/{limit} ✓ "
+                    f"[{src_tag}] {job.title[:45]}"
+                )
+                if not dry_run:
+                    time.sleep(min(TELEGRAM_SEND_DELAY, max(0.0, budget_remaining("telegram"))))
+                progress = True
+                sent_job = True
+                break
+
+            if not sent_job and channel_cursors[ch_key] >= len(queue):
+                continue
+
+        if not progress:
+            break
+
+    if stale_skipped_total:
+        log.info(f" ⏰ Stale gate: skipped {stale_skipped_total} job(s) older than {SEND_STALE_HOURS}h")
+
+    freshness = Counter()
+    for job, _, _ in sent_records:
+        posted = getattr(job, "posted_date", None)
+        if not posted:
+            freshness["unknown"] += 1
+            continue
+        try:
+            if getattr(posted, "tzinfo", None) is not None:
+                from datetime import timezone
+                posted = posted.astimezone(timezone.utc).replace(tzinfo=None)
+            age_hours = max(0.0, (now - posted).total_seconds() / 3600)
+        except (TypeError, ValueError, OverflowError):
+            freshness["unknown"] += 1
+            continue
+        freshness[
+            "under_24h" if age_hours < 24 else
+            "under_48h" if age_hours < 48 else
+            "under_72h" if age_hours < 72 else "older"
+        ] += 1
+    if sent_records:
+        log.info(
+            " Freshness sent: <24h=%d 24-48h=%d 48-72h=%d older=%d unknown=%d",
+            freshness["under_24h"], freshness["under_48h"], freshness["under_72h"],
+            freshness["older"], freshness["unknown"],
+        )
+
+    for ch_key in send_order:
+        if not dry_run and not get_topic_thread_id(ch_key):
+            continue
+        ch_name = CHANNELS.get(ch_key, {}).get("name", ch_key)
+        sent_this_ch = channel_summary.get(ch_key, 0)
+        if sent_this_ch > 0:
+            log.info(f" Channel [{ch_key}] {ch_name}: sent {sent_this_ch} jobs")
+        elif channel_queues.get(ch_key):
+            log.info(f" Channel [{ch_key}] {ch_name}: 0 sent (all filtered/deduped/stale)")
+
+    log.info("=" * 40)
+    log.info(" Per-Channel Summary:")
+    for k, v in channel_summary.items():
+        ch_name = CHANNELS.get(k, {}).get("name", k)
+        bar = "✅" if v > 0 else "⚪"
+        log.info(f"   {bar} {ch_name}: {v} jobs")
+    log.info("=" * 40)
+    log.info(
+        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d%s",
+        delivery_lifecycle["eligible"], delivery_lifecycle["routed"],
+        delivery_lifecycle["reserved"], delivery_lifecycle["sent"],
+        delivery_lifecycle["failed"], delivery_lifecycle["channel_mismatch"],
+        delivery_lifecycle["already_sent"],
+        f" would_send={delivery_lifecycle['would_send']}" if dry_run else "",
+    )
+
+    return total_sent, sent_records
+
+
+def _escape(text):
+    if not text:
+        return ""
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+_DOMAIN_LABELS = {
+    "soc": "SOC / Blue Team",
+    "pentest": "Penetration Testing / Red Team",
+    "cloudsec": "Cloud & Infrastructure Security",
+    "appsec": "AppSec / DevSecOps",
+    "networksec": "Network Security",
+    "grc": "GRC / Compliance",
+    "seceng": "Security Engineering",
+    "internships": "Training / Program",
+}
+
+_LEVEL_LABELS = {
+    "entry": "Entry-Level",
+    "mid": "Mid-Level",
+    "senior": "Senior",
+    "open": "Open",
+}
+
+
+def _domain_label(job) -> str:
+    return _DOMAIN_LABELS.get(classify_intelligence_domain(job), "Cybersecurity")
+
+
+def _level_label(job) -> str:
+    return _LEVEL_LABELS.get(classify_intelligence_level(job), "Open")
+
+
+def _display_level(job) -> str:
+    """Use a helpful neutral default when a standard IC role omits seniority."""
+    level = _level_label(job)
+    if level != "Open":
+        return level
+    title = (getattr(job, "title", "") or "").lower()
+    if re.search(r"\b(engineer|analyst|specialist|consultant|administrator|developer)\b", title):
+        return "Mid-Level"
+    return level
+
+
+def _detect_level(text):
+    if re.search(r"\b(?:intern|internship|junior|trainee|entry[-\s]?level|fresh grad|graduate)\b", text):
+        return "Entry-Level"
+    if re.search(r"\b(?:senior|sr\.?|lead|manager|principal|head|director|vp|chief)\b", text):
+        return "Senior"
+    if re.search(r"\b(?:mid|intermediate|associate)\b", text):
+        return "Mid-Level"
+    return "Open"
+
+def _detect_domain(text):
+    """
+    Classify job domain. Uses word-boundary matching to reduce false positives.
+    KEY RULE: title signals beat description signals.
+    Network Security checked BEFORE GRC to avoid "nist" in desc hijacking network roles.
+    """
+    import re as _re
+    def has(kws):
+        return any(_re.search(r'\b' + _re.escape(k) + r'\b', text) for k in kws)
+
+    #  Physical / non-cyber security � detected FIRST 
+    if has(["security guard", "security officer", "physical security",
+            "loss prevention", "event security", "building security",
+            "security supervisor", "security patrol"]):
+        if not has(["cyber", "information security", "infosec", "soc", "siem",
+                    "network security", "cloud security", "penetration", "malware"]):
+            return "Physical Security"
+
+    # Most-specific title signals first
+    if has(["soc analyst", "soc engineer", "soc manager", "security operations center",
+            "security operations", "blue team", "threat detection", "security monitoring",
+            "siem analyst", "threat hunter", "cyber defense",
+            # BO/L1/L2/L3 tiers in security context
+            "bo l1", "bo l2", "bo l3", "l1 security", "l2 security", "l3 security",
+            "tier 1 security", "tier 2 security", "tier 3 security"]):
+        return "SOC / Blue Team"
+    if has(["pentest", "penetration test", "penetration tester", "red team",
+            "ethical hack", "bug bounty", "offensive security", "exploit"]):
+        return "Penetration Testing / Red Team"
+    if has(["cloud security", "aws security", "azure security", "gcp security",
+            "cloud native security", "cspm", "cnapp", "kubernetes security"]):
+        return "Cloud Security"
+    if has(["appsec", "application security", "devsecops", "sast", "dast", "owasp",
+            "secure code", "product security"]):
+        return "AppSec / DevSecOps"
+    if has(["dfir", "digital forensics", "malware analyst", "malware analysis",
+            "reverse engineer", "incident response analyst", "incident response engineer"]):
+        return "DFIR / Forensics"
+    # Network Security BEFORE GRC — "nist" keyword in description shouldn't override
+    if has(["network security engineer", "network security analyst", "network security manager",
+            "firewall engineer", "firewall administrator", "firewall specialist",
+            "network defense", "waf engineer", "ddos", "vpn engineer",
+            "zero trust", "palo alto", "fortinet", "cisco security",
+            "intrusion detection", "intrusion prevention", "ids engineer", "ips engineer",
+            # FIX v43: WiFi/Wireless roles misclassified → now go to networksec
+            "wifi security", "wireless security", "wi-fi security",
+            "wifi & firewall", "wifi and firewall", "wireless & firewall",
+            # FIX v43: OT/ICS security
+            "ot security", "ics security", "scada security", "operational technology security",
+            # FIX v43: Vendor-specific security roles
+            "palo alto expert", "palo alto engineer", "palo alto specialist",
+            "fortinet engineer", "fortinet specialist", "fortinet expert",
+            "checkpoint engineer", "checkpoint specialist",
+            "network security architect", "network security specialist",
+            "network & security", "network and security"]):
+        return "Network Security"
+    # GRC � only when title/tags actually indicate it
+    if has(["grc analyst", "grc manager", "grc engineer", "compliance analyst",
+            "compliance manager", "risk analyst", "risk manager", "security auditor",
+            "it auditor", "iso 27001 lead", "nist framework", "data protection officer",
+            "data protection manager", "data protection specialist", "data protection",
+            "governance risk", "pci dss analyst", "gdpr officer", "privacy officer",
+            "privacy manager", "senior manager data protection"]):
+        return "GRC / Compliance"
+    if has(["ciso", "security manager", "security director", "security lead",
+            "head of security", "vp security", "chief security",
+            "cybersecurity manager", "cybersecurity director"]):
+        return "Security Management"
+    if has(["security architect", "security architecture"]):
+        return "Security Architecture"
+    if has(["iam engineer", "identity access management", "pki engineer", "privileged access"]):
+        return "IAM / Identity Security"
+    if has(["security internship", "security trainee", "junior security", "security graduate",
+            "internship cybersecurity", "scholarship security", "bootcamp security"]):
+        return "Training / Program"
+    # Broad fallbacks � only reached when no specific domain matched
+    if has(["soc", "siem", "splunk", "qradar", "sentinel"]):
+        return "SOC / Blue Team"
+    if has(["network security", "firewall"]):
+        return "Network Security"
+    if has(["threat intel", "threat intelligence", "cti"]):
+        return "DFIR / Forensics"
+    if has(["grc", "iso 27001", "compliance", "nist", "auditor"]):
+        return "GRC / Compliance"
+    return "Cybersecurity"
+
+def _detect_location_flag(job):
+    if _is_egypt_job(job):
+        loc = (job.location or "").lower()
+        if "cairo" in loc:
+            return " Cairo, Egypt"
+        if "alex" in loc:
+            return " Alexandria, Egypt"
+        return " Egypt"
+    if _is_arab_region_job(job):
+        loc = (job.location or "").lower()
+        if "saudi" in loc or "ksa" in loc or "riyadh" in loc or "jeddah" in loc:
+            return " Saudi Arabia"
+        if "dubai" in loc or "uae" in loc or "abu dhabi" in loc:
+            return " UAE"
+        if "qatar" in loc or "doha" in loc:
+            return " Qatar"
+        if "kuwait" in loc:
+            return " Kuwait"
+        if "bahrain" in loc:
+            return " Bahrain"
+        if "oman" in loc or "muscat" in loc:
+            return " Oman"
+        return " Arab Region"
+    if _is_remote_job(job):
+        return " Remote / Worldwide"
+    return " " + _escape(job.location or "Unknown")
+
+def _freshness_badge(job):
+    if not job.posted_date:
+        return ""
+    diff = datetime.now() - job.posted_date
+    if diff < timedelta(hours=6):
+        return "[NEW]"
+    if diff < timedelta(hours=24):
+        return "[Today]"
+    return ""
+
+
+def _posted_label(job) -> str:
+    """Render a compact, human-readable age without exposing raw datetimes."""
+    posted = getattr(job, "posted_date", None)
+    if not posted:
+        return "Recently"
+    try:
+        if getattr(posted, "tzinfo", None) is not None:
+            from datetime import timezone
+
+            posted = posted.astimezone(timezone.utc).replace(tzinfo=None)
+        seconds = max(0, int((datetime.now() - posted).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return "Recently"
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+def _display_location(job) -> str:
+    """Keep the source location intact while normalising remote separators."""
+    raw = re.sub(r"\s+", " ", (getattr(job, "location", "") or "").strip())
+    if not raw and _is_remote_job(job):
+        return "Remote · Worldwide"
+    if raw:
+        raw = raw.replace(" / ", " · ").replace(" - ", " · ")
+        return _escape(raw)
+    return "Unknown"
+
+
+# Keep the source visible to subscribers without exposing internal scraper keys.
+_SOURCE_LABELS = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "greenhouse": "Greenhouse / Direct ATS",
+    "lever": "Lever / Direct ATS",
+    "company_careers": "Official Company Careers",
+    "official_careers": "Official Company Careers",
+    "wuzzuf": "Wuzzuf",
+    "forasna": "Forasna",
+    "tanqeeb": "Tanqeeb",
+    "akhtaboot": "Akhtaboot",
+    "wazzif": "Wazzif",
+    "jobzella": "Jobzella",
+    "shaghalni": "Shaghalni",
+    "bayt": "Bayt",
+    "gulftalent": "GulfTalent",
+    "naukrigulf": "Naukrigulf",
+    "qureos": "Qureos",
+    "upwork": "Upwork",
+    "freelancer": "Freelancer",
+    "mostaql": "Mostaql",
+    "khamsat": "Khamsat",
+    "fiverr": "Fiverr",
+    "remoteok": "RemoteOK",
+    "remotive": "Remotive",
+    "we_work_remotely": "We Work Remotely",
+    "wellfound": "Wellfound",
+    "glassdoor": "Glassdoor",
+}
+
+
+def _source_label(job) -> str:
+    """Return a subscriber-facing source name from a source key or source name."""
+    raw_key = str(getattr(job, "source_key", "") or "").strip().lower()
+    raw_source = str(getattr(job, "source", "") or "").strip()
+    combined = f"{raw_key} {raw_source.lower()}"
+
+    # LinkedIn has several internal fetcher keys, all of which should display
+    # as the single familiar source name.
+    if "linkedin" in combined:
+        return "LinkedIn"
+
+    for key, label in _SOURCE_LABELS.items():
+        if key in combined:
+            return label
+
+    fallback = raw_source or raw_key or "Job board"
+    fallback = re.sub(r"[_-]+", " ", fallback)
+    fallback = re.sub(r"\s+", " ", fallback).strip()
+    return fallback.title()
+
+def _extract_skills(text):
+    skill_map = (
+        ("ping identity", "Ping Identity"), ("ping", "Ping Identity"), ("okta", "Okta"),
+        ("identity security", "Identity Security"), ("identity and access", "Identity & Access"),
+        ("identity access", "Identity & Access"), ("access management", "IAM"), ("iam", "IAM"),
+        ("aws", "AWS"), ("azure", "Azure"), ("gcp", "GCP"),
+        ("threat intelligence", "Threat Intelligence"), ("threat intel", "Threat Intelligence"),
+        ("siem", "SIEM"), ("splunk", "Splunk"), ("qradar", "QRadar"),
+        ("sentinel", "Microsoft Sentinel"), ("incident response", "Incident Response"),
+        ("pentest", "Pentest"), ("burp", "Burp Suite"), ("nessus", "Nessus"),
+        ("metasploit", "Metasploit"), ("iso 27001", "ISO 27001"),
+        ("nist", "NIST"), ("grc", "GRC"), ("pci", "PCI-DSS"),
+        ("crowdstrike", "CrowdStrike"), ("defender", "Microsoft Defender"),
+        ("wireshark", "Wireshark"), ("oscp", "OSCP"), ("cissp", "CISSP"),
+        ("python", "Python"), ("kubernetes", "Kubernetes"),
+    )
+    found: list[str] = []
+    for keyword, label in skill_map:
+        if keyword in text and label not in found:
+            found.append(label)
+    return " · ".join(found[:5]) if found else "Cybersecurity"
+
+
+def _domain_header_icon(domain: str) -> str:
+    return {
+        "Cloud & Infrastructure Security": "☁️",
+        "SOC / Blue Team": "🛰️",
+        "Penetration Testing / Red Team": "🎯",
+        "AppSec / DevSecOps": "🔒",
+        "Network Security": "🌐",
+        "GRC / Compliance": "📋",
+        "Training / Program": "🎓",
+    }.get(domain, "🛡️")
+
+def _match_bar(score: int) -> str:
+    """Returns green dot bar + label for the match strength line."""
+    if score >= 18:
+        return "🟢🟢🟢🟢🟢 Excellent"
+    if score >= 14:
+        return "🟢🟢🟢🟢⚪ Strong"
+    if score >= 11:
+        return "🟢🟢🟢⚪⚪ Good"
+    if score >= 7:
+        return "🟢🟢⚪⚪⚪ Relevant"
+    return "🟢⚪⚪⚪⚪ Listed"
+
+def _domain_emoji(domain: str) -> str:
+    mapping = {
+        "SOC / Blue Team":               "",
+        "Penetration Testing / Red Team": "",
+        "Cloud Security":                "",
+        "AppSec / DevSecOps":            "",
+        "GRC / Compliance":              "",
+        "DFIR / Forensics":              "",
+        "Network Security":              "",
+        "Security Management":           "",
+        "Security Architecture":         "",
+        "IAM / Identity Security":       "",
+        "Training / Program":            "",
+        "Cybersecurity":                 "",
+        "Physical Security":             "",
+    }
+    return mapping.get(domain, "")
+
+def _level_emoji(level: str) -> str:
+    return {"Entry-Level": "", "Mid-Level": "", "Senior": "", "Open": ""}.get(level, "")
+
+
+def _parse_hr_post_fields(job) -> dict:
+    """
+    Parse structured fields embedded in the description of an HR post.
+    Description format (set by linkedin_hr_hunter.py):
+      "Responsibilities: X; Y | Requirements: A; B"
+    Also reads job_type for work_model and tags for poster name.
+    """
+    desc = job.description or ""
+    highlights: list[str] = []
+    requirements: list[str] = []
+    apply_email = ""
+    apply_whatsapp = ""
+    apply_link = ""
+
+    # Extract responsibilities
+    resp_match = re.search(r"Responsibilities?:\s*([^|]+)", desc, re.IGNORECASE)
+    if resp_match:
+        highlights = [s.strip() for s in resp_match.group(1).split(";") if s.strip()]
+
+    # Extract requirements
+    req_match = re.search(r"Requirements?:\s*([^|]+)", desc, re.IGNORECASE)
+    if req_match:
+        requirements = [s.strip() for s in req_match.group(1).split(";") if s.strip()]
+
+    email_match = re.search(r"EMAIL:([^\s]+@[^\s]+)", desc, re.IGNORECASE)
+    if email_match:
+        apply_email = email_match.group(1).strip()
+    whatsapp_match = re.search(r"WHATSAPP:([+\d\s\-()]+)", desc, re.IGNORECASE)
+    if whatsapp_match:
+        apply_whatsapp = whatsapp_match.group(1).strip()
+    link_match = re.search(r"APPLY_LINK:(https?://\S+)", desc, re.IGNORECASE)
+    if link_match:
+        apply_link = link_match.group(1).strip()
+
+    # Poster name from tags (format: "poster:Name")
+    poster = ""
+    for tag in (job.tags or []):
+        if isinstance(tag, str) and tag.startswith("poster:"):
+            poster = tag[7:].strip()
+            break
+
+    # Fallback: try original_source
+    if not poster:
+        orig = getattr(job, "original_source", "") or ""
+        if " � " in orig:
+            poster = orig.split(" � ", 1)[1].strip()
+
+    work_model = getattr(job, "job_type", "") or ""
+
+    return {
+        "highlights": highlights,
+        "requirements": requirements,
+        "poster": poster,
+        "work_model": work_model,
+        "apply_email": apply_email,
+        "apply_whatsapp": apply_whatsapp,
+        "apply_link": apply_link,
+    }
+
+
+def _work_model_badge(work_model: str) -> str:
+    """Return emoji badge for work model."""
+    wm = work_model.lower()
+    if "remote" in wm:
+        return " Remote"
+    if "hybrid" in wm:
+        return " Hybrid"
+    if "on-site" in wm or "onsite" in wm:
+        return " On-site"
+    return ""
+
+
+def format_hr_post_message(job) -> str:
+    """Format an evidence-backed LinkedIn hiring post in the same card style."""
+    text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
+    domain = _domain_label(job)
+    level = _display_level(job)
+    skills = _extract_skills(text)
+    post_fields = _parse_hr_post_fields(job)
+
+    title = _escape(job.title)
+    company = _escape(job.company) if job.company and job.company != "Unknown" else ""
+
+    #     original_source  tags
+    poster = ""
+    for tag in (job.tags or []):
+        if isinstance(tag, str) and tag.startswith("poster:"):
+            poster = tag[7:].strip()
+            break
+    if not poster:
+        orig = getattr(job, "original_source", "") or ""
+        if " � " in orig:
+            poster = orig.split(" � ", 1)[1].strip()
+
+    employment = [level]
+    if post_fields.get("work_model"):
+        employment.append(_escape(post_fields["work_model"]))
+
+    lines = [
+        f"{_domain_header_icon(domain)} <b>{domain}</b>",
+        "",
+        f"📢 <b>{title}</b>",
+        "",
+        f"🏢 <b>{company or 'Hiring company'}</b>",
+        f"📍 {_display_location(job)}",
+        f"🕒 Posted: {_posted_label(job)}",
+        f"💼 {' · '.join(employment)}",
+    ]
+    if poster:
+        lines.append(f"👤 Posted by: {_escape(poster)}")
+    if job.salary:
+        lines.append(f"💰 {_escape(str(job.salary))}")
+    if skills:
+        lines.extend(["", f"⚙️ {skills}"])
+    if post_fields.get("apply_email"):
+        lines.append(f"✉️ <code>{_escape(post_fields['apply_email'])}</code>")
+    if post_fields.get("apply_whatsapp"):
+        lines.append(f"📱 <code>{_escape(post_fields['apply_whatsapp'])}</code>")
+
+    # HR cards always point to the original LinkedIn post.  An external form
+    # mentioned inside the post must never replace the source-post link.
+    post_url = job.canonical_url or job.url
+    if post_url:
+        lines.extend([
+            "",
+            f"🌐 Source: <b>{_escape(_source_label(job))}</b>",
+            f'<a href="{_escape(post_url)}">🚀 Open Original Post →</a>',
+        ])
+
+    return "\n".join(lines).strip()
+
+
+def format_job_message(job):
+    """Format a compact, professional HTML card for a standard job listing."""
+    # HR posts retain their dedicated evidence/contact template.
+    if (getattr(job, "content_type", "") or "").lower() == "hr_post":
+        return format_hr_post_message(job)
+
+    text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
+    level = _display_level(job)
+    domain = _domain_label(job)
+    skills = _extract_skills(text)
+    title = _escape(job.title)
+    company = _escape(job.company) if job.company else "Unknown"
+    employment = [level]
+    if job.job_type:
+        employment.append(_escape(job.job_type))
+
+    lines = [
+        f"{_domain_header_icon(domain)} <b>{domain}</b>",
+        "",
+        f"🔐 <b>{title}</b>",
+        "",
+        f"🏢 <b>{company}</b>",
+        f"📍 {_display_location(job)}",
+        f"🕒 Posted: {_posted_label(job)}",
+        f"💼 {' · '.join(employment)}",
+    ]
+    if job.salary:
+        lines.append(f"💰 {_escape(str(job.salary))}")
+    if skills:
+        lines.extend(["", f"⚙️ {skills}"])
+
+    apply_url = job.canonical_url or job.url
+    if apply_url:
+        lines.extend([
+            "",
+            f"🌐 Source: <b>{_escape(_source_label(job))}</b>",
+            f'<a href="{_escape(apply_url)}">🚀 Apply Now →</a>',
+        ])
+    return "\n".join(lines).strip()
+
+
+# 
+#  Sending � per channel, no cross-channel duplicates
+# 
+
+_missing_token_warned: bool = False  # warn once per process, not once per call
+
+
+def _send_to_topic(message, thread_id=None, db: JobsDB | None = None, channel_key: str = "",
+                   delivery_key: str = "", lifecycle: Counter[str] | None = None):
+    global _missing_token_warned
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        if not _missing_token_warned:
+            log.warning(
+                "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID — "
+                "set them in your .env file (local) or GitHub Secrets (CI). "
+                "No messages will be sent this run."
+            )
+            _missing_token_warned = True
+        if lifecycle is not None:
+            lifecycle["failed"] += 1
+        return False
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+
+    delivery_id = f"{channel_key}:{delivery_key}" if channel_key and delivery_key else ""
+    if db and delivery_id:
+        if not db.reserve_telegram_delivery(
+            delivery_key=delivery_id, channel_key=channel_key,
+            thread_id=thread_id, payload=payload,
+        ):
+            # ``reserve_telegram_delivery`` only rejects a confirmed sent
+            # row or a delivery whose one retry was already exhausted.
+            log.info("Telegram delivery already sent/retry-exhausted for [%s]", channel_key)
+            if lifecycle is not None:
+                lifecycle["already_sent_or_retry_exhausted"] += 1
+            return False
+        if lifecycle is not None:
+            lifecycle["reserved"] += 1
+
+    ok, status, err, retry_after = _post_telegram_payload(payload)
+    if ok:
+        if db and delivery_id:
+            db.mark_telegram_delivery(delivery_id, status="sent")
+        if lifecycle is not None:
+            lifecycle["sent"] += 1
+        return True
+
+    log.error("Telegram error " + str(status) + ": " + (err or "unknown error"))
+    if db and delivery_id:
+        if status == 429:
+            db.mark_telegram_delivery(
+                delivery_id, status="retry_429", error=f"status={status} {err}".strip(),
+                delay_seconds=_compute_retry_delay(0, retry_after=retry_after),
+            )
+            log.warning("Queued known-safe Telegram 429 retry for [%s]", channel_key)
+            if lifecycle is not None:
+                lifecycle["failed"] += 1
+            return False
+
+        # A SEND_FAILED row gets exactly one in-process retry.  The outbox
+        # records each real network call, so a later run can safely resume a
+        # crash-reserved row without confusing RESERVED with SENT.
+        db.mark_telegram_delivery(
+            delivery_id, status="send_failed", error=f"status={status} {err}".strip(),
+        )
+        log.warning("Retrying Telegram SEND_FAILED once for [%s]", channel_key)
+        ok, retry_status, retry_err, _ = _post_telegram_payload(payload)
+        if ok:
+            db.mark_telegram_delivery(delivery_id, status="sent")
+            if lifecycle is not None:
+                lifecycle["sent"] += 1
+            return True
+        log.error(
+            "Telegram retry error %s: %s", retry_status, retry_err or "unknown error",
+        )
+        db.mark_telegram_delivery(
+            delivery_id, status="send_failed",
+            error=f"status={retry_status} {retry_err}".strip(),
+        )
+    if lifecycle is not None:
+        lifecycle["failed"] += 1
+    return False
+
+
+def send_test_canary() -> bool:
+    """Send an opt-in delivery canary to TOPIC_TEST, never to a live route."""
+    if not config.TELEGRAM_CANARY:
+        return False
+    if not config.TOPIC_TEST:
+        log.warning("TELEGRAM_CANARY=true but TOPIC_TEST is not configured")
+        return False
+    day_key = datetime.utcnow().strftime("%Y-%m-%d")
+    return _send_to_topic(
+        "<b>Cybersecurity Jobs Bot</b>\nDelivery canary succeeded.",
+        thread_id=config.TOPIC_TEST,
+        db=get_db(),
+        channel_key="test_canary",
+        delivery_key=day_key,
+    )
