@@ -49,23 +49,103 @@ def test_reserved_is_not_sent_and_delivery_is_channel_scoped():
 
 
 def test_send_failed_has_exactly_one_retry_budget():
+    import database
     db, path = _temp_db()
     try:
         payload = {"chat_id": "1", "text": "test"}
         key = "remote:job-2"
-        assert db.reserve_telegram_delivery(
-            delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-        )
-        db.mark_telegram_delivery(key, status="send_failed", error="503")
-        assert db.reserve_telegram_delivery(
-            delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-        )
-        db.mark_telegram_delivery(key, status="send_failed", error="503")
-        assert not db.reserve_telegram_delivery(
-            delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-        )
+        # Anchor every reservation in this test to "now" so the same-run
+        # exhaustion semantics are exercised end to end.
+        database.set_delivery_run_at("1999-01-01T00:00:00")
+        try:
+            assert db.reserve_telegram_delivery(
+                delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
+            )
+            db.mark_telegram_delivery(key, status="send_failed", error="503")
+            assert db.reserve_telegram_delivery(
+                delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
+            )
+            db.mark_telegram_delivery(key, status="send_failed", error="503")
+            # Within the same run, an exhausted pair is suppressed once more.
+            assert not db.reserve_telegram_delivery(
+                delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
+            )
+        finally:
+            database.set_delivery_run_at(None)
     finally:
         _remove_db(path)
+
+
+def test_retry_exhausted_row_recovers_in_a_new_run():
+    """v62: a legacy ``send_failed`` row with exhausted retries must never
+    block the first real send when the reservation arrives in a new run."""
+    import database
+    db, path = _temp_db()
+    try:
+        payload = {"chat_id": "1", "text": "test"}
+        key = "remote:job-legacy"
+        # Simulate a row left over from a previous run: exhausted retries,
+        # created before the current run anchor.
+        with db._conn() as con:
+            con.execute(
+                """INSERT INTO telegram_delivery_outbox(
+                    delivery_key, channel_key, thread_id, payload_json, status,
+                    created_at, updated_at, sent_at, attempts
+                ) VALUES(?,?,?,?, 'send_failed', ?, ?, NULL, 2)""",
+                (key, "remote", 1, "{}", "1999-01-01T00:00:00", "1999-01-01T00:00:00"),
+            )
+        # The new run anchors after the legacy row.
+        database.set_delivery_run_at("2000-01-01T00:00:00")
+        try:
+            assert db.reserve_telegram_delivery(
+                delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
+            )
+            with db._conn() as con:
+                row = con.execute(
+                    "SELECT status, attempts FROM telegram_delivery_outbox "
+                    "WHERE delivery_key=?", (key,),
+                ).fetchone()
+            assert row["status"] == "reserved"
+            assert row["attempts"] == 0
+        finally:
+            database.set_delivery_run_at(None)
+    finally:
+        _remove_db(path)
+
+
+def test_cyber_confirmed_passes_delivery_without_evidence(monkeypatch):
+    """v62: CYBER_CONFIRMED with a valid location and identity never re-
+    rejects at delivery for conflicting evidence; CYBER_LIKELY still must
+    demonstrate publish-grade cyber evidence."""
+    import telegram_sender
+    from models import Job, CyberVerdict
+
+    def make_job(title: str, verdict: str, tags=None):
+        return Job(
+            title=title,
+            company="Acme",
+            url=f"https://example.com/{title.replace(' ', '-')}",
+            source="linkedin_jobs",
+            location="Cairo, Egypt",
+            tags=tags or [],
+            description="",
+            content_type="",
+            cyber_verdict=verdict,
+        )
+
+    job_confirmed = make_job("Sr Analyst, IT Infrastructure", CyberVerdict.CONFIRMED.value)
+    # No explicit title evidence, no skill tags: the delivery evidence gate
+    # would normally return insufficient_cyber_evidence for this title.
+    assert telegram_sender._telegram_ineligibility_reason(job_confirmed) is None
+
+    job_likely = make_job("Solutions Engineer", CyberVerdict.LIKELY.value)
+    assert telegram_sender._telegram_ineligibility_reason(job_likely) == "insufficient_cyber_evidence"
+
+    job_likely_with_skills = make_job(
+        "Solutions Engineer", CyberVerdict.LIKELY.value,
+        tags=["SIEM", "incident response", "EDR"],
+    )
+    assert telegram_sender._telegram_ineligibility_reason(job_likely_with_skills) is None
 
 
 def test_send_failed_is_retried_once_then_recorded_sent(monkeypatch):
@@ -142,5 +222,10 @@ def test_source_timeout_classes_leave_linkedin_budget_untouched():
     specs = {spec.key: spec for spec in get_source_specs()}
     assert specs["wuzzuf"].source_timeout_seconds is None
     assert specs["ibm_egypt"].source_timeout_seconds == config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
-    assert specs["cib_egypt"].source_timeout_seconds == config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS
+    # v62: Egyptian priority sources carry a dedicated budget so the shared
+    # playwright cap can never kill a JS-only careers render there.
+    if "cib_egypt" in config.EGYPT_PRIORITY_SOURCE_KEYS:
+        assert specs["cib_egypt"].source_timeout_seconds == config.EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS
+    else:
+        assert specs["cib_egypt"].source_timeout_seconds == config.PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS
     assert specs["linkedin_unified"].source_timeout_seconds is None
