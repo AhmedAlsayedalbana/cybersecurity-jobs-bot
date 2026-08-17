@@ -987,6 +987,13 @@ class JobsDB:
         error_code: str = "",
         auto_disable_threshold: int = 4,
         quarantine_minutes: int = 180,
+        # v63: a run-phase deadline (budget exhaustion) is not the source's
+        # own fault — it must never compound into quarantine, and priority
+        # sources are additionally exempt from auto-disable because they are
+        # the highest-value supply and the 90s budget already gives them a
+        # fair full attempt.  Only real transport-level failures quarantine.
+        deadline_timeout: bool = False,
+        is_priority_source: bool = False,
     ) -> None:
         now = datetime.now()
         now_iso = now.isoformat()
@@ -1025,17 +1032,21 @@ class JobsDB:
             total_failures = int(row["total_failures"] or 0)
             quarantined_until = row["quarantined_until"]
 
-            if success:
-                success_streak += 1
-                failure_streak = 0
-                total_success += 1
-                if jobs_count > 0:
+            if success or deadline_timeout:
+                # A deadline-driven zero is recorded for visibility but is
+                # neither a success streak (that rewards real fetches) nor a
+                # failure that can strand the source in quarantine.
+                if success:
+                    success_streak += 1
+                    failure_streak = 0
+                    total_success += 1
+                if jobs_count > 0 or success:
                     quarantined_until = None
             else:
                 success_streak = 0
                 failure_streak += 1
                 total_failures += 1
-                if failure_streak >= max(1, auto_disable_threshold):
+                if failure_streak >= max(1, auto_disable_threshold) and not is_priority_source:
                     quarantined_until = (
                         now + timedelta(minutes=max(1, quarantine_minutes))
                     ).isoformat()
