@@ -488,6 +488,44 @@ async def fetch_all_async(stats: dict, db: JobsDB, reports: dict[str, dict]) -> 
     quarantined = [s for s in specs if s not in normally_enabled]
     probe_limit = max(0, config.QUARANTINED_SOURCE_PROBE_LIMIT)
     recovery_probes = sorted(quarantined, key=lambda spec: spec.priority)[:probe_limit]
+
+    # v66: recovery scheduling is separated from health and yield. A source
+    # sitting in the sparse recovery rotation that actually produced jobs
+    # recently is a proven supplier — it graduates back into the main fetch
+    # plan immediately, even if it was parked earlier for a transient
+    # incident, and a source is never parked simply because it was not
+    # executed in the current run.
+    yield_pulled = 0
+    if hasattr(db, "recent_source_yield") and hasattr(db, "graduate_from_recovery_rotation"):
+        # v66: check every source currently parked in the rotation (due or
+        # not) — the parked list in the log was the user-visible symptom.
+        # A proven supplier must not appear there at all.
+        parked_keys: set[str] = set()
+        try:
+            parked_keys = {r["source_key"] for r in db.get_recovery_sources() or []}
+        except Exception:
+            pass
+        for spec in list(normally_enabled):
+            if spec.key not in parked_keys:
+                continue
+            try:
+                recent = db.recent_source_yield(spec.key)
+            except Exception:
+                continue
+            if recent >= max(1, config.RECOVERY_RECENT_YIELD_MIN_JOBS):
+                try:
+                    db.graduate_from_recovery_rotation(spec.key)
+                except Exception:
+                    continue
+                recovery_due.discard(spec.key)
+                yield_pulled += 1
+    if yield_pulled:
+        log.info(
+            "[v66] %d proven-yield source(s) pulled out of the recovery "
+            "rotation back into the main fetch plan",
+            yield_pulled,
+        )
+
     # v64: recovery-rotation members (not quarantined — parked) run only when due.
     in_rotation = [s for s in normally_enabled if s.key in recovery_due]
     parked = [s for s in normally_enabled if s.key not in recovery_due]
