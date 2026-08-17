@@ -234,11 +234,28 @@ def _topic_channel_for_job(job, searchable: str) -> str | None:
     return None
 
 
+def _telegram_budget_remaining() -> float:
+    """Return telegram send budget with global spillover.
+
+    When the dedicated telegram sub-budget is exhausted but global run
+    budget remains, allow sending to continue using the global budget.
+    This ensures all routed jobs are sent even if the sub-budget is too low.
+    """
+    tg_left = budget_remaining("telegram")
+    if tg_left > 0:
+        return tg_left
+    # Telegram sub-budget exhausted — check global remaining
+    global_left = budget_remaining()  # total run remaining
+    if global_left > 5:  # 5s safety margin
+        return global_left
+    return 0.0
+
+
 def _post_telegram_payload(payload: dict) -> tuple[bool, int, str, int | None]:
     """
     Returns: (success, status_code, error_text, retry_after_seconds)
     """
-    if budget_remaining("telegram") <= 0:
+    if _telegram_budget_remaining() <= 0:
         return False, 0, "telegram_budget_exhausted", None
     try:
         resp = requests.post(
@@ -271,7 +288,7 @@ def _drain_retry_queue(db: JobsDB) -> int:
     """Retry one previously rate-limited Telegram delivery, at most once."""
     sent = 0
     for row in db.get_due_safe_delivery_retries(limit=TELEGRAM_RETRY_DRAIN_LIMIT):
-        if budget_remaining("telegram") <= 0:
+        if _telegram_budget_remaining() <= 0:
             break
         payload = row.get("payload") or {}
         ok, status, err, retry_after = _post_telegram_payload(payload)
@@ -614,8 +631,8 @@ def send_jobs(jobs, *, dry_run: bool = False):
 
     # Round-robin send loop for fair per-channel distribution.
     while True:
-        if budget_remaining("telegram") <= 0:
-            log.warning("Telegram send budget exhausted; remaining channel queues will wait for the next run.")
+        if _telegram_budget_remaining() <= 0:
+            log.warning("Telegram send budget exhausted (including global spillover); remaining channel queues will wait for the next run.")
             break
         progress = False
         for ch_key in send_order:
@@ -729,7 +746,7 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     f"[{src_tag}] {job.title[:45]}"
                 )
                 if not dry_run:
-                    time.sleep(min(TELEGRAM_SEND_DELAY, max(0.0, budget_remaining("telegram"))))
+                    time.sleep(min(TELEGRAM_SEND_DELAY, max(0.0, _telegram_budget_remaining())))
                 progress = True
                 sent_job = True
                 break
