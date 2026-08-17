@@ -25,7 +25,7 @@ import config
 from sources import SourceSpec, get_source_specs
 from models import CyberVerdict, classify_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent, smart_expire
-from database import JobsDB, get_db
+from database import JobsDB, get_db, set_delivery_run_at
 from telegram_sender import send_jobs, send_test_canary
 from scoring import score_job_int as score_job, diversity_rerank
 from ai_filter import classify_job as ai_classify_job, batch_classify_borderline
@@ -940,7 +940,10 @@ def main():
                 # Telegram is a bounded protected phase: a completed pool
                 # must still get its configured delivery window even when
                 # upstream CPU-bound filtering exceeded the advisory total.
+                # v62: anchor the outbox retry budget to this run so a
+                # legacy exhausted row can never block the first real send.
                 start_phase("telegram", config.TELEGRAM_BUDGET_SECONDS, protected=True)
+                set_delivery_run_at(datetime.now().isoformat())
                 if config.DRY_RUN:
                     preview_count, sent_records = send_jobs(final_pool, dry_run=True)
                     log.info("🧪 DRY_RUN routing preview: would_send=%d; Telegram and seen-state skipped.", preview_count)
