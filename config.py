@@ -701,6 +701,35 @@ SOURCE_QUARANTINE_MINUTES = int(os.getenv("SOURCE_QUARANTINE_MINUTES", "360"))
 # deployment, while preserving the circuit breaker for the full source set.
 QUARANTINED_SOURCE_PROBE_LIMIT = int(os.getenv("QUARANTINED_SOURCE_PROBE_LIMIT", "4"))
 ENABLE_SOURCE_PRIORITY_GATING = _env_bool("ENABLE_SOURCE_PRIORITY_GATING", True)
+
+# ── v62 Egyptian priority execution budget ─────────────────────────────
+# These official careers connectors are the highest-value non-LinkedIn
+# supply for the Egypt channel.  They get a dedicated, per-source ceiling
+# (separate from the generic 40s playwright cap) so Playwright is never
+# killed by the shared source_deadline before a full careers-page render
+# can complete, and they get execution budget across runs (health probes
+# and quarantine exemptions) so they are not silently starved.
+EGYPT_PRIORITY_SOURCE_KEYS = {
+    # Banks
+    "nbe", "banque_misr", "banque_du_caire", "cib_egypt", "cib_egypt_wd",
+    "qnb_egypt", "qnb_global", "aaib", "adib_egypt", "saib", "bank_nxt",
+    "fabmisr", "hdb", "emirates_nbd_egypt", "mashreq_egypt", "al_baraka_bank",
+    "bank_abc", "credit_agricole_egypt", "hsbc_egypt",
+    # Telecom / digital
+    "telecom_egypt", "we_jina", "etisalat_egypt", "vodafone_egypt",
+    "orange_egypt", "vois", "raya",
+    # IT / infrastructure / industry / pharma
+    "itida", "smart_village", "elsewedy_electric", "pharco",
+    "orascom_construction",
+}
+# Per-source ceiling applied to Egyptian priority careers connectors.
+# Covers the official endpoint attempt and, only when truly needed, a JS-only
+# Playwright render.  Never below the generic playwright cap.
+EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS = float(
+    os.getenv("EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS", "90")
+)
+
+ENABLE_EGYPT_PRIORITY_SOURCES = _env_bool("ENABLE_EGYPT_PRIORITY_SOURCES", True)
 ALLOW_API_KEY_SOURCES = _env_bool("ALLOW_API_KEY_SOURCES", True)
 ENABLE_UNSTABLE_SOURCES = _env_bool("ENABLE_UNSTABLE_SOURCES", False)
 LOCAL_ML_RETRAIN_EVERY_N_RUNS = int(os.getenv("LOCAL_ML_RETRAIN_EVERY_N_RUNS", "8"))
