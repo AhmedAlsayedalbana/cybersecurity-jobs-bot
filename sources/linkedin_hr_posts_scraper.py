@@ -54,9 +54,17 @@ _HR_TELEMETRY: dict[str, object] = {}
 # results page) never silences the backend for the whole run.
 _BACKEND_EMPTY_STREAK_LIMIT = int(os.getenv("HR_BACKEND_EMPTY_STREAK_LIMIT", "4"))
 _BACKEND_COOLDOWN_SECONDS = int(os.getenv("HR_BACKEND_COOLDOWN_SECONDS", "60"))
+# v66: a backend that keeps coming back empty even after stall-relaxation
+# rechecks is parked for the remainder of the run instead of being hit once
+# per query (the v65 log showed 16 consecutive empties — every query paying
+# for a backend that demonstrably has nothing). CSE is exempt: its bounded
+# backoff already paces it, and a key outage must still retry when the
+# backoff expires.
+_BACKEND_PARK_STREAK = int(os.getenv("HR_BACKEND_MAX_EMPTY_STREAK_BEFORE_PARK", "8"))
 _backend_cooldown_until: dict[str, float] = {}
 _backend_empty_cooldown: set[str] = set()
 _backend_empty_streak: dict[str, int] = {}
+_backend_parked: set[str] = set()
 _cse_backoff_until = 0.0
 _cse_backoff_count = 0
 
@@ -79,15 +87,35 @@ def _mark_backend_empty(backend: str) -> None:
             "cooled down for %ds (recheck resumes automatically).",
             backend, streak, _BACKEND_COOLDOWN_SECONDS,
         )
+    # v66: after the park streak (which counts forced stall-relaxation
+    # rechecks too), the backend is parked for the rest of the run. It is
+    # skipped by the orchestrator and never picked by stall-relaxation,
+    # ending the per-query retry loop while the other backends keep serving.
+    if (
+        streak >= max(1, _BACKEND_PARK_STREAK)
+        and backend not in ("google_cse",)
+        and backend not in _backend_parked
+    ):
+        _backend_parked.add(backend)
+        log.info(
+            "LinkedIn HR Posts: backend '%s' produced nothing after %d "
+            "consecutive checks (including forced rechecks); parked for the "
+            "remainder of the run so queries stop paying for a dead "
+            "backend (recheck resumes at the next run).",
+            backend, streak,
+        )
 
 
 def _mark_backend_hit(backend: str) -> None:
     _backend_empty_streak[backend] = 0
     _backend_cooldown_until.pop(backend, None)
     _backend_empty_cooldown.discard(backend)
+    _backend_parked.discard(backend)
 
 
 def _is_backend_warm(backend: str) -> bool:
+    if backend in _backend_parked:
+        return False
     return _backend_cooldown_expired(backend)
 
 
@@ -617,7 +645,11 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         # genuinely empty responses; a backend whose cooldown came from a
         # short transient failure (CSE) is not rechecked — re-hitting a
         # known-failing API endpoint advances nothing.
-        eligible = [b for b in living if b in _backend_empty_cooldown]
+        eligible = [b for b in living if b in _backend_empty_cooldown and b not in _backend_parked]
+        # v66: backends parked by the streak cap are out of the run entirely
+        # — neither warm nor forceable. If the only empty-cooldown backends
+        # are parked, the query plan returns what it collected so far and
+        # lets CSE's bounded backoff and the next run do the rest.
         if not eligible:
             return []
         relaxed = min(eligible, key=lambda b: _backend_cooldown_until[b])
