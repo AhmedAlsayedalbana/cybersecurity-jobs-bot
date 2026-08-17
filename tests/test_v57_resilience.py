@@ -231,10 +231,19 @@ def test_non_cyber_and_generic_likely_roles_cannot_enter_telegram():
     generic_likely.description = "Help customers adopt AWS, Python, and cloud products."
     assert not _is_telegram_eligible(generic_likely)
 
+    # v62 verdict consistency: a CYBER_CONFIRMED row with a valid delivery
+    # location and an exact posting identity is trusted at delivery and is
+    # never re-rejected by the evidence gate.  The upstream classifier is the
+    # only authority that can produce such a row for a generic title.
     confirmed_erp_admin = _job("NetSuite Administrator")
     confirmed_erp_admin.cyber_verdict = CyberVerdict.CONFIRMED.value
     confirmed_erp_admin.description = "ERP administration, user provisioning, and reports."
-    assert not _is_telegram_eligible(confirmed_erp_admin)
+    assert _is_telegram_eligible(confirmed_erp_admin)
+
+    confirmed_without_location = _job("NetSuite Administrator")
+    confirmed_without_location.cyber_verdict = CyberVerdict.CONFIRMED.value
+    confirmed_without_location.location = "London, UK"
+    assert not _is_telegram_eligible(confirmed_without_location)
 
 
 def test_cloudsec_requires_explicit_cloud_security_evidence():
