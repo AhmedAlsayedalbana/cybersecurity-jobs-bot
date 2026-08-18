@@ -83,6 +83,12 @@ class CareerSource:
     page_size: int = 50
     query: str = ""
     browser_fallback: bool = False
+    # v68: cheap public-reader (Jina) rescue step for sources whose client
+    # IP keeps getting blocked or timing out while the public reader sees
+    # the page fine.  Only the sources that actually showed a
+    # blocked/timeout/empty failure pattern get it enabled — enabling it
+    # everywhere would add per-source latency on portals that never fail.
+    public_fallback: bool = False
     # Hard safety cap on HTML pagination. Without this, a source whose page
     # content never repeats (e.g. a JS-rendered SPA returning slightly
     # different noise per page instead of real listings, or a search query
@@ -102,34 +108,34 @@ OFFICIAL_SOURCES: tuple[CareerSource, ...] = (
     CareerSource("shaghalni", "Shaghalni", "Shaghalni", "egypt", "html", "https://shaghalni.com/hiring-center/jobs", "egypt", page_param="page"),
     CareerSource("vodafone_egypt", "Vodafone Egypt Careers", "Vodafone Egypt", "egypt", "successfactors", "https://opportunities.vodafone.com/search/", "egypt", page_param="start"),
     CareerSource("orange_egypt", "Orange Egypt Careers", "Orange Egypt", "egypt", "phenom", "https://orange.jobs/gb/en/search-results", "egypt", page_param="page"),
-    CareerSource("telecom_egypt", "WE (Telecom Egypt) Careers", "Telecom Egypt", "egypt", "html", "https://te.eg/wps/portal/te/Personal/Careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("banque_misr", "Banque Misr Careers", "Banque Misr", "egypt", "html", "https://www.banquemisr.com/en/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("nbe", "National Bank of Egypt Careers", "National Bank of Egypt", "egypt", "html", "https://www.nbe.com.eg/NBE/E/#/EN/Employment", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("cib_egypt", "CIB Careers", "Commercial International Bank", "egypt", "html", "https://www.cibeg.com/en/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("qnb_egypt", "QNB Egypt Careers", "QNB Egypt", "egypt", "html", "https://www.qnb.com/sites/qnb/qnbegypt/page/en/encareers.html", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("banque_du_caire", "Banque du Caire Careers", "Banque du Caire", "egypt", "html", "https://www.bdc.com.eg/bdcwebsite/personal/careers.html", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("telecom_egypt", "WE (Telecom Egypt) Careers", "Telecom Egypt", "egypt", "html", "https://te.eg/wps/portal/te/Personal/Careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("banque_misr", "Banque Misr Careers", "Banque Misr", "egypt", "html", "https://www.banquemisr.com/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("nbe", "National Bank of Egypt Careers", "National Bank of Egypt", "egypt", "html", "https://www.nbe.com.eg/NBE/E/#/EN/Employment", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("cib_egypt", "CIB Careers", "Commercial International Bank", "egypt", "html", "https://www.cibeg.com/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("qnb_egypt", "QNB Egypt Careers", "QNB Egypt", "egypt", "html", "https://www.qnb.com/sites/qnb/qnbegypt/page/en/encareers.html", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("banque_du_caire", "Banque du Caire Careers", "Banque du Caire", "egypt", "html", "https://www.bdc.com.eg/bdcwebsite/personal/careers.html", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     CareerSource("valeo_egypt", "Valeo Egypt Careers", "Valeo", "egypt", "workday", "https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs", "egypt", tenant="valeo", site="valeo_jobs"),
     CareerSource("ibm_egypt", "IBM Egypt Careers", "IBM", "egypt", "html", "https://www.ibm.com/careers/search", "egypt", page_param="page"),
     CareerSource("microsoft_egypt", "Microsoft Egypt Careers", "Microsoft", "egypt", "eightfold", "https://apply.careers.microsoft.com/careers", "egypt", page_param="page"),
     CareerSource("siemens_egypt", "Siemens Egypt Careers", "Siemens", "egypt", "html", "https://jobs.siemens.com/en_US/externaljobs/SearchJobs", "egypt", page_param="page"),
     # ── Egypt blocked-source fallbacks ─────────────────────────────────────
     CareerSource("cib_egypt_wd", "CIB Careers (Workday)", "Commercial International Bank", "egypt", "workday", "https://cibeg.wd1.myworkdayjobs.com/en-US/cib_jobs", "egypt", tenant="cibeg", site="cib_jobs"),
-    CareerSource("nbe_html", "NBE Careers (HTML)", "National Bank of Egypt", "egypt", "html", "https://www.nbe.com.eg/en/Pages/Default.aspx", "egypt", page_param="page"),
-    CareerSource("we_jina", "WE Telecom Egypt (Alt)", "Telecom Egypt", "egypt", "html", "https://te.eg/wps/portal/te/Personal/Careers/!ut/p/z1/", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("qnb_global", "QNB Global Careers", "QNB Egypt", "egypt", "html", "https://careers.qnb.com/", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("nbe_html", "NBE Careers (HTML)", "National Bank of Egypt", "egypt", "html", "https://www.nbe.com.eg/en/Pages/Default.aspx", "egypt", page_param="page", public_fallback=True),
+    CareerSource("we_jina", "WE Telecom Egypt (Alt)", "Telecom Egypt", "egypt", "html", "https://te.eg/wps/portal/te/Personal/Careers/!ut/p/z1/", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("qnb_global", "QNB Global Careers", "QNB Egypt", "egypt", "html", "https://careers.qnb.com/", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     # ── Egypt banking sector ────────────────────────────────────────────────
-    CareerSource("aaib", "AAIB Careers", "Arab African International Bank", "egypt", "html", "https://aaib.com.eg/en/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("credit_agricole_egypt", "Crédit Agricole Egypt Careers", "Crédit Agricole Egypt", "egypt", "html", "https://www.ca-egypt.com/en/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("hsbc_egypt", "HSBC Egypt Careers", "HSBC Egypt", "egypt", "html", "https://www.hsbc.com/careers", "egypt", page_param="page"),
-    CareerSource("adib_egypt", "ADIB Egypt Careers", "Abu Dhabi Islamic Bank Egypt", "egypt", "html", "https://www.adib.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("fabmisr", "FABMISR Careers", "FABMISR", "egypt", "html", "https://www.fabmisr.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("hdb", "HDB Careers", "Housing and Development Bank", "egypt", "html", "https://www.hdb-egypt.com/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("emirates_nbd_egypt", "Emirates NBD Egypt Careers", "Emirates NBD Egypt", "egypt", "html", "https://www.emiratesnbd.com/egypt/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("mashreq_egypt", "Mashreq Egypt Careers", "Mashreq Egypt", "egypt", "html", "https://www.mashreq.com/egypt/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("al_baraka_bank", "Al Baraka Bank Careers", "Al Baraka Bank", "egypt", "html", "https://www.albarakabank.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("bank_abc", "Bank ABC Careers", "Bank ABC", "egypt", "html", "https://www.bankabc.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("saib", "SAIB Careers", "SAIB", "egypt", "html", "https://www.saib.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
-    CareerSource("bank_nxt", "Bank NXT Careers", "Bank NXT", "egypt", "html", "https://banknxt.com/careers", "egypt", page_param="page", browser_fallback=True),
+    CareerSource("aaib", "AAIB Careers", "Arab African International Bank", "egypt", "html", "https://aaib.com.eg/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("credit_agricole_egypt", "Crédit Agricole Egypt Careers", "Crédit Agricole Egypt", "egypt", "html", "https://www.ca-egypt.com/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("hsbc_egypt", "HSBC Egypt Careers", "HSBC Egypt", "egypt", "html", "https://www.hsbc.com/careers", "egypt", page_param="page", public_fallback=True),
+    CareerSource("adib_egypt", "ADIB Egypt Careers", "Abu Dhabi Islamic Bank Egypt", "egypt", "html", "https://www.adib.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("fabmisr", "FABMISR Careers", "FABMISR", "egypt", "html", "https://www.fabmisr.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("hdb", "HDB Careers", "Housing and Development Bank", "egypt", "html", "https://www.hdb-egypt.com/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("emirates_nbd_egypt", "Emirates NBD Egypt Careers", "Emirates NBD Egypt", "egypt", "html", "https://www.emiratesnbd.com/egypt/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("mashreq_egypt", "Mashreq Egypt Careers", "Mashreq Egypt", "egypt", "html", "https://www.mashreq.com/egypt/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("al_baraka_bank", "Al Baraka Bank Careers", "Al Baraka Bank", "egypt", "html", "https://www.albarakabank.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("bank_abc", "Bank ABC Careers", "Bank ABC", "egypt", "html", "https://www.bankabc.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("saib", "SAIB Careers", "SAIB", "egypt", "html", "https://www.saib.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    CareerSource("bank_nxt", "Bank NXT Careers", "Bank NXT", "egypt", "html", "https://banknxt.com/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     # ── Egypt telecom / digital sector ─────────────────────────────────────
     CareerSource("raya", "Raya Careers", "Raya", "egypt", "html", "https://www.raya.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
     CareerSource("vois", "VOIS Careers", "VOIS (Vodafone Intelligent Solutions)", "egypt", "html", "https://vois.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
@@ -196,6 +202,7 @@ class _Outcome:
     parsed: bool = False
     no_active_jobs: bool = False
     error_code: str = ""
+    raw_html: str = ""
 
 
 def fetcher_for(source_key: str) -> Callable[[], SourceResult]:
@@ -282,6 +289,25 @@ def fetch_source(source_key: str) -> SourceResult:
             attempted_urls=(source.url,),
         )
 
+    # v68 per-source fallback ladder: before the browser is ever touched, a
+    # source whose direct endpoint answered nothing real gets two cheap
+    # public-reading steps — an embedded structured-data extraction from a
+    # lightweight HTML GET (ld+json / __NEXT_DATA__, at most a few seconds)
+    # and then the Jina public reader (a shared proxy that often sees what a
+    # blocked client cannot). Playwright stays reserved for sources that are
+    # actually JS-only and only after both cheaper steps returned nothing.
+    if not outcome.jobs and not outcome.no_active_jobs:
+        if outcome.parsed and _SCRIPT_RE.search(outcome.raw_html or ""):
+            page_jobs, _ = _jobs_from_html(outcome.raw_html or "", source, base_url=source.url)
+            if page_jobs:
+                return SourceResult(jobs=page_jobs, status="success", transport="embedded_json", attempted_urls=(source.url,))
+        if source.public_fallback:
+            jina_result = _fetch_via_public_reader(source)
+            if jina_result is not None and jina_result.jobs:
+                return SourceResult(jobs=jina_result.jobs, status="success", transport="jina", attempted_urls=(source.url,))
+            if jina_result is not None and jina_result.no_active_jobs:
+                return SourceResult(status="empty", transport="jina", error_code="EMPTY_REAL:jina", attempted_urls=(source.url,))
+
     # Playwright is permitted only when the source is actually JS-only. An
     # endpoint that parsed real structure (parsed=True) but exposed no
     # listings genuinely has none — re-rendering the same page in a browser
@@ -322,6 +348,60 @@ def fetch_source(source_key: str) -> SourceResult:
         error_code=f"{reason}:{outcome.error_code}" if outcome.error_code else reason,
         attempted_urls=(source.url,),
     )
+
+
+# v68 public-reader (Jina) cascade: capped, cached, and strictly cheaper
+# than Playwright — the reader's own 8s timeout plus a small retry is the
+# whole budget, so a failing reader never consumes a source's deadline.
+_JINA_READER_URL_TEMPLATE = "https://r.jina.ai/{url}"
+_JINA_PUBLIC_READER_HEADERS = {
+    "Accept": "text/html",
+    "X-Locale": "en",
+}
+_PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS = float(
+    os.getenv("CAREERS_READER_TIMEOUT_SECONDS", "8")
+)
+
+
+def _fetch_via_public_reader(source: CareerSource) -> _Outcome | None:
+    """v68: read the source's official page through the public Jina reader as
+    the middle step of the fallback ladder (endpoint → embedded JSON →
+    public reader → browser).  The reader is what the blocked-client
+    sources in the v68 diagnosis actually needed: the same page that times
+    out or resets for the bot's exit IP often resolves cleanly for the
+    reader's pool.  Failures here are silent — the caller escalates to the
+    browser step or reports the source honestly.
+
+    Returns ``None`` when the reader step could not be attempted at all
+    (never happened), so ``fetch_source`` can distinguish "tried and empty"
+    from "not tried".
+    """
+    reader_url = _JINA_READER_URL_TEMPLATE.format(url=source.url)
+    html: str | None = None
+    try:
+        html = get_text(
+            reader_url, headers=_JINA_PUBLIC_READER_HEADERS,
+            timeout=int(_PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS),
+            max_retries=1,
+        )
+    except Exception as exc:  # pragma: no cover - defensive; escalates instead
+        log.debug("%s: public reader transport failed: %s", source.key, exc)
+        return _Outcome([], error_code="jina_unavailable")
+    if not html:
+        return _Outcome([], error_code="jina_unavailable")
+    if len(html) > 5 * 1024 * 1024:
+        # A reader response that grew past a sane page size is noise, not
+        # rescue — skip extraction and report honestly.
+        return _Outcome([], parsed=False, error_code="jina_too_large")
+    try:
+        page_jobs, parsed = _jobs_from_html(html, source, base_url=source.url)
+    except Exception as exc:  # pragma: no cover - parse failures never block
+        log.debug("%s: public reader parse failed: %s", source.key, exc)
+        return _Outcome([], parsed=False, error_code="jina_parse_failed")
+    if page_jobs:
+        return _Outcome(_dedupe_jobs(page_jobs), parsed=parsed)
+    return _Outcome([], parsed=parsed, no_active_jobs=parsed and not page_jobs,
+                    error_code="jina_empty")
 
 
 def _fetch_direct(source: CareerSource) -> _Outcome:
@@ -429,6 +509,7 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
     page = source.page_start
     all_jobs: list[Job] = []
     parsed_any = False
+    raw_html: str = ""
     seen_page_fingerprints: set[tuple[str, ...]] = set()
 
     # v64: transport errors (connection refused/reset, dead portal) stop the
@@ -439,6 +520,11 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
     page_transport_failures = 0
     while True:
         result = get_text_result(_page_url(source, page), timeout=int(_FAST_ATTEMPT_TIMEOUT_SECONDS), max_retries=1)
+        if result.text and page == source.page_start:
+            # v68: keep the first page's raw HTML so the fallback ladder can
+            # re-extract embedded structured data (ld+json / __NEXT_DATA__)
+            # before escalating to the public reader.
+            raw_html = raw_html or result.text
         if not result.text:
             page_transport_failures += 1
             if page_transport_failures > 1:
@@ -469,7 +555,7 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
         page += 1
 
     jobs = _dedupe_jobs(all_jobs)
-    return _Outcome(jobs, parsed=parsed_any, no_active_jobs=parsed_any and not jobs)
+    return _Outcome(jobs, parsed=parsed_any, no_active_jobs=parsed_any and not jobs, raw_html=raw_html)
 
 
 def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = None) -> _Outcome:
