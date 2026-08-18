@@ -547,6 +547,63 @@ def _compute_retry_delay(attempts: int, retry_after: int | None = None) -> int:
     return min(900, base * (2 ** max(0, attempts)))
 
 
+# v71: per-channel failure registry — a Telegram channel can fail for two
+# very different reasons.  A ``429`` rate-limit is TEMPORARY and recovers
+# on its own; a ``403 chat not found`` / ``400 deactivated chat`` is
+# TERMINAL (the bot was removed or the chat no longer exists) and any
+# retry is pure wasted budget.  Mixing the two made a single bad channel
+# eat the whole pending queue every run, so they are now classified
+# explicitly and handled separately.
+_TERMINAL_TELEGRAM_STATUSES: tuple[int, ...] = (400, 401, 403, 404)
+_channel_failure_state: dict[str, dict] = {}
+_CHANNEL_DEACTIVATED_LOGGED: set[str] = set()
+
+def _classify_channel_failure(status: int) -> str:
+    """v71: classify a Telegram send failure for the channel registry."""
+    if status == 429:
+        return "retry_429"
+    if status in _TERMINAL_TELEGRAM_STATUSES:
+        return "terminal"
+    return "transient"
+
+def _is_channel_deactivated(ch_key: str) -> bool:
+    """v71: whether a channel is currently deactivated by terminal errors."""
+    state = _channel_failure_state.get(ch_key)
+    if not state:
+        return False
+    return (state.get("deactivated_until", 0) or 0.0) > time.time()
+
+def _deactivate_channel(ch_key: str, status: int, err: str) -> None:
+    """v71: mark a channel deactivated after terminal Telegram errors and
+    park it for one day; the row-level pending mechanism keeps draining
+    every OTHER channel, so one dead chat can never strand the pipeline."""
+    import datetime as _dt
+    # 429 is a rate-limit signal handled by the row-level retry_429 path
+    # with backoff — it must NEVER park the channel.  Only terminal 400/401/
+    # 403/404 and genuinely hard failures reach the deactivation registry.
+    if _classify_channel_failure(status) != "terminal":
+        return  # 429/backoff and transient errors never park a channel
+    state = _channel_failure_state.setdefault(ch_key, {
+        "hard_errors": 0, "deactivated_until": 0.0, "terminal_reason": "",
+    })
+    state["hard_errors"] += 1
+    state["terminal_reason"] = f"status={status} {err}".strip()[:200]
+    state["deactivated_until"] = time.time() + 86400.0
+    if ch_key not in _CHANNEL_DEACTIVATED_LOGGED:
+        _CHANNEL_DEACTIVATED_LOGGED.add(ch_key)
+        log.warning(
+            "v71 Telegram channel [%s] deactivated for 24h: terminal error "
+            "(HTTP %s). Retries suppressed to protect the delivery budget; "
+            "other channels keep draining normally.", ch_key, status,
+        )
+
+_topic_evidence_cache: dict = {}
+
+def _reset_channel_states_for_tests() -> None:
+    """v71: test-only hook to clear the module-level channel registry."""
+    _channel_failure_state.clear()
+    _CHANNEL_DEACTIVATED_LOGGED.clear()
+
 def _drain_retry_queue(db: JobsDB) -> int:
     """v67: drain ALL queued pending sends (v66 ``delivery_pending`` rows
     queued when a terminal channel state blocked a new eligible candidate,
@@ -557,12 +614,30 @@ def _drain_retry_queue(db: JobsDB) -> int:
     for row in db.get_pending_delivery_rows(limit=TELEGRAM_RETRY_DRAIN_LIMIT):
         if _telegram_budget_remaining() <= 0:
             break
+        ch_key = row.get("channel_key") or ""
+        # v71: a channel deactivated by terminal Telegram errors never
+        # re-enters the drain loop — its pending rows wait out the park
+        # window instead of burning the run's send budget.
+        if ch_key and _is_channel_deactivated(ch_key):
+            continue
         payload = row.get("payload") or {}
         ok, status, err, retry_after = _post_telegram_payload(payload)
         if ok:
             db.mark_telegram_delivery(row["delivery_key"], status="sent")
             sent += 1
             time.sleep(0.7)
+            continue
+        failure_kind = _classify_channel_failure(status)
+        if failure_kind == "terminal":
+            if ch_key:
+                _deactivate_channel(ch_key, status, err)
+            # A terminal error can never recover by retrying the same
+            # chat — confirm the failure once on the outbox row so the
+            # lifecycle stays auditable and stop burning budget on it.
+            db.mark_telegram_delivery(
+                row["delivery_key"], status="send_failed",
+                error=f"TERMINAL:{status} {err}".strip()[:500],
+            )
             continue
         if status == 429:
             db.mark_telegram_delivery(
@@ -668,7 +743,16 @@ def send_jobs(jobs, *, dry_run: bool = False):
     # Counters are explicit about the delivery unit: routed/reserved/sent/
     # failed are exact ``(job_id, channel)`` pairs.  This makes a clean
     # four-route run auditable as four reservations and four sends.
-    delivery_lifecycle: Counter[str] = Counter()
+    delivery_lifecycle: Counter[str] = Counter(
+        # v71: every lifecycle event has its own named counter so the
+        # end-of-delivery funnel is exact, not inferred from differences.
+        {k: 0 for k in (
+            "eligible", "routed", "reserved", "sent", "would_send",
+            "already_sent", "channel_mismatch", "channel_deactivated",
+            "delivery_pending", "failed", "new_sent", "pending_sent",
+            "pending_retried", "pending_before",
+        )}
+    )
 
     GEO_CHANNELS   = ["remote", "egypt", "gulf"]
     TOPIC_CHANNELS = [k for k in CHANNELS.keys() if k not in GEO_CHANNELS]
@@ -692,6 +776,29 @@ def send_jobs(jobs, *, dry_run: bool = False):
         # board job must not sit behind a 20-hour LinkedIn job. LinkedIn breaks
         # otherwise comparable freshness ties without letting old roles win.
         return (bucket, age, _source_priority_key(job))
+
+    # v71: small delivery-order tilt for SOC / pen-testing roles located in
+    # Egypt.  This ONLY changes the position of already-eligible jobs inside
+    # their channel queues — no gate is relaxed, and the tilt is a bounded
+    # rank bonus (2 places in the sort tuple) so confirmed and fresh jobs
+    # always remain ahead of it.
+    # v71: domain cache to avoid repeated classification per job during the
+    # sort — a job must never be re-classified between the sort and the
+    # per-channel routing, so the same cached value is used everywhere.
+    _domain_cache: dict[int, str | None] = {}
+    def _job_domain(j) -> str | None:
+        jid = id(j)
+        if jid not in _domain_cache:
+            _domain_cache[jid] = classify_intelligence_domain(j)
+        return _domain_cache[jid]
+    def _soc_pentest_egypt_tilt(job) -> int:
+        if _job_domain(job) not in ("soc", "pentest"):
+            return 0
+        location = resolve_delivery_location(job)
+        if location.location_type == "remote":
+            return 0
+        country = (location.normalized_country or "").lower()
+        return 2 if country == "egypt" else 0
 
     eligibility_reasons: Counter[str] = Counter()
     location_telemetry: Counter[str] = Counter()
@@ -746,19 +853,25 @@ def send_jobs(jobs, *, dry_run: bool = False):
 
     jobs_scored = sorted(
         eligible_jobs,
-        key=lambda j: (_verdict_rank(j), _freshness_key(j), _source_priority_key(j), -score_job_int(j))
+        key=lambda j: (
+            _verdict_rank(j), _freshness_key(j), _source_priority_key(j),
+            # v71: SOC/pen-test Egypt roles get a bounded ordering bonus so
+            # they surface earlier in every matched channel; it never moves
+            # a job across a verdict/freshness boundary.
+            -(_soc_pentest_egypt_tilt(j) + score_job_int(j)),
+        ),
     )
+    tilted = sum(1 for j in jobs_scored if _soc_pentest_egypt_tilt(j) > 0)
+    if tilted:
+        log.info(
+            " 🎯 v71 SOC/PenTest Egypt tilt: %d role(s) re-ordered to surface "
+            "earlier in delivery — gates unchanged.", tilted,
+        )
+    _topic_evidence_cache.clear()
 
-    # ── Domain cache to avoid repeated classification per job ───────────────
-    _domain_cache: dict[int, str | None] = {}
-
-    def _job_domain(j) -> str | None:
-        jid = id(j)
-        if jid not in _domain_cache:
-            _domain_cache[jid] = classify_intelligence_domain(j)
-        return _domain_cache[jid]
-
-    # Pre-compute domains for all jobs
+    # ── Pre-compute domain classifications for all scored jobs ──────────────
+    # (the shared cache was defined before the tilt so sort and routing use
+    # the exact same per-job domain — v71, no re-classification drift.)
     for j in jobs_scored:
         _job_domain(j)
 
@@ -884,15 +997,22 @@ def send_jobs(jobs, *, dry_run: bool = False):
     # (delivery_pending/retry_429) go out before any new reservation this
     # run builds, so a candidate the channel state previously blocked is
     # visibly retried instead of sitting behind fresh jobs.
+    # v71: pending counting is split into the channel-delivery dimension
+    # (raw rows) and the candidate dimension (distinct jobs).  A single job
+    # can legitimately be pending on several channels, and lumping the two
+    # numbers together made a healthy queue look like a growing backlog.
     pending_before = 0 if dry_run else len(db.get_pending_delivery_rows(limit=TELEGRAM_RETRY_DRAIN_LIMIT))
     delivery_lifecycle["pending_before"] = pending_before
+    pending_unique_before = 0 if dry_run else db.count_pending_unique_jobs()
+    delivery_lifecycle["pending_unique_before"] = pending_unique_before
     retried_sent = 0 if dry_run else _drain_retry_queue(db)
     pending_retried = min(pending_before, retried_sent) if pending_before else 0
     delivery_lifecycle["pending_retried"] = pending_retried
     if pending_before:
         log.info(
-            f" Pending-first delivery: {pending_before} queued send(s) from earlier "
-            f"run(s) — {retried_sent} resent now (pending rows are drained BEFORE "
+            f" Pending-first delivery: {pending_before} queued send(s) across "
+            f"{pending_unique_before} unique job(s) from earlier run(s) — "
+            f"{retried_sent} resent now (pending rows are drained BEFORE "
             f"new reservations this run)"
         )
     channel_cursors = {k: 0 for k in send_order}
@@ -933,6 +1053,14 @@ def send_jobs(jobs, *, dry_run: bool = False):
             lane = "geo" if is_geo else "topic"
             sent_job = False
 
+            # v71: a channel deactivated by terminal Telegram errors is
+            # skipped at the routing layer too — its queue is not silently
+            # drained into a dead chat; the jobs stay on the other
+            # (healthy) routes of that pool.
+            if not dry_run and _is_channel_deactivated(ch_key):
+                delivery_lifecycle["channel_deactivated"] += 1
+                continue
+
             while channel_cursors[ch_key] < len(queue):
                 job = queue[channel_cursors[ch_key]]
                 channel_cursors[ch_key] += 1
@@ -965,6 +1093,27 @@ def send_jobs(jobs, *, dry_run: bool = False):
 
                 url_id = getattr(job, "url_id", "")
                 job_dedup_key = _delivery_identity(job)
+
+                # ── v71 TOPIC-channel evidence audit ─────────────────────
+                # A topic channel is a specialist audience: a generic
+                # role ("insufficient_cyber_evidence") that survived the
+                # global geo routes must NOT land there on the strength of
+                # the job's channel routing alone.  The job stays alive in
+                # its geo routes and any other matched channels — only the
+                # weak-affinity topic entry is blocked.
+                if is_topic:
+                    ev_key = getattr(job, "dedup_key", "") or id(job)
+                    if ev_key not in _topic_evidence_cache:
+                        _enrich_cyber_evidence(job)
+                        _topic_evidence_cache[ev_key] = _publishable_cyber_evidence(job)[0]
+                    if _topic_evidence_cache[ev_key] == "insufficient_cyber_evidence":
+                        delivery_lifecycle["channel_mismatch"] += 1
+                        log.info(
+                            " 🔒 [v71] %s blocked on %s: no publish-grade cyber evidence "
+                            "(title=%s) — kept on other matched channels.",
+                            ch_key, lane, getattr(job, "title", "")[:60],
+                        )
+                        continue
 
                 # ── Per-channel dedup ────────────────────────────────────
                 if job_dedup_key in channel_dedup_sent[ch_key]:
@@ -1091,15 +1240,23 @@ def send_jobs(jobs, *, dry_run: bool = False):
         bar = "✅" if v > 0 else "⚪"
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
+    pending_after = 0 if dry_run else db.count_pending_delivery_rows()
+    pending_unique_after = 0 if dry_run else db.count_pending_unique_jobs()
+    delivery_lifecycle["pending_after"] = pending_after
+    delivery_lifecycle["pending_unique_after"] = pending_unique_after
+
     log.info(
-        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d delivery_pending=%d pending_before=%d pending_retried=%d pending_sent=%d new_sent=%d%s",
+        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d channel_deactivated=%d already_sent=%d delivery_pending=%d pending_before=%d pending_unique_before=%d pending_retried=%d pending_sent=%d new_sent=%d pending_after=%d pending_unique_after=%d%s",
         delivery_lifecycle["eligible"], delivery_lifecycle["routed"],
         delivery_lifecycle["reserved"], delivery_lifecycle["sent"],
         delivery_lifecycle["failed"], delivery_lifecycle["channel_mismatch"],
+        delivery_lifecycle["channel_deactivated"],
         delivery_lifecycle["already_sent"],
         delivery_lifecycle["delivery_pending"],
-        delivery_lifecycle["pending_before"], delivery_lifecycle["pending_retried"],
+        delivery_lifecycle["pending_before"], delivery_lifecycle["pending_unique_before"],
+        delivery_lifecycle["pending_retried"],
         delivery_lifecycle["pending_sent"], delivery_lifecycle["new_sent"],
+        pending_after, pending_unique_after,
         f" would_send={delivery_lifecycle['would_send']}" if dry_run else "",
     )
 
@@ -1511,6 +1668,32 @@ def _work_model_badge(work_model: str) -> str:
     return ""
 
 
+def format_hiring_signal_message(signal) -> str:
+    """v72: Format a HIRING SIGNAL card — distinct from a job card, with no
+    apply link (the verification chain found no application URL).  The
+    employer identity, inferred role and the signal snippet are shown so
+    readers can act on the signal themselves, and the card is explicitly
+    labeled as a signal, never as a verified listing."""
+    company = _escape(signal.company) if signal.company else "Company"
+    role = _escape(signal.inferred_title)
+    snippet = _escape((signal.source_text or "").strip()[:220])
+    lines = [
+        "📡 <b>HIRING SIGNAL — role not yet published</b>",
+        "",
+        f"🏢 <b>{company}</b>",
+        f"🎯 Inferred role: <b>{role}</b>",
+        "",
+        f"💬 “{snippet}”",
+        "",
+        "🔎 Verified through the official search chain — no public",
+        "application URL was found, so this team is likely still",
+        "building the role.  Follow the company's careers page.",
+    ]
+    if getattr(signal, "signal_source", ""):
+        lines.append(f"🌐 Signal source: <b>{_escape(str(signal.signal_source))}</b>")
+    return "\n".join(lines).strip()
+
+
 def format_hr_post_message(job) -> str:
     """Format an evidence-backed LinkedIn hiring post in the same card style."""
     text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
@@ -1609,6 +1792,20 @@ def format_job_message(job):
             f"🌐 Source: <b>{_escape(_source_label(job))}</b>",
             f'<a href="{_escape(apply_url)}">🚀 Apply Now →</a>',
         ])
+    # v72: Personal Opportunity Score — ranking layer on top of the card.
+    # Rendered for every candidate that cleared all gates; it never relaxes
+    # any gate, and the config flag can disable it without code changes.
+    if getattr(config, "OPPORTUNITY_SCORE_ENABLED", True):
+        try:
+            from opportunity_score import (
+                compute_opportunity_score, format_opportunity_block,
+            )
+            breakdown = compute_opportunity_score(job)
+            if breakdown.total > 0:
+                lines.append("")
+                lines.append(format_opportunity_block(breakdown))
+        except Exception:  # scoring display must never break delivery
+            log.debug("v72 opportunity score render skipped", exc_info=True)
     return "\n".join(lines).strip()
 
 
