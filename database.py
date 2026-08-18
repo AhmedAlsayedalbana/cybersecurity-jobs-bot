@@ -964,6 +964,50 @@ class JobsDB:
                 (now_iso, delivery_key),
             )
 
+    def count_pending_delivery_rows(self) -> int:
+        """v67: how many queued (delivery_pending/retry_429) outbox rows are
+        still waiting — the run-level visibility number for the success
+        report; ``delivery_pending`` rows that the pending-first drain sent
+        before this snapshot are no longer counted.
+        """
+        with self._conn() as con:
+            row = con.execute(
+                """SELECT COUNT(*) FROM telegram_delivery_outbox
+                   WHERE status IN ('delivery_pending', 'retry_429')""",
+            ).fetchone()
+        return int(row[0])
+
+    def get_pending_delivery_rows(self, limit: int = 25) -> list[dict]:
+        """v67: outbox rows waiting for a delivery attempt — ``delivery_pending``
+        (v66: a terminal channel state blocked a new eligible candidate and
+        queued it instead of dropping it silently) and ``retry_429``
+        (rate-limited sends with backoff elapsed). Ordered by
+        ``delivery_run_at`` so the oldest pending send goes first; the next
+        run processes these BEFORE building new reservations.
+        """
+        with self._conn() as con:
+            rows = con.execute(
+                """SELECT delivery_key, channel_key, thread_id, payload_json,
+                          attempts, status
+                   FROM telegram_delivery_outbox
+                   WHERE status IN ('delivery_pending', 'retry_429')
+                   ORDER BY created_at ASC LIMIT ?""",
+                   # Oldest queued pair first: v66 ``delivery_pending`` rows
+                   # were stamped when the run queued them, so a stable
+                   # ``created_at`` ordering honors FIFO without a new
+                   # column (the per-process ``_current_delivery_run_at``
+                   # anchor still separates in-run from legacy rows).
+                (int(limit),),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, ValueError):
+                payload = {}
+            result.append({**dict(row), "payload": payload})
+        return result
+
     def get_due_safe_delivery_retries(self, limit: int = 25) -> list[dict]:
         now = datetime.now().isoformat()
         with self._conn() as con:
