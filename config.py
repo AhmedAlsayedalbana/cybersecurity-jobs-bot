@@ -731,6 +731,16 @@ EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS = float(
     os.getenv("EGYPT_PRIORITY_SOURCE_TIMEOUT_SECONDS", "45")
 )
 
+# v67: if a Playwright browser session has not emitted ANY usable job within
+# this window, abort it immediately instead of consuming the full source
+# budget.  A careers SPA that produces nothing in 20s will not start
+# producing at 44s — the early abort is what broke the observed 13-source
+# source_deadline pileup (AAIB, ADIB, Banque Misr, CIB, Emirates NBD,
+# ITIDA, Mashreq, QNB Egypt, e& Egypt) in the 2026-08-17 run.
+PLAYWRIGHT_ABORT_AFTER_SECONDS = float(
+    os.getenv("PLAYWRIGHT_ABORT_AFTER_SECONDS", "20")
+)
+
 ENABLE_EGYPT_PRIORITY_SOURCES = _env_bool("ENABLE_EGYPT_PRIORITY_SOURCES", True)
 ALLOW_API_KEY_SOURCES = _env_bool("ALLOW_API_KEY_SOURCES", True)
 ENABLE_UNSTABLE_SOURCES = _env_bool("ENABLE_UNSTABLE_SOURCES", False)
