@@ -630,6 +630,19 @@ ENABLE_STRICT_HR_POSTS_ONLY = _env_bool("ENABLE_STRICT_HR_POSTS_ONLY", True)
 SCORE_THRESHOLD  = 14
 TARGET_JOBS_PER_CHANNEL = int(os.getenv("TARGET_JOBS_PER_CHANNEL", "10"))   # ✅ v46: raised from 5 → 10
 MAX_JOBS_PER_CHANNEL = int(os.getenv("MAX_JOBS_PER_CHANNEL", str(TARGET_JOBS_PER_CHANNEL)))
+
+# v72: Hidden Jobs Discovery — hiring signals verified through the official
+# search chain before any card is sent.  Signals that find no application URL
+# are delivered as a distinct HIRING SIGNAL card, never as a normal job.
+ENABLE_HIRING_SIGNALS_DISCOVERY = _env_bool("ENABLE_HIRING_SIGNALS_DISCOVERY", True)
+HIRING_SIGNALS_BUDGET_SECONDS = int(os.getenv("HIRING_SIGNALS_BUDGET_SECONDS", "150"))
+HIRING_SIGNALS_PER_CHANNEL = int(os.getenv("HIRING_SIGNALS_PER_CHANNEL", "2"))
+HIRING_SIGNAL_DEDUP_HOURS = int(os.getenv("HIRING_SIGNAL_DEDUP_HOURS", "168"))
+
+# v72: Personal Opportunity Score — per-job 0-100 composite with per-factor
+# breakdown rendered on the delivery card.  Ranking-layer only; it never
+# relaxes any gate.
+OPPORTUNITY_SCORE_ENABLED = _env_bool("OPPORTUNITY_SCORE_ENABLED", True)
 MIN_POOL_SIZE = int(os.getenv("MIN_POOL_SIZE", "5"))
 REQUEST_TIMEOUT  = 10
 SEED_MODE_ENV    = "SEED_MODE"
