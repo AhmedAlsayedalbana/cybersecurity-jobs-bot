@@ -65,6 +65,10 @@ _backend_cooldown_until: dict[str, float] = {}
 _backend_empty_cooldown: set[str] = set()
 _backend_empty_streak: dict[str, int] = {}
 _backend_parked: set[str] = set()
+# v69: backends that already spent their one forced recheck during the
+# current cooldown window — the set is cleared once the window expires, at
+# which point another single forced recheck is permitted.
+_backend_forced_this_cooldown: set[str] = set()
 _cse_backoff_until = 0.0
 _cse_backoff_count = 0
 
@@ -111,6 +115,9 @@ def _mark_backend_hit(backend: str) -> None:
     _backend_cooldown_until.pop(backend, None)
     _backend_empty_cooldown.discard(backend)
     _backend_parked.discard(backend)
+    # v69: a hit clears the forced-recheck bookkeeping so the backend
+    # returns to the normal rotation with its single-forced-recheck quota.
+    _backend_forced_this_cooldown.discard(backend)
 
 
 def _is_backend_warm(backend: str) -> bool:
@@ -517,9 +524,13 @@ def _search_via_google_cse(query: str) -> list[tuple[str, str]]:
         # so clearing only the flag would keep CSE skipped forever.
         _GOOGLE_CSE_DISABLED = False
         _cse_backoff_until = 0.0
-        _cse_backoff_count = 0
         _backend_cooldown_until.pop("google_cse", None)
         _backend_empty_cooldown.discard("google_cse")
+        # v69: expiry clears ONLY the sleep window — never the failure
+        # streak. In the 2026-08-18 run the backoff window (5–120s) kept
+        # expiring between spaced queries, and the streak was reset to zero
+        # on every expiry, so CSE backed off three times and never reached
+        # the park cap while the HR budget burned on one-second cycles.
     if _GOOGLE_CSE_DISABLED:
         return []
     if not _is_backend_warm("google_cse"):
@@ -667,7 +678,19 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         # lets CSE's bounded backoff and the next run do the rest.
         if not eligible:
             return []
-        relaxed = min(eligible, key=lambda b: _backend_cooldown_until[b])
+        # v69: a backend may be forced at most ONCE per cooldown window —
+        # the 2026-08-18 run forced the same backend every ~1s cycle for the
+        # whole window, burning the HR budget on identical dead-end checks.
+        # After one forced recheck the backend stays in cooldown until the
+        # window expires, and stall-relaxation moves on to the rest of the
+        # plan instead of livelocking on the same stale backend.
+        not_forced = [b for b in eligible if b not in _backend_forced_this_cooldown]
+        if not_forced:
+            relaxed = min(not_forced, key=lambda b: _backend_cooldown_until[b])
+        else:
+            _backend_forced_this_cooldown.clear()
+            relaxed = min(eligible, key=lambda b: _backend_cooldown_until[b])
+        _backend_forced_this_cooldown.add(relaxed)
         log.info(
             "LinkedIn HR Posts: all search backends cooled down; forcing one "
             "recheck for backend '%s' so the query plan never fully stalls.",
@@ -685,9 +708,10 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                     _mark_backend_hit(relaxed)
                     _increment_counter("search_backend_hits", relaxed, len(urls))
                     return urls
-                # v65: a forced recheck that comes back empty is registered
-                # like any other empty response — the streak grows and the
-                # backend re-enters cooldown so the plan never livelocks on
+                # v69: a forced recheck that comes back empty re-enters the
+                # cooldown so the backend keeps its single-forced-recheck
+                # quota for the remainder of THIS window (it already spent
+                # it) while the plan moves on to other backends.
                 # a repeatedly empty backend.
                 _mark_backend_empty(relaxed)
                 _increment_counter("search_backend_empty", relaxed)
