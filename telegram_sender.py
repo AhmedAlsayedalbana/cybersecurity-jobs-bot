@@ -104,6 +104,9 @@ def _proven_employer_context(employer: str, source_key: str) -> bool:
         "palo alto", "crowdstrike", "cloudflare", "proofpoint", "tenable",
         "rapid7", "mandiant", "dragos", "claroty", "abnormal", "tessian",
         "veracode", "synack", "intigriti", "darktrace", "cybereason",
+        # v69: Nozomi Networks — industrial/OT security vendor whose entire
+        # engineering workforce builds ICS/OT security tooling.
+        "nozomi", "malomatia",
     )
     employer_l = employer.lower()
     if any(re.search(r"(?<!\w)" + re.escape(t) + r"(?![\w.-])", employer_l)
@@ -148,11 +151,15 @@ def _enrich_cyber_evidence(job):
     # Security skills buried in the description still prove a cyber role —
     # but only when the title is already security-adjacent, otherwise a
     # generic IT role mentioning "siem" in boilerplate would walk in.
+    # v69: "soar" (security orchestration, automation and response) is a
+    # first-class cyber discipline in the title — "Senior SOAR Engineer" is
+    # a security role even without another cyber keyword anywhere in the
+    # posting.
     security_adjacent_title = any(
         anchor in title for anchor in (
             "security", "cyber", "infosec", "iam", "iga", "soc", "pentest",
             "appsec", "sec", "ciso", "grc", "fraud", "risk analyst",
-            "threat", "incident", "compliance analyst",
+            "threat", "incident", "compliance analyst", "soar",
         )
     )
     # Vendor/company context from well-known security product companies
@@ -171,6 +178,9 @@ def _enrich_cyber_evidence(job):
         "cyberark", "sailpoint", "saviynt", "okta", "pingidentity",
         "cybershield", "vulncheck", "abnormal", "tessian", "claroty",
         "rsa security", "rsa", "f5 networks f5",
+        # v69: Nozomi Networks — industrial/OT security vendor (ICS
+        # visibility and threat detection for critical infrastructure).
+        "nozomi",
     )
     # Employer-context anchors: a bank/telecom/enterprise title that names an
     # infrastructure or platform discipline is publish-grade when a real
@@ -231,7 +241,13 @@ def _enrich_cyber_evidence(job):
                               "security architecture", "cloud security",
                               "devsecops", "fraud analyst", "cyber fraud",
                               "appsec", "cloud architecture",
-                              "cloud infrastructure")
+                              "cloud infrastructure",
+                              # v69: SOAR-discipline signals — "orchestration"
+                              # (playbook engineering) and "soc automation"
+                              # are first-class cyber security work; paired
+                              # with a security-adjacent title they prove a
+                              # cyber role ("Senior SOAR Engineer").
+                              "orchestration", "soc automation")
         if signal in description and not (signal in title and title == signal)
     ]
 
