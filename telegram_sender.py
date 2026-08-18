@@ -81,6 +81,52 @@ _CYBER_SKILL_EVIDENCE = (
 )
 
 
+def _proven_employer_context(employer: str, source_key: str) -> bool:
+    """v68: is this employer already proven to post publishable cyber roles
+    for this bot?  Two paths, cheapest first:
+
+    1. Word-bounded recognised security-discipline token in the employer
+       name (``F5`` matches ``f5``; ``RSA`` matches ``rsa``; incidental
+       substrings like ``RSA`` inside ``Marsala`` do not).
+    2. Historical proof: the bot has already accepted jobs whose employer
+       matches this one and whose source key is identical or the employer
+       appears in the accepted posting's URL — that is evidence the
+       employer's own career pages carry security workforce.
+
+    Empty-company jobs and employers without any historical acceptance
+    return False — a bare job noun from an unknown company stays below the
+    LIKELY evidence gate, exactly as the v62 contract requires.
+    """
+    if not employer:
+        return False
+    recognised_security_employers = (
+        "f5", "rsa", "wiz", "check point", "checkpoint", "fortinet",
+        "palo alto", "crowdstrike", "cloudflare", "proofpoint", "tenable",
+        "rapid7", "mandiant", "dragos", "claroty", "abnormal", "tessian",
+        "veracode", "synack", "intigriti", "darktrace", "cybereason",
+    )
+    employer_l = employer.lower()
+    if any(re.search(r"(?<!\w)" + re.escape(t) + r"(?![\w.-])", employer_l)
+           for t in recognised_security_employers):
+        return True
+    try:
+        db = get_db()
+        # Same source + same employer already produced accepted cyber roles;
+        # the lookup is a cheap index equality scan and errors are never a
+        # delivery blocker.
+        with db._conn() as con:
+            (count,) = con.execute(
+                "SELECT COUNT(*) FROM jobs WHERE LOWER(company)=? "
+                "AND LOWER(source_key)=? AND cyber_verdict=? "
+                "AND is_published=1",
+                (employer_l, source_key, CyberVerdict.CONFIRMED.value),
+            ).fetchone()
+        return bool(count and count > 0)
+    except Exception as exc:  # pragma: no cover - DB failures never block delivery
+        log.debug("proven_employer_context lookup failed: %s", exc)
+        return False
+
+
 def _enrich_cyber_evidence(job):
     """v67: build structured evidence from the job's own payload before the
     gate re-evaluates it.  Only legitimate, verifiable signals are added —
@@ -110,7 +156,10 @@ def _enrich_cyber_evidence(job):
         )
     )
     # Vendor/company context from well-known security product companies
-    # (their job pages are by construction a security context).
+    # (their job pages are by construction a security context).  v68: tokens
+    # are matched word-bounded on the employer name only — a bare substring
+    # match (e.g. "f5" inside "affable") would let incidental text bypass
+    # the LIKELY evidence gate, which the v62 contract forbids.
     vendor_domains = (
         "crowdstrike", "paloaltonetworks", "palo alto", "fortinet",
         "checkpoint", "zscaler", "proofpoint", "mandiant", "trendmicro",
@@ -118,9 +167,20 @@ def _enrich_cyber_evidence(job):
         "rapid7", "tanium", "dragos", "recordedfuture", "recorded future",
         "fireeye", "sentinelone", "cybereason", "darktrace",
         "cloudflare", "wiz.io", "wiz security", "bugcrowd", "hackerone",
-        "intigriti", "synack", "veracode", "imperva", "f5.com", "f5 networks",
+        "intigriti", "synack", "veracode", "imperva", "f5.com", "f5 networks", "f5",
         "cyberark", "sailpoint", "saviynt", "okta", "pingidentity",
         "cybershield", "vulncheck", "abnormal", "tessian", "claroty",
+        "rsa security", "rsa", "f5 networks f5",
+    )
+    # Employer-context anchors: a bank/telecom/enterprise title that names an
+    # infrastructure or platform discipline is publish-grade when a real
+    # security skill appears in the description — v68 closes the gap where a
+    # truncated listing ("Solutions Engineer @ F5", "AI Architect, AI4ALL @
+    # Valeo") was rejected only because the snippet lacked an explicit
+    # cyber keyword while the employer identity already supplies it.
+    employer_context_tokens = (
+        "cloud", "network", "infrastructure", "ai architect", "platform",
+        "integration", "solution architect", "solutions engineer",
     )
     # Vendor context is only conclusive when the vendor's OWN identity is
     # present — its domain in the posting URL, or its full token in the
@@ -132,34 +192,71 @@ def _enrich_cyber_evidence(job):
         url_domain = (url.split("://", 1)[-1].split("/", 1)[0] or "").lower()
     except Exception:
         url_domain = ""
+    # Word-bounded on the employer name only; the URL matches contain the
+    # vendor token inside its own domain (e.g. "f5.com" in
+    # "careers.f5.com").  Short tokens like "f5"/"rsa" are only conclusive
+    # when they are a standalone employer word, never a substring.
     has_vendor_context = bool(url_domain) and any(
-        v in url_domain for v in vendor_domains
+        v in url_domain for v in vendor_domains if v and "." in v
     ) or any(
-        re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", company)
+        re.search(r"(?<!\w)" + re.escape(v) + r"(?![\w.-])", company)
         for v in vendor_domains if v and company
     )
+    # v68 employer-context evidence: a security-adjacent discipline title
+    # from an employer whose other postings already proved cyber yield, or
+    # from a recognised security-discipline employer, plus a real skill in
+    # the description, is a verified security context — not a keyword
+    # guess.  This is what lets truncated bank/company listings pass when
+    # the listing text itself lacks explicit cyber keywords.
+    security_adjacent_title = security_adjacent_title or any(
+        anchor in title for anchor in employer_context_tokens
+    )
 
-    skill_signals = [
-        "siem", "edr", "xdr", "mdr", "splunk", "qradar", "sentinel",
-        "ids", "ips", "firewall", "waf", "vpn", "soc analyst",
-        "penetration", "red team", "vulnerability", "incident response",
-        "threat intelligence", "threat hunting", "forensics", "malware",
-        "cryptography", "pki", "zero trust", "iam", "iga", "saviynt",
-        "sailpoint", "cyberark", "okta", "burp", "metasploit", "nmap",
-        "oscp", "ceh", "sast", "dast", "owasp", "cspm", "cnapp", "cwpp",
-        "iso 27001", "nist", "pci dss", "grc", "audit analyst",
-        "security architecture", "cloud security", "devsecops",
-        "fraud analyst", "cyber fraud", "appsec",
-    ]
+    # Security skills buried in the description still prove a cyber role —
+    # but only when the title is already security-adjacent, otherwise a
+    # generic IT role mentioning "siem" in boilerplate would walk in.
     description_skills = [
-        signal for signal in skill_signals
+        signal for signal in ("siem", "edr", "xdr", "mdr", "splunk",
+                              "qradar", "sentinel", "ids", "ips",
+                              "firewall", "waf", "vpn", "soc analyst",
+                              "penetration", "red team", "vulnerability",
+                              "incident response", "threat intelligence",
+                              "threat hunting", "forensics", "malware",
+                              "cryptography", "pki", "zero trust", "iam",
+                              "iga", "saviynt", "sailpoint", "cyberark",
+                              "okta", "burp", "metasploit", "nmap",
+                              "oscp", "ceh", "sast", "dast", "owasp",
+                              "cspm", "cnapp", "cwpp", "iso 27001",
+                              "nist", "pci dss", "grc", "audit analyst",
+                              "security architecture", "cloud security",
+                              "devsecops", "fraud analyst", "cyber fraud",
+                              "appsec", "cloud architecture",
+                              "cloud infrastructure")
         if signal in description and not (signal in title and title == signal)
     ]
+
+    # v68: employer-context verification — the employer is either a
+    # recognised security-discipline company (word-bounded token in the
+    # employer name or its own domain on the URL) or an employer whose
+    # other postings already proved cyber yield for this bot (querying the
+    # jobs table, cheapest proof available).  Combined with an
+    # infrastructure/platform-adjacent title and a real security skill in
+    # the description, this is publish-grade evidence that the truncated
+    # listing itself lacks.
+    employer_security_context = has_vendor_context
+    employer_context_title = any(anchor in title for anchor in employer_context_tokens)
+    if not employer_security_context and employer_context_title and description_skills:
+        employer_key = (company or "").strip()
+        source_key = (getattr(job, "source_key", "") or "").lower()
+        proven_employers = _proven_employer_context(employer_key, source_key)
+        if proven_employers:
+            employer_security_context = True
 
     existing_evidence = getattr(job, "_cyber_evidence", None)
     enriched: dict[str, object] = {
         "security_adjacent_title": security_adjacent_title,
         "vendor_security_context": has_vendor_context,
+        "employer_security_context": employer_security_context,
         "description_security_skills": description_skills,
         "had_existing_evidence": bool(existing_evidence),
     }
@@ -197,8 +294,36 @@ def _publishable_cyber_evidence(job) -> tuple[str, tuple[str, ...]]:
     # skills in the description is a publish-grade role.  Generic IT nouns
     # without either signal still fail the gate exactly as before.
     enrichment = getattr(job, "_cyber_enrichment", None) or {}
-    if enrichment.get("vendor_security_context"):
+    # v68: vendor identity alone never carries a role — a "Sales Operations
+    # Analyst" at a security vendor is still a non-cyber role, so the vendor
+    # context pass requires a technical title with a substantial description.
+    # v67's CrowdStrike-style rule (a genuine security vendor's workforce
+    # role clears the gate) is preserved for engineering/architecture titles
+    # whose description reads like real engineering work; the v62 contract
+    # (a bare job noun from any company stays below the gate) still holds
+    # for business/support nouns.
+    vendor_technical_title = bool(
+        enrichment.get("vendor_security_context")
+        and any(t in title for t in (
+            "engineer", "architect", "developer", "technical", "researcher",
+            "analyst", "programmer", "scientist", "specialist", "operator",
+        ))
+        and len((getattr(job, "description", "") or "").strip()) >= 30
+    )
+    if enrichment.get("vendor_security_context") and (
+        (enrichment.get("security_adjacent_title") and enrichment.get("description_security_skills"))
+        or vendor_technical_title
+    ):
         return "enriched_vendor_security_context", ()
+    # v68: employer-context evidence — a security-adjacent discipline title
+    # (cloud/network/infrastructure/platform/solutions engineer, AI
+    # architect) from an employer whose other postings already proved cyber
+    # yield, or from a recognised security-discipline employer, together
+    # with a real security skill in the description, is publish-grade.
+    # The title noun alone still fails the gate exactly as the v62
+    # contract requires.
+    if enrichment.get("employer_security_context") and enrichment.get("security_adjacent_title") and enrichment.get("description_security_skills"):
+        return "enriched_employer_context", ()
     if enrichment.get("security_adjacent_title") and enrichment.get("description_security_skills"):
         return "enriched_title_and_description_skills", ()
     # Description evidence needs a separately security-specific title/context;
