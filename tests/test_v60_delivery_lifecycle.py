@@ -29,21 +29,23 @@ def test_reserved_is_not_sent_and_delivery_is_channel_scoped():
     db, path = _temp_db()
     try:
         payload = {"chat_id": "1", "text": "test"}
+        # v73: reserve now returns (reserved, delivery_proof); [0] is the
+        # legacy boolean semantics.
         assert db.reserve_telegram_delivery(
             delivery_key="egypt:job-1", channel_key="egypt", thread_id=1, payload=payload,
-        )
+        )[0]
         # An interrupted reservation must resume; it must not suppress a job.
         assert db.reserve_telegram_delivery(
             delivery_key="egypt:job-1", channel_key="egypt", thread_id=1, payload=payload,
-        )
+        )[0]
         db.mark_telegram_delivery("egypt:job-1", status="sent")
         assert not db.reserve_telegram_delivery(
             delivery_key="egypt:job-1", channel_key="egypt", thread_id=1, payload=payload,
-        )
+        )[0]
         # Same job ID is independent in another destination channel.
         assert db.reserve_telegram_delivery(
             delivery_key="soc:job-1", channel_key="soc", thread_id=2, payload=payload,
-        )
+        )[0]
     finally:
         _remove_db(path)
 
@@ -60,16 +62,16 @@ def test_send_failed_has_exactly_one_retry_budget():
         try:
             assert db.reserve_telegram_delivery(
                 delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-            )
+            )[0]
             db.mark_telegram_delivery(key, status="send_failed", error="503")
             assert db.reserve_telegram_delivery(
                 delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-            )
+            )[0]
             db.mark_telegram_delivery(key, status="send_failed", error="503")
             # Within the same run, an exhausted pair is suppressed once more.
             assert not db.reserve_telegram_delivery(
                 delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-            )
+            )[0]
         finally:
             database.set_delivery_run_at(None)
     finally:
@@ -99,7 +101,7 @@ def test_retry_exhausted_row_recovers_in_a_new_run():
         try:
             assert db.reserve_telegram_delivery(
                 delivery_key=key, channel_key="remote", thread_id=1, payload=payload,
-            )
+            )[0]
             with db._conn() as con:
                 row = con.execute(
                     "SELECT status, attempts FROM telegram_delivery_outbox "
@@ -146,6 +148,62 @@ def test_cyber_confirmed_passes_delivery_without_evidence(monkeypatch):
         tags=["SIEM", "incident response", "EDR"],
     )
     assert telegram_sender._telegram_ineligibility_reason(job_likely_with_skills) is None
+
+
+def test_deadline_timeout_never_quarantines_a_source():
+    """v63: a run-phase budget deadline (source_timeout) is the
+    orchestrator's wall clock, not the source's own failure — it must never
+    compound into quarantine or failure streaks, otherwise a slow run strands
+    healthy sources for 3 hours."""
+    db, path = _temp_db()
+    try:
+        for _ in range(6):
+            db.update_source_health_state(
+                "aaib", success=False, jobs_count=0, error_code="source_timeout",
+                auto_disable_threshold=4, quarantine_minutes=180,
+                deadline_timeout=True, is_priority_source=True,
+            )
+        assert db.can_run_source("aaib")
+        with db._conn() as con:
+            row = con.execute(
+                "SELECT failure_streak, quarantined_until FROM source_health_state "
+                "WHERE source_key='aaib'"
+            ).fetchone()
+        assert not row["quarantined_until"]
+
+        # A genuine transport failure still compounds normally.
+        for _ in range(4):
+            db.update_source_health_state(
+                "some_bank", success=False, jobs_count=0, error_code="http_403",
+                auto_disable_threshold=4, quarantine_minutes=180,
+            )
+        assert not db.can_run_source("some_bank")
+    finally:
+        _remove_db(path)
+
+
+def test_priority_source_real_failures_do_not_quarantine():
+    """v63: Egyptian priority sources keep attempting across genuine transient
+    failures (their 90s budget already grants a fair full attempt per run).
+    Only explicit operator quarantine (``quarantined_until`` set outside this
+    path) can disable them."""
+    db, path = _temp_db()
+    try:
+        for _ in range(10):
+            db.update_source_health_state(
+                "nbe", success=False, jobs_count=0, error_code="playwright_error",
+                auto_disable_threshold=4, quarantine_minutes=180,
+                is_priority_source=True,
+            )
+        assert db.can_run_source("nbe")
+        with db._conn() as con:
+            row = con.execute(
+                "SELECT quarantined_until FROM source_health_state "
+                "WHERE source_key='nbe'"
+            ).fetchone()
+        assert not row["quarantined_until"]
+    finally:
+        _remove_db(path)
 
 
 def test_send_failed_is_retried_once_then_recorded_sent(monkeypatch):
