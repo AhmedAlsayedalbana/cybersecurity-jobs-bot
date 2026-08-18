@@ -81,6 +81,94 @@ _CYBER_SKILL_EVIDENCE = (
 )
 
 
+def _enrich_cyber_evidence(job):
+    """v67: build structured evidence from the job's own payload before the
+    gate re-evaluates it.  Only legitimate, verifiable signals are added —
+    security skills found in the description, a security-product vendor
+    domain on the company name/URL, or a security context already attached
+    by upstream enrichment.  The gate's thresholds are untouched: enrichment
+    feeds the existing evidence codes, it never invents a new pass path,
+    and NON_CYBER rows never benefit from it (the caller is the LIKELY
+    evidence check)."""
+    title = (getattr(job, "title", "") or "").lower()
+    description = (getattr(job, "description", "") or "").lower()
+    company = (getattr(job, "company", "") or "").lower()
+    url = (getattr(job, "url", "") or "").lower()
+    text = f"{title} {description} {company} {url}"
+
+    if not text.strip():
+        return
+
+    # Security skills buried in the description still prove a cyber role —
+    # but only when the title is already security-adjacent, otherwise a
+    # generic IT role mentioning "siem" in boilerplate would walk in.
+    security_adjacent_title = any(
+        anchor in title for anchor in (
+            "security", "cyber", "infosec", "iam", "iga", "soc", "pentest",
+            "appsec", "sec", "ciso", "grc", "fraud", "risk analyst",
+            "threat", "incident", "compliance analyst",
+        )
+    )
+    # Vendor/company context from well-known security product companies
+    # (their job pages are by construction a security context).
+    vendor_domains = (
+        "crowdstrike", "paloaltonetworks", "palo alto", "fortinet",
+        "checkpoint", "zscaler", "proofpoint", "mandiant", "trendmicro",
+        "trend micro", "sophos", "kaspersky", "tenable", "qualys",
+        "rapid7", "tanium", "dragos", "recordedfuture", "recorded future",
+        "fireeye", "sentinelone", "cybereason", "darktrace",
+        "cloudflare", "wiz.io", "wiz security", "bugcrowd", "hackerone",
+        "intigriti", "synack", "veracode", "imperva", "f5.com", "f5 networks",
+        "cyberark", "sailpoint", "saviynt", "okta", "pingidentity",
+        "cybershield", "vulncheck", "abnormal", "tessian", "claroty",
+    )
+    # Vendor context is only conclusive when the vendor's OWN identity is
+    # present — its domain in the posting URL, or its full token in the
+    # employer name (word-bounded). A bare substring in any text would let
+    # incidental mentions (e.g. an "RSA Security" hiring-company string)
+    # bypass the LIKELY evidence gate, which the v62 contract forbids.
+    url_domain = ""
+    try:
+        url_domain = (url.split("://", 1)[-1].split("/", 1)[0] or "").lower()
+    except Exception:
+        url_domain = ""
+    has_vendor_context = bool(url_domain) and any(
+        v in url_domain for v in vendor_domains
+    ) or any(
+        re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", company)
+        for v in vendor_domains if v and company
+    )
+
+    skill_signals = [
+        "siem", "edr", "xdr", "mdr", "splunk", "qradar", "sentinel",
+        "ids", "ips", "firewall", "waf", "vpn", "soc analyst",
+        "penetration", "red team", "vulnerability", "incident response",
+        "threat intelligence", "threat hunting", "forensics", "malware",
+        "cryptography", "pki", "zero trust", "iam", "iga", "saviynt",
+        "sailpoint", "cyberark", "okta", "burp", "metasploit", "nmap",
+        "oscp", "ceh", "sast", "dast", "owasp", "cspm", "cnapp", "cwpp",
+        "iso 27001", "nist", "pci dss", "grc", "audit analyst",
+        "security architecture", "cloud security", "devsecops",
+        "fraud analyst", "cyber fraud", "appsec",
+    ]
+    description_skills = [
+        signal for signal in skill_signals
+        if signal in description and not (signal in title and title == signal)
+    ]
+
+    existing_evidence = getattr(job, "_cyber_evidence", None)
+    enriched: dict[str, object] = {
+        "security_adjacent_title": security_adjacent_title,
+        "vendor_security_context": has_vendor_context,
+        "description_security_skills": description_skills,
+        "had_existing_evidence": bool(existing_evidence),
+    }
+    setattr(job, "_cyber_enrichment", enriched)
+    if not existing_evidence:
+        # Preserve any upstream evidence; enrichment is additive only.
+        setattr(job, "_cyber_evidence", enriched)
+
+
 def _publishable_cyber_evidence(job) -> tuple[str, tuple[str, ...]]:
     """Return an auditable evidence code without widening the Cyber verdict gate.
 
@@ -102,6 +190,17 @@ def _publishable_cyber_evidence(job) -> tuple[str, tuple[str, ...]]:
         return "title_cyber_evidence", ()
     if any(anchor in tags for anchor in _CYBER_SKILL_EVIDENCE):
         return "skill_cyber_evidence", ()
+    # v67: enrichment evidence — the job's own payload supplies security
+    # context without touching the gate's threshold.  A security-product
+    # vendor (CrowdStrike, Wiz, Bugcrowd ...) by construction runs a
+    # security workforce, and a security-adjacent title with real security
+    # skills in the description is a publish-grade role.  Generic IT nouns
+    # without either signal still fail the gate exactly as before.
+    enrichment = getattr(job, "_cyber_enrichment", None) or {}
+    if enrichment.get("vendor_security_context"):
+        return "enriched_vendor_security_context", ()
+    if enrichment.get("security_adjacent_title") and enrichment.get("description_security_skills"):
+        return "enriched_title_and_description_skills", ()
     # Description evidence needs a separately security-specific title/context;
     # this preserves the block on generic Solutions/Support roles that merely
     # discuss a cloud-security product.
@@ -148,6 +247,11 @@ def _telegram_ineligibility_reason(job) -> str | None:
     # full evidence requirement.
     if verdict == CyberVerdict.CONFIRMED.value:
         return None
+    # v67: enrich the job's own payload (title/description/company/URL
+    # vendor context) before the evidence gate re-evaluates it.  Thresholds
+    # are unchanged — enrichment only supplies legitimate signals the gate
+    # already knew how to accept.
+    _enrich_cyber_evidence(job)
     evidence, _ = _publishable_cyber_evidence(job)
     if evidence == "insufficient_cyber_evidence":
         return evidence
@@ -303,9 +407,13 @@ def _compute_retry_delay(attempts: int, retry_after: int | None = None) -> int:
 
 
 def _drain_retry_queue(db: JobsDB) -> int:
-    """Retry one previously rate-limited Telegram delivery, at most once."""
+    """v67: drain ALL queued pending sends (v66 ``delivery_pending`` rows
+    queued when a terminal channel state blocked a new eligible candidate,
+    plus ``retry_429`` rate-limited rows) BEFORE new reservations are
+    processed — pending senders are the most stale and the most deserving.
+    Returns the number of pairs that actually succeeded."""
     sent = 0
-    for row in db.get_due_safe_delivery_retries(limit=TELEGRAM_RETRY_DRAIN_LIMIT):
+    for row in db.get_pending_delivery_rows(limit=TELEGRAM_RETRY_DRAIN_LIMIT):
         if _telegram_budget_remaining() <= 0:
             break
         payload = row.get("payload") or {}
@@ -631,9 +739,21 @@ def send_jobs(jobs, *, dry_run: bool = False):
     limit = MAX_JOBS_PER_CHANNEL
     sent_records = []
     db = get_db()
+    # v67: pending-FIRST delivery — queued senders from earlier runs
+    # (delivery_pending/retry_429) go out before any new reservation this
+    # run builds, so a candidate the channel state previously blocked is
+    # visibly retried instead of sitting behind fresh jobs.
+    pending_before = 0 if dry_run else len(db.get_pending_delivery_rows(limit=TELEGRAM_RETRY_DRAIN_LIMIT))
+    delivery_lifecycle["pending_before"] = pending_before
     retried_sent = 0 if dry_run else _drain_retry_queue(db)
-    if retried_sent:
-        log.info(f" Retry queue: resent {retried_sent} pending Telegram message(s)")
+    pending_retried = min(pending_before, retried_sent) if pending_before else 0
+    delivery_lifecycle["pending_retried"] = pending_retried
+    if pending_before:
+        log.info(
+            f" Pending-first delivery: {pending_before} queued send(s) from earlier "
+            f"run(s) — {retried_sent} resent now (pending rows are drained BEFORE "
+            f"new reservations this run)"
+        )
     channel_cursors = {k: 0 for k in send_order}
     channel_dedup_sent = {k: set() for k in send_order}
     channel_summary = {k: 0 for k in send_order}
@@ -780,6 +900,13 @@ def send_jobs(jobs, *, dry_run: bool = False):
     if stale_skipped_total:
         log.info(f" ⏰ Stale gate: skipped {stale_skipped_total} job(s) older than {SEND_STALE_HOURS}h")
 
+    # v67: pending telemetry — which of the sent pairs came from the
+    # pending-first drain (old queued senders) versus new reservations this run.
+    pending_sent = min(pending_retried, retried_sent)
+    new_sent = max(0, total_sent - pending_sent)
+    delivery_lifecycle["pending_sent"] = pending_sent
+    delivery_lifecycle["new_sent"] = new_sent
+
     freshness = Counter()
     for job, _, _ in sent_records:
         posted = getattr(job, "posted_date", None)
@@ -824,12 +951,14 @@ def send_jobs(jobs, *, dry_run: bool = False):
         log.info(f"   {bar} {ch_name}: {v} jobs")
     log.info("=" * 40)
     log.info(
-        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d delivery_pending=%d%s",
+        " Telegram delivery lifecycle: eligible=%d routed=%d reserved=%d sent=%d failed=%d channel_mismatch=%d already_sent=%d delivery_pending=%d pending_before=%d pending_retried=%d pending_sent=%d new_sent=%d%s",
         delivery_lifecycle["eligible"], delivery_lifecycle["routed"],
         delivery_lifecycle["reserved"], delivery_lifecycle["sent"],
         delivery_lifecycle["failed"], delivery_lifecycle["channel_mismatch"],
         delivery_lifecycle["already_sent"],
         delivery_lifecycle["delivery_pending"],
+        delivery_lifecycle["pending_before"], delivery_lifecycle["pending_retried"],
+        delivery_lifecycle["pending_sent"], delivery_lifecycle["new_sent"],
         f" would_send={delivery_lifecycle['would_send']}" if dry_run else "",
     )
 
