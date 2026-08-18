@@ -152,6 +152,10 @@ class Job:
     geo_hint: str = ""
     cyber_verdict: str = ""
     cyber_probability: float | None = None
+    # v72: True when this job surfaced from a Hidden Jobs signal (recruiter/
+    # employee post, company announcement) and survived the official
+    # verification chain — full provenance stays in the tags as well.
+    verified_by_signal: bool = False
 
     @property
     def unique_id(self) -> str:
