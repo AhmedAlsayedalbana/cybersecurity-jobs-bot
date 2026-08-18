@@ -505,6 +505,15 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
                     # the observed 46-89s per failed bank down to a fixed
                     # known cost.  Startup time still counts against the
                     # source's own ceiling.
+                    # v67: abort-if-no-jobs — if the session has produced no
+                    # usable job within PLAYWRIGHT_ABORT_AFTER_SECONDS,
+                    # stop navigating.  The site clearly renders a page but
+                    # no parseable listings; letting it run to the 45s
+                    # deadline is pure budget waste (this is exactly what
+                    # produced 13 source_deadline results in the 2026-08-17
+                    # run).  Jobs emitted BEFORE the abort are still kept.
+                    abort_after_seconds = config.PLAYWRIGHT_ABORT_AFTER_SECONDS
+                    first_job_emitted_at: float | None = None
                     page.set_default_timeout(15000)
                     while True:
                         # Keep every JS navigation inside the source's own
@@ -526,12 +535,36 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
                         html = page.content()
                         jobs, parsed = _jobs_from_html(html, source, base_url=source.url)
                         parsed_any = parsed_any or parsed
+                        if jobs and first_job_emitted_at is None:
+                            first_job_emitted_at = time.monotonic() - start_at
                         fingerprint = tuple(sorted(job.url_id or job.unique_id for job in jobs))
                         if fingerprint in page_fingerprints:
                             break
                         page_fingerprints.add(fingerprint)
                         all_jobs.extend(jobs)
                         if not source.page_param or not jobs:
+                            # v67: first page rendered with nothing parseable —
+                            # if no job has been emitted within the abort
+                            # window the session is done; do not keep paying
+                            # for empty navigations.
+                            elapsed_since_start = time.monotonic() - start_at
+                            if first_job_emitted_at is None and elapsed_since_start >= abort_after_seconds:
+                                log.info(
+                                    "%s: no usable job within %.0fs of browser "
+                                    "session (%.0fs elapsed) — aborting the "
+                                    "Playwright pass early (kept %d partial jobs)",
+                                    source.key, abort_after_seconds,
+                                    elapsed_since_start, len(all_jobs),
+                                )
+                                if all_jobs:
+                                    return _Outcome(
+                                        _dedupe_jobs(all_jobs), parsed=parsed_any,
+                                        no_active_jobs=False,
+                                    )
+                                return _Outcome(
+                                    [], parsed=parsed_any, no_active_jobs=parsed_any,
+                                    error_code="official_page_empty",
+                                )
                             break
                         if page_number - source.page_start + 1 >= source.max_pages:
                             log.info(
@@ -545,9 +578,19 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
         except Exception as exc:  # Browser failures are reported, never hidden.
             log.info("%s browser fallback unavailable: %s", source.key, type(exc).__name__)
             return _Outcome([], error_code=f"playwright_{type(exc).__name__.lower()}")
-
     jobs = _dedupe_jobs(all_jobs)
-    return _Outcome(jobs, parsed=parsed_any, no_active_jobs=parsed_any and not jobs)
+    # v67: a Playwright session that finishes with zero jobs and zero parse
+    # evidence is a known-empty source — report it explicitly instead of a
+    # silent success (silent-zero is exactly how the 9 bottleneck banks hid
+    # behind deadline-less runs in 2026-08-17).
+    if not jobs:
+        if parsed_any:
+            return _Outcome([], parsed=parsed_any, no_active_jobs=True)
+        return _Outcome(
+            [], parsed=False, no_active_jobs=True,
+            error_code="official_page_empty",
+        )
+    return _Outcome(jobs, parsed=parsed_any, no_active_jobs=False)
 
 
 def _jobs_from_html(html: str, source: CareerSource, *, base_url: str) -> tuple[list[Job], bool]:
