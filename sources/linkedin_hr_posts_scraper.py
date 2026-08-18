@@ -267,6 +267,9 @@ LOCATION_SIGNALS = {
 SOURCE_QUALITY_BONUS = {
     "linkedin_native": 4, "company_discovery": 3,
     "recruiter_discovery": 2, "hiring_intent": 1,
+    # v68 dedicated-lane methods — verified against the post body itself
+    # before acceptance, so they carry the same trust as recruiter posts.
+    "recruiter_posts": 2, "company_hiring_posts": 3, "job_announcements": 2,
     "google_cse": 2, "serpapi": 1, "bing_html": 0,
 }
 
@@ -496,6 +499,18 @@ def _search_via_google_cse(query: str) -> list[tuple[str, str]]:
     # transient CSE failure must not silence the primary backend for the
     # rest of the run.  The old flag remains respected for callers that set
     # it directly, but backoff expiry overrides it once it is reset.
+    # v68: CSE failures now count toward a failure streak like every other
+    # backend — backoff plus a streak that parks CSE after the same cap, so
+    # a persistently failing key stops consuming query slots mid-run.
+    if _cse_backoff_count >= max(1, _BACKEND_PARK_STREAK):
+        if "google_cse" not in _backend_parked:
+            _backend_parked.add("google_cse")
+            log.info(
+                "LinkedIn HR Posts: Google CSE failed %d times in a row; "
+                "parked for the remainder of the run so failing queries stop "
+                "consuming backend slots (resumes at the next run).",
+                _cse_backoff_count,
+            )
     if _GOOGLE_CSE_DISABLED and _cse_backoff_until <= time.time():
         # v65: backoff expiry re-enables CSE on BOTH the legacy flag and the
         # shared cooldown map — the orchestrator's warm check reads the map,
@@ -886,6 +901,89 @@ def _build_hiring_intent_queries(rotation_slot: int) -> list[dict]:
 
 
 # ============================================================
+# v68: DEDICATED DISCOVERY LANES
+# ============================================================
+
+# v68: three dedicated discovery lanes replace the single generic query pool
+# that the v68 diagnosis showed producing 27 queries, 3 URLs and 3
+# rejections. Each lane uses its own query templates tuned to how its
+# audience actually writes posts — recruiter posts lead with the verb
+# ("hiring", "looking for"), company hiring posts lead with the company
+# announcement style ("we're growing", "new roles"), and job announcement
+# posts lead with the role title itself ("#hiring", "vacancy").
+
+
+def _build_recruiter_posts_lane(rotation_slot: int) -> list[dict]:
+    """v68: recruiter-first lane — recruiter posts phrase openings as a
+    personal search ("I'm hiring", "DM me", "send your CV"), so the query
+    templates use recruiter voice with explicit CV-call signals."""
+    _recruiter_posts = [
+        ('"I\'m hiring" cybersecurity Egypt',),
+        ('"we are looking for" "security analyst" Egypt',),
+        ('"send me your CV" cybersecurity Cairo',),
+        ('"DM me" "SOC analyst" Egypt',),
+        ('"hiring" "security engineer" "Egypt" "apply"',),
+        ('"recruiting" cybersecurity Riyadh',),
+        ('"looking for" "security" "Dubai" "hiring"',),
+        ('"hiring" "information security" "Cairo" "apply now"',),
+    ]
+    chunk = 2
+    start = (rotation_slot * chunk) % len(_recruiter_posts)
+    rotated = _recruiter_posts[start:] + _recruiter_posts[:start]
+    return [
+        {"query": f"site:linkedin.com/posts {q}", "method": "recruiter_posts"}
+        for (q,) in rotated[:chunk]
+    ]
+
+
+def _build_company_hiring_posts_lane(rotation_slot: int) -> list[dict]:
+    """v68: company-hiring lane — company announcements name the company and
+    growth signal ("we're hiring", "joining our team", "new roles"), so the
+    templates pair the priority companies from the existing pool with the
+    announcement voice and an Egypt/Arab location."""
+    _company_posts = [
+        ('"we are hiring" "Vodafone" Egypt',),
+        ('"we\'re hiring" "CIB" Egypt',),
+        ('"hiring" "NBE" Egypt',),
+        ('"open roles" "STC" Saudi Arabia',),
+        ('"we are hiring" "Emirates NBD" UAE',),
+        ('"new roles" cybersecurity Egypt',),
+        ('"join our team" "security" "Mashreq" UAE',),
+        ('"hiring" "Wiz" Remote',),
+    ]
+    chunk = 2
+    start = (rotation_slot * chunk) % len(_company_posts)
+    rotated = _company_posts[start:] + _company_posts[:start]
+    return [
+        {"query": f"site:linkedin.com/posts {q}", "method": "company_hiring_posts"}
+        for (q,) in rotated[:chunk]
+    ]
+
+
+def _build_job_announcements_lane(rotation_slot: int) -> list[dict]:
+    """v68: job-announcement lane — post-first role announcements lead with
+    the role and a vacancy marker ("#hiring", "vacancy", "open position"),
+    so the templates put the canonical security role titles up front."""
+    _announcements = [
+        ('"#hiring" "SOC analyst" Egypt',),
+        ('"vacancy" "penetration tester" Egypt',),
+        ('"open position" "security engineer" Cairo',),
+        ('"#hiring" "GRC analyst" Egypt',),
+        ('"hiring now" "cloud security" Riyadh',),
+        ('"#hiring" "incident response" Dubai',),
+        ('"vacancy" "cybersecurity specialist" Egypt',),
+        ('"open position" "IAM engineer" Remote',),
+    ]
+    chunk = 2
+    start = (rotation_slot * chunk) % len(_announcements)
+    rotated = _announcements[start:] + _announcements[:start]
+    return [
+        {"query": f"site:linkedin.com/posts {q}", "method": "job_announcements"}
+        for (q,) in rotated[:chunk]
+    ]
+
+
+# ============================================================
 # v61: LAYER 5 — SEARCH ENGINE FALLBACK QUERIES
 # ============================================================
 
@@ -1118,6 +1216,58 @@ def _extract_metadata_from_html(html: str) -> dict:
     return meta
 
 
+# v68: hiring-intent evidence used when verifying a post URL directly —
+# cheaper than running the whole scoring gate on noise pages that the
+# search index occasionally surfaces (news articles, event pages).
+_POST_HIRING_INTENT = (
+    "hiring", "we are hiring", "we're hiring", "hiring now", "join our team",
+    "open role", "open roles", "open position", "open positions",
+    "vacancy", "looking for", "job opportunity", "career opportunity",
+    "send cv", "apply now", "dm me", "recruiting", "recruitment",
+)
+_POST_ROLE_EVIDENCE = (
+    "soc", "security engineer", "security analyst", "cybersecurity", "cyber",
+    "information security", "pentest", "red team", "appsec", "cloud security",
+    "grc", "incident response", "threat", "vulnerability", "devsecops",
+    "security specialist", "it security", "infosec",
+)
+
+
+def _verify_post_url(url: str, *, role_hint: str = "") -> tuple[bool, str]:
+    """v68: verify a candidate post URL directly BEFORE acceptance — fetch
+    the post's own page and confirm the body itself carries hiring intent
+    plus a security-role signal.  Without this, a search-engine row that
+    merely mentions LinkedIn can drag in article or event pages, which is
+    exactly what rejected 3 of 3 verified URLs for
+    ``insufficient_hiring_or_role_evidence`` in the v68 diagnosis.
+
+    Returns ``(accepted, evidence)``. A page that cannot be fetched or whose
+    body lacks both signals is declined with a short reason — the decline
+    happens here, cheaply, instead of inside the full scrape-and-score gate.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ar,en;q=0.9",
+    }
+    html = get_text(url, headers=headers, timeout=10, max_retries=0, use_proxy=False, budget_phase="linkedin_hr")
+    if not html or len(html) < 200:
+        return False, "post_page_unavailable"
+    text = _extract_text_from_html(html)
+    lowered = text.lower()
+    if not text:
+        return False, "fetch_failed"
+    has_hiring = any(signal in lowered for signal in _POST_HIRING_INTENT)
+    has_role = any(sig in lowered for sig in (_POST_ROLE_EVIDENCE + ((role_hint.lower(),) if role_hint else ())))
+    if not has_hiring:
+        return False, "no_hiring_intent"
+    if not has_role:
+        return False, "no_role_evidence"
+    return True, "verified_hiring_and_role"
+
+
 def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
     headers = {
         "User-Agent": (
@@ -1287,6 +1437,11 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
     all_queries.extend(_build_company_discovery_queries(rotation_slot))
     all_queries.extend(_build_recruiter_discovery_queries(rotation_slot))
     all_queries.extend(_build_hiring_intent_queries(rotation_slot))
+    # v68 dedicated lanes — rotated per-run so the three lanes keep the
+    # query plan diverse without multiplying it into a long homogeneous list.
+    all_queries.extend(_build_recruiter_posts_lane(rotation_slot))
+    all_queries.extend(_build_company_hiring_posts_lane(rotation_slot))
+    all_queries.extend(_build_job_announcements_lane(rotation_slot))
     all_queries.extend(_build_fallback_queries())
 
     # v61: Apply adaptive ranking
@@ -1347,6 +1502,17 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
             _HR_TELEMETRY["posts_scrape_attempted"] = int(_HR_TELEMETRY.get("posts_scrape_attempted", 0)) + 1
 
             try:
+                # v68: verify the post URL directly before paying the full
+                # scrape-and-score cost — a body-level hiring + role check
+                # filters out index artifacts (articles, event pages) that
+                # the search backends occasionally return and that later
+                # failed with insufficient_hiring_or_role_evidence.
+                verified, evidence = _verify_post_url(canonical_url, role_hint="cybersecurity")
+                if not verified:
+                    _record_rejection(evidence)
+                    query_stats[query_text]["rejected"] += 1
+                    log.debug("HR post URL declined before scrape (%s): %s", evidence, canonical_url)
+                    continue
                 data = _scrape_linkedin_post(canonical_url, backend or method)
             except Exception as exc:
                 _record_rejection("post_scrape_exception")
