@@ -296,17 +296,32 @@ def fetch_source(source_key: str) -> SourceResult:
     # and then the Jina public reader (a shared proxy that often sees what a
     # blocked client cannot). Playwright stays reserved for sources that are
     # actually JS-only and only after both cheaper steps returned nothing.
+    ladder_outcome = None
     if not outcome.jobs and not outcome.no_active_jobs:
         if outcome.parsed and _SCRIPT_RE.search(outcome.raw_html or ""):
             page_jobs, _ = _jobs_from_html(outcome.raw_html or "", source, base_url=source.url)
             if page_jobs:
                 return SourceResult(jobs=page_jobs, status="success", transport="embedded_json", attempted_urls=(source.url,))
         if source.public_fallback:
+            # v69: the reader attempt is remembered even when it found
+            # nothing — a non-None reader outcome means the public ladder
+            # WAS attempted, and its honest no-listings answer is allowed
+            # to close the book on this run without burning Playwright.
             jina_result = _fetch_via_public_reader(source)
             if jina_result is not None and jina_result.jobs:
                 return SourceResult(jobs=jina_result.jobs, status="success", transport="jina", attempted_urls=(source.url,))
             if jina_result is not None and jina_result.no_active_jobs:
                 return SourceResult(status="empty", transport="jina", error_code="EMPTY_REAL:jina", attempted_urls=(source.url,))
+            # v69: an honest reader answer that found nothing closes the book
+            # without Playwright — but only when the reader actually READ
+            # (parsed) or explicitly declared no listings. A reader that
+            # FAILED to answer (jina_unavailable / too_large / parse_failed)
+            # is not evidence of anything; a temporary reader outage must
+            # never floor every JS-only bank, so the browser door stays
+            # open for genuinely JS-only sources while the audit still
+            # remembers the reader attempt.
+            if jina_result is not None and (jina_result.parsed or jina_result.no_active_jobs):
+                ladder_outcome = jina_result
 
     # Playwright is permitted only when the source is actually JS-only. An
     # endpoint that parsed real structure (parsed=True) but exposed no
@@ -314,9 +329,19 @@ def fetch_source(source_key: str) -> SourceResult:
     # cannot create jobs, and only burns budget. Same when the endpoint
     # already returned a hard HTTP failure: the portal is blocking clients,
     # and JS-render does not bypass server-side blocks.
+    # v69: the public reader's no-listings answer is exhaustive evidence —
+    # it reads the page through a pool that is not subject to the source's
+    # own client-side blocks, so Playwright is skipped whenever the reader
+    # actually ran (even with parsed=False): a JS-render of the same page
+    # cannot create listings the reader did not see. A reader that FAILED
+    # (jina_unavailable / jina_timeout — the reader itself could not answer)
+    # is not evidence of anything: a temporary Jina outage must never floor
+    # every JS-only bank, so an unsuccessful reader attempt leaves the
+    # browser step available for genuinely JS-only sources.
     js_only = (
         source_key in _JS_ONLY_SOURCE_KEYS
         and not outcome.parsed
+        and ladder_outcome is None
     )
     if source.browser_fallback and js_only:
         browser_outcome = _fetch_with_browser(source, budget_seconds=_source_budget_seconds(source))
@@ -338,6 +363,13 @@ def fetch_source(source_key: str) -> SourceResult:
             )
         if browser_outcome.error_code:
             outcome = browser_outcome
+    # v69: when the ladder attempted public reading but nothing rescued the
+    # source, the audit must say so (EMPTY_REAL or the reader's own code)
+    # instead of recycling the original endpoint error — the endpoint may
+    # have been merely transiently blocked while the reader already saw the
+    # real page and found no listings.
+    elif ladder_outcome is not None and ladder_outcome.error_code:
+        outcome = ladder_outcome
 
     reason = _classify_zero_jobs_reason(outcome.error_code, outcome.parsed, False)
     log.info("%s: zero-jobs audit reason=%s error_code=%s parsed=%s", source_key, reason, outcome.error_code or "-", outcome.parsed)
