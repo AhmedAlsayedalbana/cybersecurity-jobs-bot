@@ -477,6 +477,37 @@ class JobsDB:
             )).fetchone()
             return row is not None
 
+    def was_signal_sent_recently(
+        self, signal_key: str, channel_key: str = "",
+        hours: int | None = None,
+    ) -> bool:
+        """v72: dedup for HIRING SIGNAL cards — keyed by
+        ``signal:{company}:{inferred_title}`` so the same unverified signal is
+        never posted twice to the same channel within the window."""
+        if not signal_key or not channel_key:
+            return False
+        hours = hours or getattr(config, "HIRING_SIGNAL_DEDUP_HOURS", 168)
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT 1 FROM sent_events WHERE channel_key = ? "
+                "AND sent_at > ? AND job_key = ? LIMIT 1",
+                (channel_key, cutoff, signal_key),
+            ).fetchone()
+            return row is not None
+
+    def record_sent_signal(self, signal_key: str, channel_key: str) -> None:
+        """v72: persist a delivered HIRING SIGNAL so it stays deduped."""
+        if not signal_key or not channel_key:
+            return
+        with self._conn() as con:
+            con.execute(
+                "INSERT INTO sent_events(job_key, url_id, dedup_key, "
+                "channel_key, lane, sent_at) VALUES (?, '', '', ?, ?, ?)",
+                (signal_key, channel_key, "hiring_signal",
+                 datetime.now().isoformat()),
+            )
+
     def get_recent_fingerprints(self, days: int = None) -> list[str]:
         """Return all fingerprints from the last N days for persistent fuzzy dedup."""
         days = days or MEMORY_DAYS
@@ -977,6 +1008,21 @@ class JobsDB:
             ).fetchone()
         return int(row[0])
 
+    # v71: ``delivery_key`` is ``channel:job_dedup`` — counting raw pending
+    # rows overstates the backlog whenever one job waits on several
+    # channels.  ``count_pending_unique_jobs`` reports the candidate
+    # dimension instead, so the funnel stays honest.
+    def count_pending_unique_jobs(self) -> int:
+        """v71: distinct jobs (across all channels) still pending delivery."""
+        with self._conn() as con:
+            row = con.execute(
+                """SELECT COUNT(DISTINCT SUBSTR(delivery_key,
+                          INSTR(delivery_key, ':') + 1))
+                   FROM telegram_delivery_outbox
+                   WHERE status IN ('delivery_pending', 'retry_429')
+                     AND delivery_key LIKE '%:%'""",
+            ).fetchone()
+        return int(row[0])
     def get_pending_delivery_rows(self, limit: int = 25) -> list[dict]:
         """v67: outbox rows waiting for a delivery attempt — ``delivery_pending``
         (v66: a terminal channel state blocked a new eligible candidate and
@@ -1075,6 +1121,12 @@ class JobsDB:
         deadline_timeout: bool = False,
         is_priority_source: bool = False,
         recovery_run_fail_threshold: int = 3,
+        # v71: an EMPTY_REAL verdict means the fetch ran the full ladder and
+        # honestly read the page with no listings — it is a healthy zero,
+        # not a failure.  Honoring it prevents honest pages (banks with no
+        # security roles, empty boards) from stacking failure streaks and
+        # falling into quarantine/recovery against every other evidence.
+        honest_empty: bool = False,
     ) -> None:
         now = datetime.now()
         now_iso = now.isoformat()
@@ -1094,12 +1146,12 @@ class JobsDB:
                     """,
                     (
                         source_key,
-                        1 if success else 0,
-                        0 if success else 1,
+                        1 if success or honest_empty else 0,
+                        0 if success or honest_empty else 1,
                         1,
-                        1 if success else 0,
-                        0 if success else 1,
-                        "" if success else (error_code or "failed"),
+                        1 if success or honest_empty else 0,
+                        0 if success or honest_empty else 1,
+                        "" if (success or honest_empty) else (error_code or "failed"),
                         now_iso,
                         None,
                     ),
@@ -1110,7 +1162,7 @@ class JobsDB:
                 # (jobs > 0) graduates out of the recovery rotation — a
                 # proven supplier must not stay parked after a transient
                 # incident once it starts delivering again.
-                if success and (is_priority_source or jobs_count > 0) and hasattr(self, "_leave_recovery_rotation"):
+                if (success or honest_empty) and hasattr(self, "_leave_recovery_rotation"):
                     self._leave_recovery_rotation(con, source_key)
                 # v66: a brand-new source whose first run failed stays in the
                 # main rotation — a single failure means "retry next run", it
@@ -1125,7 +1177,7 @@ class JobsDB:
             total_failures = int(row["total_failures"] or 0)
             quarantined_until = row["quarantined_until"]
 
-            if success or deadline_timeout:
+            if success or deadline_timeout or honest_empty:
                 # A deadline-driven zero is recorded for visibility but is
                 # neither a success streak (that rewards real fetches) nor a
                 # failure that can strand the source in quarantine.
@@ -1133,6 +1185,15 @@ class JobsDB:
                     success_streak += 1
                     failure_streak = 0
                     total_success += 1
+                if honest_empty:
+                    # The ladder read the source honestly and found zero
+                    # listings: a healthy zero.  Never let it accumulate a
+                    # failure streak (which drives quarantine), and clear
+                    # any lingering failure run so the source stays in the
+                    # main rotation instead of recovery rotation.
+                    failure_streak = 0
+                    quarantined_until = None
+                    self._leave_recovery_rotation(con, source_key)
                 if jobs_count > 0 or success:
                     quarantined_until = None
                 # v64: a real fetch after recovery rotation succeeds → the
