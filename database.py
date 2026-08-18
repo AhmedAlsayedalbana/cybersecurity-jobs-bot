@@ -919,14 +919,15 @@ class JobsDB:
                         delivery_key, channel_key, thread_id, payload_json, status,
                         created_at, updated_at, sent_at
                     ) VALUES(?,?,?,?, 'reserved', ?, ?, NULL)""",
-                    (delivery_key, channel_key, thread_id, encoded_payload, now_iso, now_iso),
+                                        (delivery_key, channel_key, thread_id, encoded_payload, now_iso, now_iso),
                 )
-                return True
-
+                return True, False
             # Do not duplicate a message whose successful delivery has been
             # recorded.  ``sent`` from a legacy row is normalized at startup.
+            # v73: this rejection carries ``delivery_proof=True`` so the
+            # sender never re-pends a row that already proves delivery.
             if row["status"] == "sent" and row["sent_at"]:
-                return False
+                return False, True
 
             status = row["status"] or "reserved"
             attempts = int(row["attempts"] or 0)
@@ -940,7 +941,9 @@ class JobsDB:
             # more so a flapping connector cannot loop forever.
             if status == "send_failed" and attempts >= 2:
                 if same_run:
-                    return False
+                    # v73: same-run exhaustion has no delivery proof; the
+                    # sender may only park it, never treat it as sent.
+                    return False, False
                 # New run: hand the pair one fresh attempt and reset the
                 # attempt counter so the lifecycle stays auditable.
                 con.execute(
@@ -959,7 +962,7 @@ class JobsDB:
                 WHERE delivery_key=?""",
                 (channel_key, thread_id, encoded_payload, now_iso, delivery_key),
             )
-            return True
+            return True, False
 
     def mark_telegram_delivery(self, delivery_key: str, *, status: str,
                                error: str = "", delay_seconds: int | None = None) -> None:
