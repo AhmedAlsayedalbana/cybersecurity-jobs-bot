@@ -27,7 +27,11 @@ from models import CyberVerdict, classify_jobs
 from dedup import load_seen_ids, save_seen_ids, deduplicate, mark_as_seen, deduplicate_sent, smart_expire
 import database
 from database import JobsDB, get_db, set_delivery_run_at
-from telegram_sender import send_jobs, send_test_canary
+from telegram_sender import send_jobs, send_test_canary, format_hiring_signal_message
+from sources.hiring_signal_discovery import (
+    detect_hiring_signal, verify_signal, HiringSignal, SignalVerificationResult,
+    get_v72_signal_telemetry, _reset_v72_telemetry,
+)
 from scoring import score_job_int as score_job, diversity_rerank
 from ai_filter import classify_job as ai_classify_job, batch_classify_borderline
 from intelligence import (
@@ -51,6 +55,227 @@ from run_budget import (
 )
 from sources.linkedin_unified import get_linkedin_telemetry
 from review_workflow import make_run_id, poll_review_updates, queue_review_samples, record_metrics
+
+# ── v72: Hidden Jobs Discovery helpers ─────────────────────────────────────
+
+def _mine_hiring_signals(pool: list) -> list[HiringSignal]:
+    """Scan accepted HR posts in the pool for hiring signals that carry
+    cyber intent and an identifiable company, skipping any signal already
+    represented by a verified job elsewhere in the pool."""
+    signals: list[HiringSignal] = []
+    seen_candidates: set[tuple[str, str]] = set()
+    pool_companies_roles: set[tuple[str, str]] = {
+        ((getattr(j, "company", "") or "").lower(),
+         (getattr(j, "title", "") or "").lower())
+        for j in pool if getattr(j, "content_type", "") == "hr_post"
+    }
+    for job in pool:
+        if (getattr(job, "content_type", "") or "").lower() != "hr_post":
+            continue
+        text = f"{job.title} {job.description or ''}"
+        if not text.strip():
+            continue
+        signal = detect_hiring_signal(text)
+        if signal is None:
+            continue
+        signal.signal_source = "linkedin_hr_post"
+        candidate = (signal.company.lower(), signal.inferred_title.lower())
+        if candidate in seen_candidates:
+            continue
+        if candidate in pool_companies_roles:
+            # A verified listing for the same company/role already made the
+            # pool — prefer the real listing over the duplicate signal.
+            continue
+        seen_candidates.add(candidate)
+        signals.append(signal)
+    return signals
+
+
+def _v72_verification_search_fn(spec: dict) -> list[tuple[str, str]]:
+    """Wire the HR Posts backend ladder to the verification chain, in
+    descending order of trust: CSE → SerpAPI → Bing.  Each backend keeps its
+    own park/streak state from the HR Posts run, so a backend already parked
+    for that run is silently skipped (one backend's failure must not cost the
+    bot a fresh request cap)."""
+    from sources.linkedin_hr_posts_scraper import (
+        _search_via_google_cse, _search_via_serpapi, _search_via_bing_html,
+    )
+    query = spec.get("query", "")
+    ladder = [
+        ("google_cse", _search_via_google_cse),
+        ("serpapi", _search_via_serpapi),
+        ("bing", _search_via_bing_html),
+    ]
+    targets = {"careers_search": ladder, "linkedin_jobs": ladder,
+               "ats_apply": ladder}
+    for _backend, fn in targets.get(spec.get("kind", ""), ladder):
+        try:
+            hits = fn(query)
+            if hits:
+                return hits[:5]
+        except Exception:  # noqa: BLE001 — continue down the ladder
+            pass
+    return []
+
+
+def _v72_job_builder(url: str, title: str, company: str):
+    """Convert a found application URL into a pool-grade Job.  Title and
+    description stay empty-by-design: the candidate must re-pass the cyber
+    classifier and evidence gate downstream — the discovery layer never
+    hands a bare URL a free pass."""
+    from models import Job
+    return Job(
+        title="", company=company, location="", url=url, source="linkedin",
+        source_key="linkedin_hr_posts", description="",
+        content_type="job_listing", verified_by_signal=False,
+    )
+
+
+def _discover_hidden_jobs(pool: list, *, dry_run: bool = False
+                          ) -> tuple[list, list[SignalVerificationResult]]:
+    """Run Hidden Jobs Discovery within its own bounded budget: detect
+    signals, verify each through the official chain, and split outcomes
+    into verified jobs (returned for pool merge) and hiring signals
+    (returned for distinct-card delivery)."""
+    if not getattr(config, "ENABLE_HIRING_SIGNALS_DISCOVERY", True):
+        return [], []
+    candidates = _mine_hiring_signals(pool)
+    if not candidates:
+        return [], []
+    _TELEMETRY_LOCAL = __import__("sources.hiring_signal_discovery",
+                                  fromlist=["_TELEMETRY"])._TELEMETRY
+    verified_jobs: list = []
+    signals: list[SignalVerificationResult] = []
+    start_phase("hiring_signals", getattr(config, "HIRING_SIGNALS_BUDGET_SECONDS", 150))
+    log.info("📡 v72 Hidden Jobs Discovery: %d candidate signals; verifying…", len(candidates))
+    try:
+        for signal in candidates:
+            _TELEMETRY_LOCAL["signals_detected"] += 1
+            try:
+                with source_deadline(60):
+                    outcome = verify_signal(
+                        signal,
+                        search_fn=_v72_verification_search_fn,
+                        job_builder=None if dry_run else _v72_job_builder,
+                    )
+            except Exception as exc:  # verification never kills the run
+                log.debug("v72 signal verification failed: %s", exc)
+                continue
+            if outcome.is_verified_job:
+                if not dry_run and outcome.verified_job is not None:
+                    verified_jobs.append(outcome.verified_job)
+            else:
+                signals.append(outcome)
+    finally:
+        log.info(
+            "📡 v72 discovery done: %d verified jobs merged, %d hiring signals "
+            "to deliver", len(verified_jobs), len(signals),
+        )
+    return verified_jobs, signals
+
+
+def _deliver_hiring_signals(outcomes: list[SignalVerificationResult]) -> int:
+    """Deliver HIRING SIGNAL cards to matching channels: per-signal GEO
+    routing (Egypt / Arab / remote) with per-channel caps and run-wide
+    dedup, inside the telegram budget window."""
+    from config import (
+        CHANNELS, MAX_JOBS_PER_CHANNEL, HIRING_SIGNALS_PER_CHANNEL,
+        HIRING_SIGNAL_DEDUP_HOURS,
+    )
+    from config import EGYPT_PATTERNS, ARAB_PATTERNS
+    from telegram_sender import format_hiring_signal_message
+    from intelligence.geo import classify_delivery_geo as _classify_geo
+
+    db = get_db()
+    sent = 0
+    channel_counts: Counter[str] = Counter()
+    for outcome in outcomes:
+        signal = outcome.signal
+        lowered = f"{signal.source_text} {signal.region_hint}".lower()
+        geo = "egypt" if any(p in lowered for p in EGYPT_PATTERNS) else (
+            "gulf" if any(p in lowered for p in ARAB_PATTERNS) else "remote")
+        for channel_key in (geo, "remote"):
+            if channel_key not in CHANNELS:
+                continue
+            if channel_counts[channel_key] >= HIRING_SIGNALS_PER_CHANNEL:
+                continue
+            # Per-channel cap: signals never flood a channel (2/run default).
+            if channel_counts[channel_key] >= MAX_JOBS_PER_CHANNEL:
+                continue
+            signal_key = ("signal:" + (signal.company or "unknown").lower()
+                          + ":" + signal.inferred_title.lower())
+            if db.was_signal_sent_recently(signal_key, channel_key,
+                                           HIRING_SIGNAL_DEDUP_HOURS):
+                continue
+            thread_id = get_topic_thread_id(channel_key)
+            try:
+                with source_deadline(20):
+                    ok = _send_signal_card(
+                        db, channel_key, signal_key, format_hiring_signal_message(signal),
+                        thread_id=thread_id,
+                    )
+                if ok:
+                    db.record_sent_signal(signal_key, channel_key)
+                    sent += 1
+                    channel_counts[channel_key] += 1
+                    log.info(
+                        "📡 HIRING SIGNAL delivered [%s/%s]: %s",
+                        channel_key, signal.company, signal.inferred_title,
+                    )
+                    break  # one channel per signal is enough
+            except Exception as exc:  # one signal failure must not stop the rest
+                log.debug("v72 signal delivery failed: %s", exc)
+    return sent
+
+
+def _send_signal_card(db, channel_key: str, signal_key: str, message: str,
+                      thread_id=None) -> bool:
+    """Send a single HIRING SIGNAL card using the same outbox guarantees as
+    normal jobs (retry queue, terminal-status classification)."""
+    from telegram_sender import send_test_canary
+    import requests
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        return False
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+                json=payload, timeout=20,
+            )
+            if resp.status_code == 200:
+                return True
+            if resp.status_code in (403, 404, 400, 401):
+                return False  # terminal — never retry the channel for this
+            if resp.status_code == 429:
+                time.sleep(2 * (attempt + 1))
+                continue
+            return False
+        except requests.RequestException:
+            time.sleep(1 * (attempt + 1))
+    return False
+
+
+def _log_v72_signal_summary(verified_jobs, hiring_signals) -> None:
+    """Emit the end-of-run 📡 Hidden Jobs Discovery summary line."""
+    try:
+        t = get_v72_signal_telemetry()
+    except Exception:
+        return
+    log.info(
+        "📡 v72 Hidden Jobs Discovery: detected=%d verified_jobs=%d "
+        "hiring_signals=%d",
+        t["signals_detected"], t["signals_verified_job"],
+        t["signals_emitted_hiring_signal"],
+    )
+
 
 # ── Logging setup ──────────────────────────────────────────────────────────
 _log_format = os.getenv("LOG_FORMAT", "text")
@@ -384,6 +609,13 @@ async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[st
             # a public source that may recover after a short rollout.
             "parse_changed",
         }
+        # v71: the ladder's honest-empty verdict (the reader ran the full
+        # attempt chain and read the page with no listings) is a healthy
+        # zero — the detection lives here so the health verdict and the
+        # health-state update both honor it.
+        honest_empty = bool(
+            result.status == "empty" and (result.error_code or "").startswith("EMPTY_REAL"),
+        )
         if result.status == "not_configured":
             health = "not_configured"
         elif result.status == "parse_changed":
@@ -391,7 +623,14 @@ async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[st
         elif source_reachable and result.transport in {"direct", "none"}:
             health = "healthy"
         else:
-            health = "degraded" if source_reachable else "blocked"
+            # v71: an honest empty read the page end-to-end and found
+            # nothing — that is a healthy verdict, not degradation.
+            if honest_empty:
+                health = "healthy"
+            elif source_reachable:
+                health = "degraded"
+            else:
+                health = "blocked"
         reports[spec.key] = {
             "status": result.status, "health": health, "transport": result.transport,
             "jobs": len(jobs), "error_code": result.error_code, "elapsed_ms": elapsed,
@@ -412,12 +651,14 @@ async def _fetch_one(spec: SourceSpec, stats: dict, db: JobsDB, reports: dict[st
             spec.key,
             success=source_reachable,
             jobs_count=len(jobs),
-            error_code="" if source_reachable else empty_reason,
+            error_code="" if (source_reachable or honest_empty) else empty_reason,
             auto_disable_threshold=config.SOURCE_AUTO_DISABLE_THRESHOLD,
             quarantine_minutes=config.SOURCE_QUARANTINE_MINUTES,
             # v64: priority sources with real failures enter the recovery
             # rotation instead of degrading silently forever.
+            # v71: an honest empty is healthy — never a failure streak.
             is_priority_source=is_egypt_priority,
+            honest_empty=honest_empty,
         )
         reason = f" reason={result.error_code}" if result.error_code else ""
         log.info(
@@ -1099,6 +1340,25 @@ def main():
                 # legacy exhausted row can never block the first real send.
                 start_phase("telegram", config.TELEGRAM_BUDGET_SECONDS, protected=True)
                 set_delivery_run_at(datetime.now().isoformat())
+                # v71: defined before the branch so the funnel report can
+                # always reference it, even when nothing is sent.
+                sent_records = []
+                # v72: Hidden Jobs Discovery — mine hiring signals from
+                # accepted HR posts, verify through the official chain,
+                # merge verified jobs into the pool BEFORE sending, and
+                # deliver unverified signals as distinct HIRING SIGNAL cards.
+                verified_signal_jobs, hiring_signals = _discover_hidden_jobs(
+                    final_pool, dry_run=bool(config.DRY_RUN),
+                )
+                if verified_signal_jobs:
+                    # Verified signal jobs carry a real application URL; they
+                    # enter the same router, evidence gate and per-channel
+                    # dedup as every other candidate — no gate relaxation.
+                    final_pool = verified_signal_jobs + final_pool
+                hiring_signals_sent = 0
+                if hiring_signals and not config.DRY_RUN:
+                    hiring_signals_sent = _deliver_hiring_signals(hiring_signals)
+
                 if config.DRY_RUN:
                     preview_count, sent_records = send_jobs(final_pool, dry_run=True)
                     log.info("🧪 DRY_RUN routing preview: would_send=%d; Telegram and seen-state skipped.", preview_count)
@@ -1109,31 +1369,37 @@ def main():
                     )
                     sent_count, sent_records = send_jobs(final_pool)
                     stats["sent"] = sent_count
+                    stats["hiring_signals_sent"] = hiring_signals_sent
                     log.info(f"✅ Total sent: {sent_count}")
-
-                if config.ENABLE_TRAINING_DATA_COLLECTION:
-                    sent_keys = {j.dedup_key for j, _, _ in sent_records}
-                    for job in final_pool:
-                        key = job.dedup_key
-                        if not key or key in sent_keys:
-                            continue
-                        # Made it into the final pool but a channel/quota
-                        # didn't pick it up — still a positive signal.
-                        db.record_training_sample(
-                            dedup_key=key,
-                            title=job.title,
-                            company=job.company,
-                            location=job.location,
-                            source=getattr(job, "source_key", "") or job.source,
-                            content_type=getattr(job, "content_type", "job_listing"),
-                            description_short=(job.description or "")[:500],
-                            accepted=True,
-                            reason="candidate_pool",
-                        )
+                    _log_v72_signal_summary(verified_signal_jobs, hiring_signals)
 
             else:
                 log.info("ℹ️ No qualifying jobs this run.")
                 sent_records = []
+
+            # v72: hidden-jobs discovery telemetry (reset per run).
+            _log_v72_signal_summary(None, None)
+            _reset_v72_telemetry()
+
+            if config.ENABLE_TRAINING_DATA_COLLECTION:
+                sent_keys = {j.dedup_key for j, _, _ in sent_records}
+                for job in final_pool:
+                    key = job.dedup_key
+                    if not key or key in sent_keys:
+                        continue
+                    # Made it into the final pool but a channel/quota
+                    # didn't pick it up — still a positive signal.
+                    db.record_training_sample(
+                        dedup_key=key,
+                        title=job.title,
+                        company=job.company,
+                        location=job.location,
+                        source=getattr(job, "source_key", "") or job.source,
+                        content_type=getattr(job, "content_type", "job_listing"),
+                        description_short=(job.description or "")[:500],
+                        accepted=True,
+                        reason="candidate_pool",
+                    )
 
             # 7. Mark seen, dedup sent
             if not config.DRY_RUN:
@@ -1218,6 +1484,21 @@ def main():
         log.info(
             f"   Quality: cyber_candidates={cyber_candidates} delivery_pending_now={pending_now} "
             f"sent={stats['sent']} unique_fresh_cyber_goal_above_raw_count"
+        )
+        # v71: the delivery funnel — exact per-stage counters the sender
+        # accumulated.  The headline number that matters is
+        # unique_fresh_cyber sent; every other counter exists so a drop at
+        # any stage is diagnosable from the run log instead of guessed.
+        _pending_unique = 0
+        if not config.DRY_RUN:
+            try:
+                _pending_unique = db.count_pending_unique_jobs()
+            except Exception:
+                pass
+        log.info(
+            f"   📈 v71 delivery funnel: sent={stats['sent']} pending_rows={pending_now} "
+            f"pending_unique_jobs={_pending_unique} "
+            f"sent_records={len(sent_records)}"
         )
         log.info("=" * 60)
 
