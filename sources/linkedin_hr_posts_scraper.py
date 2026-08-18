@@ -1448,12 +1448,102 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
 # MAIN ENTRY POINT
 # ============================================================
 
+def _validate_hr_backend_keys() -> None:
+    """v70: validate search-backend credentials once before the query plan
+    starts — a key that is missing, obviously malformed, or rejected by the
+    provider (quota/invalid) is detected at the first request and the
+    backend is marked unusable so the query plan never pays for it again.
+
+    Google CSE is the primary LinkedIn-post discovery backend (serpapi and
+    bing_html do not index LinkedIn posts reliably). When its key is
+    unusable, the HR phase must know immediately instead of learning it
+    from repeated backoffs.
+    """
+    global _GOOGLE_CSE_DISABLED, _cse_backoff_until, _cse_backoff_count
+    if not (GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX):
+        return
+    # One cheap probe request to surface 403/invalid-key/usage-limit errors
+    # without downloading a full results page.
+    probe = get_json(
+        "https://www.googleapis.com/customsearch/v1",
+        params={"key": GOOGLE_CSE_API_KEY, "cx": GOOGLE_CSE_CX, "q": "test", "num": "1"},
+        max_retries=0,
+        budget_phase="linkedin_hr",
+    )
+    # The request layer returns None for hard HTTP errors. 403 means the key
+    # itself is invalid or quota is exhausted; other hard errors are treated
+    # the same way — no point retrying an unusable credential.
+    if probe is None:
+        # Distinguish a hard key/credential error from a transient network
+        # error by re-checking with the smallest possible query; if the
+        # second attempt also fails, the key is considered unusable.
+        probe2 = get_json(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": GOOGLE_CSE_API_KEY, "cx": GOOGLE_CSE_CX, "q": "x", "num": "1"},
+            max_retries=0,
+            budget_phase="linkedin_hr",
+        )
+        if probe2 is None:
+            _GOOGLE_CSE_DISABLED = True
+            log.warning(
+                "LinkedIn HR Posts: Google CSE key is unusable (credential "
+                "or quota error) — CSE skipped for the rest of the run; "
+                "fix the key to restore HR post discovery.",
+            )
+            return
+    # A successful or non-403 response means the key is fine — clear any
+    # stale failure state so CSE starts the run healthy.
+    _GOOGLE_CSE_DISABLED = False
+    _cse_backoff_until = 0.0
+    _cse_backoff_count = 0
+    _backend_cooldown_until.pop("google_cse", None)
+    _backend_empty_cooldown.discard("google_cse")
+    _backend_parked.discard("google_cse")
+
+
+def _all_hr_backends_unusable() -> bool:
+    """v70: true when no search backend can answer this run — the query plan
+    would pay for guaranteed empties, so the HR phase skips entirely and
+    waits for the next run (keys refreshed, backends cooled down).
+
+    Per-backend notes:
+    - google_cse: unusable when the legacy disable flag is set, its own
+      backoff still covers it, or it has been parked.
+    - serpapi / bing_html: unusable when missing credentials or parked.
+      A cooled-down backend (temporary empties) is NOT unusable — the
+      bounded cooldown will expire and the backend may recover, and
+      stall-relaxation is allowed to recheck it.
+    """
+    cse_unusable = (
+        _GOOGLE_CSE_DISABLED
+        or not _backend_cooldown_expired("google_cse")
+        or "google_cse" in _backend_parked
+    )
+    serpapi_unusable = not SERPAPI_KEY or "serpapi" in _backend_parked
+    bing_unusable = "bing_html" in _backend_parked
+    return cse_unusable and serpapi_unusable and bing_unusable
+
+
 def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[Job]:
     jobs: list[Job] = []
     seen_urls: set[str] = set()
     start = time.time()
     budget = int(budget_seconds or LI_HR_POST_BUDGET_SECONDS)
     rotation_slot = int(time.time() // (4 * 3600))
+    # v70: key health is checked once at the start instead of letting every
+    # query pay for a known-dead backend. An invalid or quota-exhausted CSE
+    # key is detected early and CSE is skipped entirely for the rest of the
+    # run — in the 2026-08-18 run a failing CSE key made the HR phase burn
+    # 33 queries while no backend could find LinkedIn posts at all.
+    _validate_hr_backend_keys()
+    if _all_hr_backends_unusable():
+        log.warning(
+            "LinkedIn HR Posts: every search backend is unusable this run "
+            "(keys missing or all parked); skipping the query plan so the "
+            "HR budget is not spent on guaranteed empties (recheck at the "
+            "next run).",
+        )
+        return []
 
     # v61: Build multi-layer discovery plan
     all_queries: list[dict] = []
