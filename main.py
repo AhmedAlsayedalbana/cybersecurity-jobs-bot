@@ -925,6 +925,7 @@ def main():
             or getattr(job, "filter_reason", "") == "reject_unknown_age_strict_source"
         ]
         cyber_candidates = len(confirmed) + len(likely)
+        stats["cyber_candidates"] = cyber_candidates
         location_accepted = cyber_candidates - len(location_rejected)
         recency_accepted = location_accepted - len(recency_rejected)
         location_input_breakdown = Counter(classify_delivery_geo(job) for job in classified)
@@ -1185,6 +1186,39 @@ def main():
         log.info(f"   New:      {stats['new']}")
         log.info(f"   Sent:     {stats['sent']}")
         log.info(f"   Seen:     {len(seen)}")
+        # v67: run success report — the headline numbers are the unique,
+        # fresh, cyber jobs actually delivered (the goal), not the raw
+        # fetch count.  ``delivery_pending`` exposes queued candidates the
+        # channel state previously blocked, so operators can see they are
+        # being retried instead of silently dropped.
+        cyber_candidates = int(stats.get("cyber_candidates", 0))
+        pending_now = 0
+        if not config.DRY_RUN:
+            try:
+                pending_now = db.count_pending_delivery_rows()
+            except Exception:
+                pass
+        egypt_health = sum(
+            1 for k, row in source_reports.items()
+            if k in config.EGYPT_PRIORITY_SOURCE_KEYS and row.get("health") == "healthy"
+        )
+        egypt_attempted = sum(
+            1 for k in source_reports if k in config.EGYPT_PRIORITY_SOURCE_KEYS
+        )
+        job_yielders = sum(
+            1 for row in source_reports.values() if int(row.get("jobs", 0) or 0) > 0
+        )
+        log.info("=" * 60)
+        log.info("v67 Run success report:")
+        log.info(
+            f"   Sources: attempted={len(source_reports)} egypt_attempted={egypt_attempted} "
+            f"egypt_healthy={egypt_health} yielders={job_yielders} "
+            f"degraded={counts.get('degraded', 0)} blocked={counts.get('blocked', 0)}"
+        )
+        log.info(
+            f"   Quality: cyber_candidates={cyber_candidates} delivery_pending_now={pending_now} "
+            f"sent={stats['sent']} unique_fresh_cyber_goal_above_raw_count"
+        )
         log.info("=" * 60)
 
 
