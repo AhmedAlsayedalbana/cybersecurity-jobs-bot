@@ -272,7 +272,7 @@ class TestV66DeliveryPending:
         # the reserve accepting the row first (as the real flow does):
         assert db.reserve_telegram_delivery(
             delivery_key=key, channel_key="egypt", thread_id=1, payload={},
-        )
+        )[0]
         # Mark it failed mid-send so the terminal branch is exercised:
         db.mark_telegram_delivery(key, status="send_failed", error="boom")
         assert db.mark_delivery_pending is not None
@@ -301,7 +301,7 @@ class TestV66DeliveryPending:
         _db.set_delivery_run_at(datetime.now().isoformat())
         assert db.reserve_telegram_delivery(
             delivery_key=key, channel_key="egypt", thread_id=1, payload={},
-        ) is True
+        )[0] is True
 
     def test_pending_is_never_counted_as_success(self):
         # The lifecycle counter is bumped by the send path only on real
