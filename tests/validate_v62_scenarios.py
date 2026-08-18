@@ -98,7 +98,7 @@ def scenario_delivery_state_machine() -> bool:
             reserved_egypt = db.reserve_telegram_delivery(
                 delivery_key="egypt:job-rsa", channel_key="egypt",
                 thread_id=1, payload=payload,
-            )
+            )[0]
             results.append("reserved=1" if reserved_egypt else "reserved=0 (FAIL)")
             with db._conn() as con:
                 row = con.execute(
@@ -122,7 +122,7 @@ def scenario_delivery_state_machine() -> bool:
             blocked = not db.reserve_telegram_delivery(
                 delivery_key="cloudsec:job-rsa", channel_key="cloudsec",
                 thread_id=2, payload=payload,
-            )
+            )[0]
             results.append("dedup_kept" if blocked else "dedup_LOST (FAIL)")
 
             # (b2) legacy rows without sent_at resume instead of blocking
@@ -137,7 +137,7 @@ def scenario_delivery_state_machine() -> bool:
             legacy_resumed = db.reserve_telegram_delivery(
                 delivery_key="grc:job-rsa", channel_key="grc",
                 thread_id=3, payload=payload,
-            )
+            )[0]
             results.append("legacy_resumes" if legacy_resumed else "legacy_blocked (FAIL)")
 
             # (c) end-to-end send: eligible -> routed -> reserved -> sent
@@ -231,10 +231,7 @@ def scenario_quarantine() -> bool:
         ok = ok and b_ok
     finally:
         _remove_db(path)
-    return ok
-
-
-    sys.exit(0 if all_ok else 1)
+        return ok
 
 
 # ---------- scenario 6: v64 source strategy ---------------------------------
