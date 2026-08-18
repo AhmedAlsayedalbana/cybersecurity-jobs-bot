@@ -599,6 +599,13 @@ def _deactivate_channel(ch_key: str, status: int, err: str) -> None:
 
 _topic_evidence_cache: dict = {}
 
+# v73: pairs the pending-first drain actually sent during THIS run.
+# {(channel_key, delivery_key)} — the new-reservation loop consults it so a
+# pair that was just delivered by the drain is never re-posted (which would
+# then be recorded as "blocked by terminal channel state" and silently
+# re-pended, stranding proven deliveries forever).
+_drain_sent_pairs: set[tuple[str, str]] = set()
+
 def _reset_channel_states_for_tests() -> None:
     """v71: test-only hook to clear the module-level channel registry."""
     _channel_failure_state.clear()
@@ -625,6 +632,19 @@ def _drain_retry_queue(db: JobsDB) -> int:
         if ok:
             db.mark_telegram_delivery(row["delivery_key"], status="sent")
             sent += 1
+            # v73: ledger entry so the new-reservation loop does not treat
+            # this pair as "blocked by terminal channel state" and re-pend
+            # a delivery whose success has just been proven.  The new loop
+            # passes ``delivery_key=job_dedup_key`` (the plain key) and
+            # ``channel_key=ch_key`` separately — the ledger therefore
+            # stores the plain key.  Pending rows carry the prefixed form
+            # (``channel:job``) because ``_send_to_topic`` stamps the full
+            # ``delivery_id`` when queuing, so strip the channel prefix
+            # here to match what the new loop compares against.
+            dk = row.get("delivery_key", "") or ""
+            if ch_key and dk.startswith(ch_key + ":"):
+                dk = dk[len(ch_key) + 1:]
+            _drain_sent_pairs.add((ch_key, dk))
             time.sleep(0.7)
             continue
         failure_kind = _classify_channel_failure(status)
@@ -997,6 +1017,10 @@ def send_jobs(jobs, *, dry_run: bool = False):
     # (delivery_pending/retry_429) go out before any new reservation this
     # run builds, so a candidate the channel state previously blocked is
     # visibly retried instead of sitting behind fresh jobs.
+    # v73: the drain ledger is per-run — every send_jobs invocation starts
+    # from a clean ledger; only this run's drain sends count as
+    # already-handled pairs in the new-reservation loop below.
+    _drain_sent_pairs.clear()
     # v71: pending counting is split into the channel-delivery dimension
     # (raw rows) and the candidate dimension (distinct jobs).  A single job
     # can legitimately be pending on several channels, and lumping the two
@@ -1006,6 +1030,7 @@ def send_jobs(jobs, *, dry_run: bool = False):
     pending_unique_before = 0 if dry_run else db.count_pending_unique_jobs()
     delivery_lifecycle["pending_unique_before"] = pending_unique_before
     retried_sent = 0 if dry_run else _drain_retry_queue(db)
+    delivery_lifecycle["drain_sent"] = retried_sent
     pending_retried = min(pending_before, retried_sent) if pending_before else 0
     delivery_lifecycle["pending_retried"] = pending_retried
     if pending_before:
@@ -1047,6 +1072,15 @@ def send_jobs(jobs, *, dry_run: bool = False):
             queue = channel_queues.get(ch_key, [])
             if not queue:
                 continue
+
+            # v73: pairs the drain already delivered this run count against
+            # this channel's capacity and dedup so a just-sent job cannot be
+            # re-posted, and the channel cap reflects the drain's work.
+            drained_here = {
+                dk for ck, dk in _drain_sent_pairs if ck == ch_key
+            }
+            channel_dedup_sent[ch_key].update(drained_here)
+            channel_summary[ch_key] += len(drained_here)
 
             is_geo = ch_key in GEO_CHANNELS
             is_topic = not is_geo
@@ -1136,6 +1170,16 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     continue
 
                 message = format_job_message(job)
+
+                # v73: a pair the pending-first drain already delivered this
+                # run must never be re-posted — reserve would see the
+                # proven sent row, return False, and the legacy guard would
+                # then RE-PEND the pair, stranding it forever.  Skip it
+                # cleanly and count it alongside the drain's work.
+                if (ch_key, job_dedup_key) in _drain_sent_pairs:
+                    delivery_lifecycle["drain_sent"] += 1
+                    continue
+
                 if dry_run:
                     # Preview follows the full router but does not reserve,
                     # post, or mutate the outbox.
@@ -1842,40 +1886,56 @@ def _send_to_topic(message, thread_id=None, db: JobsDB | None = None, channel_ke
 
     delivery_id = f"{channel_key}:{delivery_key}" if channel_key and delivery_key else ""
     if db and delivery_id:
-        if not db.reserve_telegram_delivery(
+        reserved, delivery_proof = db.reserve_telegram_delivery(
             delivery_key=delivery_id, channel_key=channel_key,
             thread_id=thread_id, payload=payload,
-        ):
-            # ``reserve_telegram_delivery`` only rejects a confirmed sent
-            # row or a delivery whose one retry was already exhausted.
-            # v66: a legacy exhausted row can still reach here in two
-            # distinct cases.  The outbox resets one fresh attempt at the
-            # start of each run, so a NEW candidate blocked by a terminal
-            # channel state must never be silently dropped: it is recorded
-            # as delivery_pending so the next run visibly retries it —
-            # and it is never counted as a success.
-            pending_logged = False
-            if (
-                config.TELEGRAM_DELIVERY_PENDING_ON_TERMINAL_STATE
-                and delivery_id
-                and hasattr(db, "mark_delivery_pending")
-                and lifecycle is not None
-            ):
-                try:
-                    db.mark_delivery_pending(delivery_id)
-                    pending_logged = True
-                except Exception:
-                    pending_logged = False
-            if pending_logged:
+        )
+        if not reserved:
+            # v73: ``reserve_telegram_delivery`` now distinguishes the two
+            # rejections.  ``delivery_proof=True`` means the outbox holds a
+            # CONFIRMED sent row (status='sent' with sent_at) — the message
+            # WAS delivered, so re-posting is forbidden AND the pair must
+            # NEVER be re-pended: the previous guard overwrote proven
+            # deliveries back to ``delivery_pending``, stranding them in a
+            # loop where every run sent the message then queued the pair
+            # again (sent=0 forever).  ``delivery_proof=False`` is a legacy
+            # same-run retry-exhausted row: the v66 safety net keeps it
+            # visible as ``delivery_pending`` for the next run's retry.
+            if delivery_proof:
                 log.info(
-                    "Telegram delivery blocked by terminal channel state for "
-                    "[%s]; candidate queued as delivery_pending for the next "
-                    "run (never silently dropped).", channel_key,
+                    "Telegram delivery already sent for [%s] (proof on "
+                    "outbox row) — pair skipped, not re-posted, not "
+                    "re-pended.", channel_key,
                 )
-                lifecycle["delivery_pending"] += 1
+                if lifecycle is not None:
+                    lifecycle["already_sent"] += 1
             else:
-                log.info("Telegram delivery already sent/retry-exhausted for [%s]", channel_key)
-                lifecycle["already_sent"] += 1
+                pending_logged = False
+                if (
+                    config.TELEGRAM_DELIVERY_PENDING_ON_TERMINAL_STATE
+                    and delivery_id
+                    and hasattr(db, "mark_delivery_pending")
+                    and lifecycle is not None
+                ):
+                    try:
+                        db.mark_delivery_pending(delivery_id)
+                        pending_logged = True
+                    except Exception:
+                        pending_logged = False
+                if pending_logged:
+                    log.info(
+                        "Telegram delivery blocked by terminal channel "
+                        "state for [%s]; candidate queued as "
+                        "delivery_pending for the next run (never silently "
+                        "dropped).", channel_key,
+                    )
+                    lifecycle["delivery_pending"] += 1
+                else:
+                    log.info(
+                        "Telegram delivery already sent/retry-exhausted "
+                        "for [%s]", channel_key,
+                    )
+                    lifecycle["already_sent"] += 1
             return False
         if lifecycle is not None:
             lifecycle["reserved"] += 1
