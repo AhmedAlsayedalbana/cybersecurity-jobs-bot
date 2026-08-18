@@ -259,6 +259,12 @@ def _source_budget_seconds(source: CareerSource) -> float:
 # cap, never held open until the source deadline burns away.
 _FAST_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("CAREERS_FAST_ATTEMPT_TIMEOUT_SECONDS", "8"))
 _FAST_ATTEMPT_SECOND_CAP_SECONDS = float(os.getenv("CAREERS_FAST_ATTEMPT_SECOND_CAP_SECONDS", "10"))
+# v70: when a proven-failing source (public_fallback) asks for the last-
+# resort browser step ONLY because the public reader itself could not
+# answer, the browser gets one FAST attempt — never the full source
+# deadline. The reader's failure is a weak signal (maybe a transient
+# Jina outage), so a quick JS-render check is fair; a long wait is not.
+_FAST_BROWSER_CAP_SECONDS = float(os.getenv("CAREERS_FAST_BROWSER_CAP_SECONDS", "15"))
 
 
 def fetch_source(source_key: str) -> SourceResult:
@@ -297,16 +303,25 @@ def fetch_source(source_key: str) -> SourceResult:
     # blocked client cannot). Playwright stays reserved for sources that are
     # actually JS-only and only after both cheaper steps returned nothing.
     ladder_outcome = None
+    ladder_was_attempted = False
     if not outcome.jobs and not outcome.no_active_jobs:
         if outcome.parsed and _SCRIPT_RE.search(outcome.raw_html or ""):
             page_jobs, _ = _jobs_from_html(outcome.raw_html or "", source, base_url=source.url)
             if page_jobs:
                 return SourceResult(jobs=page_jobs, status="success", transport="embedded_json", attempted_urls=(source.url,))
+        # jina_result is None until the public reader actually runs — the
+        # js_only/budget logic below must work for sources that never touch
+        # the ladder (non-public_fallback) without an UnboundLocalError.
+        jina_result = None
+        ladder_was_attempted = False
         if source.public_fallback:
             # v69: the reader attempt is remembered even when it found
             # nothing — a non-None reader outcome means the public ladder
             # WAS attempted, and its honest no-listings answer is allowed
             # to close the book on this run without burning Playwright.
+            # v70: ladder_was_attempted records the attempt for the fast-
+            # browser cap below (flag declared above; set True here).
+            ladder_was_attempted = True
             jina_result = _fetch_via_public_reader(source)
             if jina_result is not None and jina_result.jobs:
                 return SourceResult(jobs=jina_result.jobs, status="success", transport="jina", attempted_urls=(source.url,))
@@ -344,7 +359,23 @@ def fetch_source(source_key: str) -> SourceResult:
         and ladder_outcome is None
     )
     if source.browser_fallback and js_only:
-        browser_outcome = _fetch_with_browser(source, budget_seconds=_source_budget_seconds(source))
+        # v70: a proven-failing source only reaches the browser here when
+        # the public reader could not answer — give it one fast attempt
+        # instead of the full source deadline. An honest reader answer
+        # (empty or parsed) already closed the book above; only an
+        # unanswered reader leaves this door open, and even then the
+        # source pays at most the fast cap.
+        ladder_answered = jina_result is not None and (jina_result.parsed or jina_result.no_active_jobs)
+        # v70: a proven-failing source (public_fallback) only reaches the
+        # browser because the reader could not answer — it gets one FAST
+        # attempt, never the full source deadline. An honest reader answer
+        # already closed the book above; a source without the ladder
+        # (healthy transport) keeps its normal JS-only budget.
+        if source.public_fallback and ladder_was_attempted and not ladder_answered:
+            browser_budget = min(_source_budget_seconds(source), _FAST_BROWSER_CAP_SECONDS)
+        else:
+            browser_budget = _source_budget_seconds(source)
+        browser_outcome = _fetch_with_browser(source, budget_seconds=browser_budget)
         if browser_outcome.jobs:
             return SourceResult(
                 jobs=browser_outcome.jobs,
