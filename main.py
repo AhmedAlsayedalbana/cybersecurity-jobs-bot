@@ -110,10 +110,22 @@ def _mine_careers_page_signals() -> list[HiringSignal]:
     is silently skipped rather than retried.
     """
     from sources.hiring_signal_discovery import extract_careers_page_signals
-    from sources.official_careers import (
-        _EGYPT_RECOVERY_URLS, _JINA_READER_URL_TEMPLATE,
-        _JINA_PUBLIC_READER_HEADERS,
+    # Self-contained import: the recovery map may exist under any name in
+    # older official_careers snapshots, and the Jina reader constants are
+    # inlined here so this lane never crashes when the deployed copy of
+    # official_careers.py is outdated (no hidden dependency breakage).
+    from sources import official_careers as _oc
+    _EGYPT_RECOVERY_URLS = (
+        getattr(_oc, "_EGYPT_RECOVERY_URLS", None)
+        or getattr(_oc, "_EGYPT_ALT_ENDPOINTS", None)
+        or {}
     )
+    _JINA_READER_URL_TEMPLATE = "https://r.jina.ai/{url}"
+    _JINA_PUBLIC_READER_HEADERS = {
+        "Accept": "text/html",
+        "X-Locale": "en",
+        "User-Agent": "Mozilla/5.0 (compatible; CyberJobsBot/1.0)",
+    }
     from sources.http_utils import get_text
 
     if not getattr(config, "ENABLE_CAREERS_PAGE_SIGNALS", True):
@@ -170,7 +182,7 @@ def _read_careers_page(key: str, url: str, get_text_fn) -> str | None:
         pass
     if not html:
         from urllib.parse import quote as _quote
-        reader_url = _JINA_READER_URL_TEMPLATE.format(url=url)
+        reader_url = _JINA_READER_URL_TEMPLATE.format(url=_quote(url))
         try:
             html = get_text_fn(
                 reader_url, headers=_JINA_PUBLIC_READER_HEADERS,
