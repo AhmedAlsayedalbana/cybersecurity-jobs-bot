@@ -1,7 +1,7 @@
-"""v72: Hidden Jobs Discovery — detect hiring signals that are NOT published
-as explicit job listings, then verify them through an official search chain
-so every delivered item is either a VERIFIED JOB (real application URL) or a
-clearly-labeled HIRING SIGNAL.
+"""v72+v74: Hidden Jobs / Multi-Signal Discovery — detect hiring signals
+that are NOT published as explicit job listings, then verify them through an
+official search chain so every delivered item is either a VERIFIED JOB (real
+application URL) or a clearly-labeled HIRING SIGNAL.
 
 Signal sources:
   - LinkedIn recruiter / employee posts ("We're growing our security team")
@@ -9,6 +9,8 @@ Signal sources:
   - Engineering blog hiring sections
   - University career pages and career fairs
   - Recruitment agency posts
+  - v74: official company careers pages ("We're hiring" sections)
+  - v74: GitHub company pages / engineering blogs / agency listings
 
 Pipeline per signal:
     Post detected → company identified → role inferred →
@@ -227,6 +229,13 @@ _TELEMETRY = {
     "signals_detected": 0,
     "signals_verified_job": 0,
     "signals_emitted_hiring_signal": 0,
+    # v74: per-lane counters — each discovery lane reports separately so
+    # the run log shows exactly which signal surface is producing value.
+    "signals_detected_linkedin": 0,
+    "signals_detected_careers_page": 0,
+    "signals_detected_engineering_blog": 0,
+    "signals_detected_university": 0,
+    "signals_detected_agency": 0,
 }
 
 
@@ -237,3 +246,100 @@ def get_v72_signal_telemetry() -> dict[str, int]:
 def _reset_v72_telemetry() -> None:
     for key in _TELEMETRY:
         _TELEMETRY[key] = 0
+
+
+# ── v74: source-tagged detection ──────────────────────────────────────────
+
+def detect_signals_from_text_list(
+    texts: list[str],
+    *,
+    lane: str = "linkedin",
+) -> list[HiringSignal]:
+    """v74: detect hiring signals across a batch of raw texts and tag each
+    one with its discovery lane.  ``lane`` must be one of the telemetry
+    lane names (linkedin, careers_page, engineering_blog, university,
+    agency) — an unknown lane falls back to ``linkedin`` so telemetry keys
+    never drift at runtime.
+
+    The core three-condition rule (growth phrasing + security role +
+    identifiable company) is preserved from v72 — tagging does not relax
+    any gate.  Returns all signals found; the caller decides which ones to
+    verify against its budget.
+    """
+    if lane not in ("linkedin", "careers_page", "engineering_blog",
+                    "university", "agency"):
+        lane = "linkedin"
+    found: list[HiringSignal] = []
+    for text in texts:
+        signal = detect_hiring_signal(text)
+        if signal is None:
+            continue
+        signal.signal_source = lane
+        found.append(signal)
+        _TELEMETRY["signals_detected"] += 1
+        _TELEMETRY[f"signals_detected_{lane}"] += 1
+    return found
+
+
+# ── v74: company careers-page signal mining ───────────────────────────────
+
+# Careers pages announce openings in body text rather than structured
+# listings. These anchors match both English and Arabic announcement voice
+# ("انضم لفريقنا", "وظائف شاغرة") so a page that contains neither a job
+# listing nor an announcement produces nothing — no false positives.
+_CAREERS_PAGE_ANNOUNCERS = (
+    "we are hiring", "we're hiring", "join our team", "join us", "openings",
+    "vacancies", "open positions", "careers", "hiring now", "new roles",
+    "growing our team", "expanding our team", "انضم لفريقنا", "وظائف شاغرة",
+    "توظيف", "انضم الينا", "فرص وظيفية",
+)
+
+
+def extract_careers_page_signals(
+    page_text: str,
+    company: str,
+    careers_url: str = "",
+) -> list[HiringSignal]:
+    """v74: scan an official company careers page for hiring announcements
+    that are NOT structured job listings.  Each signal carries its own
+    inferred security role and the ``careers_page`` lane tag.
+
+    A careers page may mention security roles in an announcement section
+    ("We're growing our security team — join us") even when the page
+    itself lists no jobs yet. Those moments are exactly the unpublished
+    headcount the pipeline should follow up on.
+
+    Returns at most two signals per page: one per distinct announcement
+    block, so a single careers page never floods the verification budget.
+    """
+    if not (page_text and company):
+        return []
+    lowered = page_text.lower()
+    has_role = any(s in lowered for s in _UNPUBLISHED_ROLE_SIGNALS)
+    if not has_role:
+        return []
+    # Split on paragraph boundaries so each announcement block is judged
+    # independently; a block must contain an announcement anchor AND a
+    # security role to qualify — the same three-condition discipline as
+    # detect_hiring_signal, applied per block.
+    blocks = re.split(r"\n{2,}|\r\n{2,}|(?<=\.)\s{2,}", page_text)
+    signals: list[HiringSignal] = []
+    for block in blocks:
+        if len(signals) >= 2:
+            break
+        block_lowered = block.lower()
+        if not any(a in block_lowered for a in _CAREERS_PAGE_ANNOUNCERS):
+            continue
+        if not any(s in block_lowered for s in _UNPUBLISHED_ROLE_SIGNALS):
+            continue
+        signals.append(HiringSignal(
+            source_text=block.strip(),
+            company=company,
+            inferred_title=_infer_role_title(block_lowered, company),
+            region_hint="",
+            url=careers_url,
+            signal_source="careers_page",
+        ))
+        _TELEMETRY["signals_detected"] += 1
+        _TELEMETRY["signals_detected_careers_page"] += 1
+    return signals
