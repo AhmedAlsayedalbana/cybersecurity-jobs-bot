@@ -1685,9 +1685,17 @@ def main():
             f"egypt_healthy={egypt_health} yielders={job_yielders} "
             f"degraded={counts.get('degraded', 0)} blocked={counts.get('blocked', 0)}"
         )
+        # v74: quality headline — the goal is UNIQUE FRESH CYBER jobs sent,
+        # not raw fetch count; when sent == 0 the pending counters show
+        # whether there was anything left undelivered to retry.
+        _unique_fresh_cyber_sent = len({
+            getattr(job, "dedup_key", "") for job, _lane, _ch in sent_records
+        }) if sent_records else 0
         log.info(
-            f"   Quality: cyber_candidates={cyber_candidates} delivery_pending_now={pending_now} "
-            f"sent={stats['sent']} unique_fresh_cyber_goal_above_raw_count"
+            f"   Quality: cyber_candidates={cyber_candidates} "
+            f"delivery_pending_now={pending_now} "
+            f"sent={stats['sent']} unique_fresh_cyber_sent={_unique_fresh_cyber_sent} "
+            f"goal=unique_fresh_cyber_over_raw_count"
         )
         # v71: the delivery funnel — exact per-stage counters the sender
         # accumulated.  The headline number that matters is
