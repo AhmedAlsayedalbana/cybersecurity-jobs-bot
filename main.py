@@ -54,6 +54,7 @@ from run_budget import (
     start_run,
 )
 from sources.linkedin_unified import get_linkedin_telemetry
+import egypt_funnel  # v74: Egypt/Arab delivery funnel tracker
 from review_workflow import make_run_id, poll_review_updates, queue_review_samples, record_metrics
 
 # ── v72: Hidden Jobs Discovery helpers ─────────────────────────────────────
@@ -89,6 +90,111 @@ def _mine_hiring_signals(pool: list) -> list[HiringSignal]:
         seen_candidates.add(candidate)
         signals.append(signal)
     return signals
+
+
+def _mine_careers_page_signals() -> list[HiringSignal]:
+    """v74: mine hiring-announcement signals from official Egyptian careers
+    pages through the Phase-3 recovery ladder (direct GET → Jina reader).
+
+    Why this lane exists: the v74 diagnosis showed Egyptian sources failing
+    with circuit-open/timeout BEFORE they could surface jobs — but several
+    of those same pages still carry a public \"We're hiring\" / careers
+    announcement block that names security headcount even when the listing
+    feed is empty or unreachable. The announcement is a signal, not a job:
+    it still has to pass the cyber intent, region and dedup rules downstream.
+
+    The lane is deliberately cheap and bounded: at most two pages (10s cap
+    each, matching the HR Posts read cap), tried through the same ladder
+    steps already validated in Phase 3 — the careers pipeline never spins
+    up Playwright for signal mining, and a page the ladder could not read
+    is silently skipped rather than retried.
+    """
+    from sources.hiring_signal_discovery import extract_careers_page_signals
+    from sources.official_careers import (
+        _EGYPT_RECOVERY_URLS, _JINA_READER_URL_TEMPLATE,
+        _JINA_PUBLIC_READER_HEADERS,
+    )
+    from sources.http_utils import get_text
+
+    if not getattr(config, "ENABLE_CAREERS_PAGE_SIGNALS", True):
+        return []
+    # Priority = the user-flagged Egyptian sources; skip sources the
+    # recovery map knows nothing about — unknown URLs would be noise.
+    priority_keys = [
+        "cib_egypt", "qnb_egypt", "aaib", "adib_egypt", "banque_misr",
+        "banque_du_caire", "mashreq_egypt", "bank_nxt", "itida",
+        "nbe", "saib", "raya", "smart_village", "telecom_egypt",
+    ]
+    sources: list[tuple[str, str]] = []
+    for key in priority_keys:
+        urls = list(_EGYPT_RECOVERY_URLS.get(key) or [])
+        if urls:
+            sources.append((key, urls[0]))
+    if not sources:
+        return []
+    # Only the first two read-able pages get the signal scan; the lane must
+    # not consume the hiring-signals budget the HR-Posts ladder needs.
+    budget_left = budget_remaining()
+    signals: list[HiringSignal] = []
+    fetched = 0
+    for key, url in sources[:2]:
+        if budget_left is not None and budget_left < 10:
+            break
+        page_text = _read_careers_page(key, url, get_text)
+        if not page_text:
+            continue
+        fetched += 1
+        signals += extract_careers_page_signals(page_text, key, url)
+    if fetched:
+        log.info(
+            "📡 v74 careers-page signals: %d pages read, %d announcement "
+            "signals found", fetched, len(signals),
+        )
+    return signals
+
+
+def _read_careers_page(key: str, url: str, get_text_fn) -> str | None:
+    """v74: lightweight page read following the Phase-3 ladder — direct GET
+    first, then the public Jina reader (a different IP pool from the bot's
+    exit, so a circuit-open portal can still answer).  Short cap, single
+    retry class: a careers page that does not answer quickly is a skip, not
+    a budget sink.
+
+    Returns the page text (tags collapsed to spaces) or ``None``.
+    """
+    import re as _re
+    html: str | None = None
+    try:
+        html = get_text_fn(url, timeout=8, max_retries=1)
+    except Exception:  # noqa: BLE001 — the reader step is the rescue path
+        pass
+    if not html:
+        from urllib.parse import quote as _quote
+        reader_url = _JINA_READER_URL_TEMPLATE.format(url=url)
+        try:
+            html = get_text_fn(
+                reader_url, headers=_JINA_PUBLIC_READER_HEADERS,
+                timeout=8, max_retries=0,
+            )
+        except Exception as exc:  # noqa: BLE001 — honest skip
+            log.debug("v74 careers signal page unreadable [%s]: %s", key, exc)
+            return None
+    if not html:
+        return None
+    if len(html) > 2 * 1024 * 1024:
+        return None
+    text = _re.sub(r"(?is)<script.*?</script>", " ", html)
+    text = _re.sub(r"(?is)<style.*?</style>", " ", text)
+    text = _TAG_RE.sub(" ", unescape(text))
+    text = _SPACE_RE.sub(" ", text)
+    return text.strip()
+
+
+# Reused tag/whitespace helpers (official_careers defines the same pair).
+_TAG_RE = __import__("re").compile(r"<[^>]+>")
+_SPACE_RE = __import__("re").compile(r"\s+")
+import html as html_lib
+from html import unescape
 
 
 def _v72_verification_search_fn(spec: dict) -> list[tuple[str, str]]:
@@ -140,6 +246,10 @@ def _discover_hidden_jobs(pool: list, *, dry_run: bool = False
     if not getattr(config, "ENABLE_HIRING_SIGNALS_DISCOVERY", True):
         return [], []
     candidates = _mine_hiring_signals(pool)
+    # v74: careers-page announcement lane — same candidate pool, distinct
+    # lane tag, merged into the HR-post candidates so one verification
+    # budget and one gate chain serve both surfaces.
+    candidates += _mine_careers_page_signals()
     if not candidates:
         return [], []
     _TELEMETRY_LOCAL = __import__("sources.hiring_signal_discovery",
@@ -269,11 +379,15 @@ def _log_v72_signal_summary(verified_jobs, hiring_signals) -> None:
         t = get_v72_signal_telemetry()
     except Exception:
         return
+    lanes = " ".join(
+        f"{k}={v}" for k, v in t.items() if k.startswith("signals_detected_") and v
+    )
     log.info(
         "📡 v72 Hidden Jobs Discovery: detected=%d verified_jobs=%d "
-        "hiring_signals=%d",
+        "hiring_signals=%d%s",
         t["signals_detected"], t["signals_verified_job"],
         t["signals_emitted_hiring_signal"],
+        f" [{lanes}]" if lanes else "",
     )
 
 
@@ -1137,6 +1251,12 @@ def main():
     # Save source stats & proxy pool health to DB
     proxy_status = get_proxy_status()
     db.save_source_stats(stats["sources"])
+    # v74: log Egypt/Arab funnels once per run (after send so sent counts).
+    try:
+        from egypt_funnel import log_funnel as _log_egypt_funnel
+        _log_egypt_funnel(_egypt_funnel, "EG/Arab funnel", log)
+    except Exception as _exc:  # funnel telemetry never breaks the run
+        log.warning("EG/Arab funnel log failed: %s", _exc)
     db.save_proxy_stats(proxy_status)
     if proxy_status.get("total", 0) > 0:
         log.info(
@@ -1149,6 +1269,13 @@ def main():
         start_phase("filtering", config.FILTERING_BUDGET_SECONDS)
         # 3. Hard cyber gate, then physical/remote location gate. Dedup never
         # sees a NON_CYBER row or an out-of-scope physical location.
+        # v74: Egypt/Arab pipeline funnel — tracks each job (by dedup key)
+        # through every hard stage and records a single drop reason when it
+        # falls out, so the Egypt delivery gap is always attributable.
+        _egypt_funnel = egypt_funnel.EgyptPipelineFunnel()
+        _funnel_discovered = egypt_funnel.geo_keys(all_jobs)
+        for _key, _geo in _funnel_discovered.items():
+            _egypt_funnel.funnel_for(_geo).record_stage(_key, "discovered")
         filtering_started = time.monotonic()
         filtered, rejected = classify_jobs(all_jobs)
         filtering_elapsed = time.monotonic() - filtering_started
@@ -1171,6 +1298,27 @@ def main():
         recency_accepted = location_accepted - len(recency_rejected)
         location_input_breakdown = Counter(classify_delivery_geo(job) for job in classified)
         location_accepted_breakdown = Counter(classify_delivery_geo(job) for job in filtered)
+        # v74: stage transitions + single drop reason per funnel per job.
+        _funnel_classified = egypt_funnel.geo_keys(classified)
+        for _key, _geo in _funnel_discovered.items():
+            if _key not in _funnel_classified:
+                _egypt_funnel.funnel_for(_geo).record_drop(_key, "non_cyber")
+            else:
+                _egypt_funnel.funnel_for(_geo).record_stage(_key, "cyber_candidate")
+        _funnel_location_ok = egypt_funnel.geo_keys(filtered)
+        for _key, _geo in _funnel_discovered.items():
+            if _key in _funnel_classified and _key not in _funnel_location_ok:
+                _egypt_funnel.funnel_for(_geo).record_drop(_key, "location")
+            elif _key in _funnel_location_ok:
+                _egypt_funnel.funnel_for(_geo).record_stage(_key, "location_ok")
+        _funnel_fresh = egypt_funnel.geo_keys(
+            [job for job in filtered if not _is_stale_job(job)]
+        )
+        for _key, _geo in _funnel_discovered.items():
+            if _key in _funnel_location_ok and _key not in _funnel_fresh:
+                _egypt_funnel.funnel_for(_geo).record_drop(_key, "recency")
+            elif _key in _funnel_fresh:
+                _egypt_funnel.funnel_for(_geo).record_stage(_key, "fresh")
         log.info(
             "🔍 Cyber verdict stage: confirmed=%d likely=%d non_cyber=%d candidates=%d",
             len(confirmed), len(likely), len(non_cyber), cyber_candidates,
@@ -1247,6 +1395,14 @@ def main():
         if stale_count:
             new_jobs = [j for j in new_jobs if not is_stale(j)]
             log.info(f"🗑 Dropped {stale_count} stale jobs (>{config.MAX_JOB_AGE_DAYS}d).")
+        # v74: new-job stage — exact-identity dedup drop, no double count
+        # (a job was either new, duplicate, or already dropped earlier).
+        _funnel_new = egypt_funnel.geo_keys(new_jobs)
+        for _key, _geo in _funnel_discovered.items():
+            if _key in _funnel_fresh and _key not in _funnel_new:
+                _egypt_funnel.funnel_for(_geo).record_drop(_key, "dedup_or_already_seen")
+            elif _key in _funnel_new:
+                _egypt_funnel.funnel_for(_geo).record_stage(_key, "new_job")
 
         stats["new"] = len(new_jobs)
         log.info(f"✨ New jobs: {stats['new']}")
@@ -1307,6 +1463,13 @@ def main():
             # location, cyber, dedup, or source-priority rule.
             _log_pre_pool_telemetry(new_jobs, rejected_reasons)
             final_pool = _build_final_pool(new_jobs, telemetry=pool_telemetry)
+            # v74: pool stage — dropped by fresh-first scoring/threshold/capacity.
+            _funnel_pool = egypt_funnel.geo_keys(final_pool)
+            for _key, _geo in _funnel_discovered.items():
+                if _key in _funnel_new and _key not in _funnel_pool:
+                    _egypt_funnel.funnel_for(_geo).record_drop(_key, "pool_selection")
+                elif _key in _funnel_pool:
+                    _egypt_funnel.funnel_for(_geo).record_stage(_key, "in_pool")
             log.info(
                 "🚫 Pool selection rejection reasons: %s",
                 " ".join(
@@ -1371,6 +1534,27 @@ def main():
                     stats["sent"] = sent_count
                     stats["hiring_signals_sent"] = hiring_signals_sent
                     log.info(f"✅ Total sent: {sent_count}")
+                    # v74: routed = pairs matched to Egypt/Arab channels in the
+                    # send loop (sent or proof-skipped); sent = actually posted.
+                    _funnel_egypt_routed = {
+                        key for job, _lane, ch_key in sent_records
+                        if ch_key == "egypt"
+                        for key in (getattr(job, "dedup_key", "") or "",)
+                    }
+                    for _key, _geo in _funnel_discovered.items():
+                        if _key in _funnel_pool:
+                            if _key in _funnel_egypt_routed:
+                                _egypt_funnel.funnel_for(_geo).record_stage(_key, "routed")
+                            else:
+                                _egypt_funnel.funnel_for(_geo).record_drop(_key, "unrouted")
+                    _funnel_egypt_sent = {
+                        getattr(job, "dedup_key", "") for job, _lane, _ch in sent_records
+                        if _ch == "egypt" and getattr(job, "dedup_key", "") in _funnel_egypt_routed
+                    }
+                    for _key in _funnel_egypt_sent:
+                        _egypt_funnel.egypt.record_stage(_key, "sent")
+                    for _key in _funnel_egypt_routed - _funnel_egypt_sent:
+                        _egypt_funnel.egypt.record_drop(_key, "not_sent")
                     _log_v72_signal_summary(verified_signal_jobs, hiring_signals)
 
             else:
