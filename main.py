@@ -1291,9 +1291,11 @@ def main():
         # through every hard stage and records a single drop reason when it
         # falls out, so the Egypt delivery gap is always attributable.
         _egypt_funnel = egypt_funnel.EgyptPipelineFunnel()
-        _funnel_discovered = egypt_funnel.geo_keys(all_jobs)  # noqa: F841
-        for _key, _geo in _funnel_discovered.items():
-            _egypt_funnel.funnel_for(_geo).record_stage(_key, "discovered")
+        # v75: discovered = real jobs whose delivery geo is Egypt/Arab.
+        for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(
+            egypt_funnel.geo_keys(all_jobs)
+        ).items():
+            _egypt_funnel.funnel_for(_funnel_geo).set_stage("discovered", len(_funnel_set))
         filtering_started = time.monotonic()
         filtered, rejected = classify_jobs(all_jobs)
         filtering_elapsed = time.monotonic() - filtering_started
@@ -1316,28 +1318,20 @@ def main():
         recency_accepted = location_accepted - len(recency_rejected)
         location_input_breakdown = Counter(classify_delivery_geo(job) for job in classified)
         location_accepted_breakdown = Counter(classify_delivery_geo(job) for job in filtered)
-        # v74: stage transitions + single drop reason per funnel per job.
+        # v75: record REAL stage counts from the pipeline-native job lists,
+        # so the funnel can never show zeros while jobs genuinely passed.
         _funnel_classified = egypt_funnel.geo_keys(classified)
-        for _key, _geo in _funnel_discovered.items():
-            if _key not in _funnel_classified:
-                _egypt_funnel.funnel_for(_geo).record_drop(_key, "non_cyber")
-            else:
-                _egypt_funnel.funnel_for(_geo).record_stage(_key, "cyber_candidate")
+        for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(_funnel_classified).items():
+            _egypt_funnel.funnel_for(_funnel_geo).set_stage("cyber_candidate", len(_funnel_set))
         _funnel_location_ok = egypt_funnel.geo_keys(filtered)
-        for _key, _geo in _funnel_discovered.items():
-            if _key in _funnel_classified and _key not in _funnel_location_ok:
-                _egypt_funnel.funnel_for(_geo).record_drop(_key, "location")
-            elif _key in _funnel_location_ok:
-                _egypt_funnel.funnel_for(_geo).record_stage(_key, "location_ok")
+        for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(_funnel_location_ok).items():
+            _egypt_funnel.funnel_for(_funnel_geo).set_stage("location_ok", len(_funnel_set))
         from intelligence.pool_builder import is_stale as _is_stale
         _funnel_fresh = egypt_funnel.geo_keys(
             [job for job in filtered if not _is_stale(job)]
         )
-        for _key, _geo in _funnel_discovered.items():
-            if _key in _funnel_location_ok and _key not in _funnel_fresh:
-                _egypt_funnel.funnel_for(_geo).record_drop(_key, "recency")
-            elif _key in _funnel_fresh:
-                _egypt_funnel.funnel_for(_geo).record_stage(_key, "fresh")
+        for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(_funnel_fresh).items():
+            _egypt_funnel.funnel_for(_funnel_geo).set_stage("fresh", len(_funnel_set))
         log.info(
             "🔍 Cyber verdict stage: confirmed=%d likely=%d non_cyber=%d candidates=%d",
             len(confirmed), len(likely), len(non_cyber), cyber_candidates,
@@ -1417,11 +1411,8 @@ def main():
         # v74: new-job stage — exact-identity dedup drop, no double count
         # (a job was either new, duplicate, or already dropped earlier).
         _funnel_new = egypt_funnel.geo_keys(new_jobs)
-        for _key, _geo in _funnel_discovered.items():
-            if _key in _funnel_fresh and _key not in _funnel_new:
-                _egypt_funnel.funnel_for(_geo).record_drop(_key, "dedup_or_already_seen")
-            elif _key in _funnel_new:
-                _egypt_funnel.funnel_for(_geo).record_stage(_key, "new_job")
+        for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(_funnel_new).items():
+            _egypt_funnel.funnel_for(_funnel_geo).set_stage("new_job", len(_funnel_set))
 
         stats["new"] = len(new_jobs)
         log.info(f"✨ New jobs: {stats['new']}")
@@ -1484,11 +1475,8 @@ def main():
             final_pool = _build_final_pool(new_jobs, telemetry=pool_telemetry)
             # v74: pool stage — dropped by fresh-first scoring/threshold/capacity.
             _funnel_pool = egypt_funnel.geo_keys(final_pool)
-            for _key, _geo in _funnel_discovered.items():
-                if _key in _funnel_new and _key not in _funnel_pool:
-                    _egypt_funnel.funnel_for(_geo).record_drop(_key, "pool_selection")
-                elif _key in _funnel_pool:
-                    _egypt_funnel.funnel_for(_geo).record_stage(_key, "in_pool")
+            for _funnel_geo, _funnel_set in egypt_funnel.stage_keys(_funnel_pool).items():
+                _egypt_funnel.funnel_for(_funnel_geo).set_stage("in_pool", len(_funnel_set))
             log.info(
                 "🚫 Pool selection rejection reasons: %s",
                 " ".join(
@@ -1553,27 +1541,29 @@ def main():
                     stats["sent"] = sent_count
                     stats["hiring_signals_sent"] = hiring_signals_sent
                     log.info(f"✅ Total sent: {sent_count}")
-                    # v74: routed = pairs matched to Egypt/Arab channels in the
-                    # send loop (sent or proof-skipped); sent = actually posted.
-                    _funnel_egypt_routed = {
-                        key for job, _lane, ch_key in sent_records
-                        if ch_key == "egypt"
-                        for key in (getattr(job, "dedup_key", "") or "",)
-                    }
-                    for _key, _geo in _funnel_discovered.items():
-                        if _key in _funnel_pool:
-                            if _key in _funnel_egypt_routed:
-                                _egypt_funnel.funnel_for(_geo).record_stage(_key, "routed")
-                            else:
-                                _egypt_funnel.funnel_for(_geo).record_drop(_key, "unrouted")
-                    _funnel_egypt_sent = {
-                        getattr(job, "dedup_key", "") for job, _lane, _ch in sent_records
-                        if _ch == "egypt" and getattr(job, "dedup_key", "") in _funnel_egypt_routed
-                    }
-                    for _key in _funnel_egypt_sent:
-                        _egypt_funnel.egypt.record_stage(_key, "sent")
-                    for _key in _funnel_egypt_routed - _funnel_egypt_sent:
-                        _egypt_funnel.egypt.record_drop(_key, "not_sent")
+                    # v75: routed/sent = REAL counts from the send loop.
+                    # sent_records ONLY contains actually-posted pairs
+                    # (proof-skips continue without appending, so prior-run
+                    # sends are never double counted here).
+                    # routed = posted-or-conflict-skipped in this run; since
+                    # conflicts are skipped silently, routed = posted this run
+                    # and any pool→routed gap is attributed to unrouted.
+                    def _geo_for_send(job: Any) -> str:
+                        _g = classify_delivery_geo(job)
+                        return "egypt" if _g == egypt_funnel.EGYPT_GEO else (
+                            "arab" if _g == egypt_funnel.ARAB_GEO else "")
+                    _v75_by_geo: dict[str, int] = {"egypt": 0, "arab": 0}
+                    for _job, _lane, _ch in sent_records:
+                        _g = _geo_for_send(_job)
+                        if _g:
+                            _v75_by_geo[_g] += 1
+                    _v75_pool_by_geo = egypt_funnel.stage_keys(_funnel_pool)
+                    for _funnel_geo in ("egypt", "arab"):
+                        _f = _egypt_funnel.funnel_for(_funnel_geo)
+                        _pool_geo_set = _v75_pool_by_geo.get(_funnel_geo, set())
+                        _f.set_stage("delivery_eligible", len(_pool_geo_set))
+                        _f.set_stage("routed", _v75_by_geo.get(_funnel_geo, 0))
+                        _f.set_stage("sent", _v75_by_geo.get(_funnel_geo, 0))
                     _log_v72_signal_summary(verified_signal_jobs, hiring_signals)
 
             else:
