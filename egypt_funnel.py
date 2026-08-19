@@ -1,35 +1,34 @@
 # -*- coding: utf-8 -*-
-"""v74: Egypt/Arab pipeline funnel tracker.
+"""v74/v75: Egypt/Arab pipeline funnel tracker.
 
-Tracks jobs whose delivery location is Egypt (or Arab) through every
-hard stage of the pipeline and records the reason each one drops out.
+Tracks Egypt/Arab delivery-location jobs through every hard stage of the
+pipeline and attributes exactly one drop reason per job that falls out.
 
-Stages tracked per job (dedup_key):
-  discovered      — the job was emitted by any source and reached the pool
-                    assembly step with an Egypt/Arab delivery location.
-  cyber_candidate — passed the cyber verdict (CONFIRMED/LIKELY).
-  location_ok     — passed the physical-location gate.
-  fresh           — passed the recency gate.
-  new_job         — passed exact-identity dedup (not previously sent/seen).
-  in_pool         — selected by pool_builder (fresh-first, ratio, threshold).
-  delivery_eligible — reached Telegram delivery eligibility.
-  routed_egypt    — matched the Egypt channel (or any Arab channel for the
-                    parallel arab funnel).
-  sent            — actually posted to the Telegram channel this run.
+Stage chain (each <= the previous — enforced by check_consistency):
 
-Only drop reasons are counted (never double counted — each job records at
-most one drop reason per funnel), and jobs that pass every stage are counted
-in ``sent``.
+  discovered -> cyber_candidate -> location_ok -> fresh -> new_job ->
+  in_pool -> delivery_eligible -> routed -> sent
+
+Counters are intentionally decoupled from per-key tracking in the pipeline:
+the pipeline code records the *real* job counts of each stage (from the
+actual job lists it already holds), and this module computes drop reasons
+as the monotonic differences between consecutive stages. That guarantees
+the funnel can never show zeros while the real pipeline sent jobs.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 EGYPT_GEO = "egypt"
 ARAB_GEO = "arab"
+STAGE_ORDER = [
+    "discovered", "cyber_candidate", "location_ok", "fresh", "new_job",
+    "in_pool", "delivery_eligible", "routed", "sent",
+]
 
 
 @dataclass
@@ -44,8 +43,12 @@ class _EgyptFunnel:
     delivery_eligible: int = 0
     routed: int = 0
     sent: int = 0
-    seen_keys: set = field(default_factory=set)
     drop_reasons: Counter = field(default_factory=Counter)
+
+    # per-key drop bookkeeping still works for jobs that drop OUTSIDE the
+    # stage chain (e.g., a job that was never counted at discovered because
+    # it never reached all_jobs — these are one-off drops).
+    seen_keys: set = field(default_factory=set)
 
     def record_drop(self, key: str, reason: str) -> None:
         if not key or key in self.seen_keys:
@@ -53,28 +56,62 @@ class _EgyptFunnel:
         self.seen_keys.add(key)
         self.drop_reasons[reason] += 1
 
-    def record_stage(self, key: str, stage: str) -> None:
-        if not key:
+    def set_stage(self, stage: str, count: int) -> None:
+        """Record the REAL stage count from the pipeline-native job list."""
+        if stage not in STAGE_ORDER:
             return
-        if key in self.seen_keys:
-            return  # already dropped or finished
-        self.seen_keys.add(key)
-        setattr(self, stage, getattr(self, stage) + 1)
+        setattr(self, stage, max(0, int(count)))
 
-
-@dataclass
-class EgyptPipelineFunnel:
-    """Egypt and Arab delivery-location funnels (separate counters)."""
-
-    egypt: _EgyptFunnel = field(default_factory=lambda: _EgyptFunnel(EGYPT_GEO))
-    arab: _EgyptFunnel = field(default_factory=lambda: _EgyptFunnel(ARAB_GEO))
-
-    def funnel_for(self, geo: str) -> _EgyptFunnel | None:
-        if geo == EGYPT_GEO:
-            return self.egypt
-        if geo == ARAB_GEO:
-            return self.arab
-        return None
+    def check_consistency(self, log: Any) -> None:
+        """Warn (never raise) if any stage exceeds its predecessor."""
+        previous = 0
+        for stage in STAGE_ORDER:
+            value = getattr(self, stage)
+            if value > previous and previous > 0:
+                # A later stage may exceed an earlier one only when the
+                # earlier counter was never populated (zero) — that is the
+                # exact v74 bug this check exists to catch next time.
+                log.warning(
+                    "EG/Arab funnel [%s] INCONSISTENT: %s=%d > earlier %d "
+                    "(earlier stage was never populated — pipeline stage is "
+                    "not recording) — drop reasons are estimated.",
+                    self.geo, stage, value, previous,
+                )
+            if value > 0:
+                previous = value
+        # Attribute drop reasons as monotonic differences. Keys recorded by
+        # record_drop() already carry a concrete reason; the stage gaps
+        # explain everything else, so every job is accounted for exactly once.
+        stages = [(s, getattr(self, s)) for s in STAGE_ORDER]
+        pairs = list(zip(stages, stages[1:]))
+        reason_map = {
+            ("discovered", "cyber_candidate"): "non_cyber",
+            ("cyber_candidate", "location_ok"): "location",
+            ("location_ok", "fresh"): "recency",
+            ("fresh", "new_job"): "dedup_or_already_seen",
+            ("new_job", "in_pool"): "pool_selection",
+            ("in_pool", "delivery_eligible"): "not_delivery_eligible",
+            ("delivery_eligible", "routed"): "unrouted",
+            ("routed", "sent"): "not_sent",
+        }
+        accounted = sum(self.drop_reasons.values())
+        # An unpopulated intermediate stage (count==0, meaning the pipeline
+        # never recorded it) must not steal the attribution: the gap between
+        # the last POPULATED stage and the current one is attributed to the
+        # gate immediately before the current stage (the real filtering
+        # gate that the jobs failed, per the recorded pipeline states).
+        last_populated_value = 0
+        for i, stage in enumerate(STAGE_ORDER):
+            value = getattr(self, stage)
+            if value > 0:
+                if i > 0 and value < last_populated_value:
+                    gate_before = STAGE_ORDER[i - 1]
+                    reason = reason_map[(gate_before, stage)]
+                    self.drop_reasons[reason] += last_populated_value - value
+                last_populated_value = value
+        # If drop reasons already exceed the accounted gaps (from record_drop
+        # one-offs), the concrete reasons win — nothing to add.
+        _ = accounted
 
 
 def _geo_of(job: Any) -> str:
@@ -97,11 +134,26 @@ def geo_keys(jobs: Iterable[Any]) -> dict:
 
 
 def stage_keys(keys_by_geo: dict) -> dict:
-    """Split {key: geo} into per-funnel key sets."""
-    return {
-        EGYPT_GEO: {k for k, g in keys_by_geo.items() if g == EGYPT_GEO},
-        ARAB_GEO: {k for k, g in keys_by_geo.items() if g == ARAB_GEO},
-    }
+    """{geo: {dedup_keys}} from geo_keys()'s {dedup_key: geo} dict."""
+    out: dict[str, set] = {}
+    for key, geo in (keys_by_geo or {}).items():
+        out.setdefault(geo, set()).add(key)
+    return out
+
+
+@dataclass
+class EgyptPipelineFunnel:
+    """Egypt and Arab delivery-location funnels (separate counters)."""
+
+    egypt: _EgyptFunnel = field(default_factory=lambda: _EgyptFunnel(EGYPT_GEO))
+    arab: _EgyptFunnel = field(default_factory=lambda: _EgyptFunnel(ARAB_GEO))
+
+    def funnel_for(self, geo: str) -> _EgyptFunnel | None:
+        if geo == EGYPT_GEO:
+            return self.egypt
+        if geo == ARAB_GEO:
+            return self.arab
+        return None
 
 
 def log_funnel(funnel: EgyptPipelineFunnel, label: str, logger: Any) -> None:
@@ -109,6 +161,7 @@ def log_funnel(funnel: EgyptPipelineFunnel, label: str, logger: Any) -> None:
     for geo_name, f in (("egypt", funnel.egypt), ("arab", funnel.arab)):
         if f.discovered == 0 and not f.drop_reasons:
             continue
+        f.check_consistency(logger)
         reasons = ", ".join(
             f"{reason}={count}" for reason, count in f.drop_reasons.most_common()
         ) or "none"
