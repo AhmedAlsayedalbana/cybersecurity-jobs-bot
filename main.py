@@ -1252,11 +1252,9 @@ def main():
     proxy_status = get_proxy_status()
     db.save_source_stats(stats["sources"])
     # v74: log Egypt/Arab funnels once per run (after send so sent counts).
-    try:
-        from egypt_funnel import log_funnel as _log_egypt_funnel
-        _log_egypt_funnel(_egypt_funnel, "EG/Arab funnel", log)
-    except Exception as _exc:  # funnel telemetry never breaks the run
-        log.warning("EG/Arab funnel log failed: %s", _exc)
+    # The funnel object is created inside the filtering block (below); log it
+    # there instead of here so it can never reference an unbound variable
+    # when the run skips or errors out of the filtering phase.
     db.save_proxy_stats(proxy_status)
     if proxy_status.get("total", 0) > 0:
         log.info(
@@ -1273,7 +1271,7 @@ def main():
         # through every hard stage and records a single drop reason when it
         # falls out, so the Egypt delivery gap is always attributable.
         _egypt_funnel = egypt_funnel.EgyptPipelineFunnel()
-        _funnel_discovered = egypt_funnel.geo_keys(all_jobs)
+        _funnel_discovered = egypt_funnel.geo_keys(all_jobs)  # noqa: F841
         for _key, _geo in _funnel_discovered.items():
             _egypt_funnel.funnel_for(_geo).record_stage(_key, "discovered")
         filtering_started = time.monotonic()
@@ -1311,8 +1309,9 @@ def main():
                 _egypt_funnel.funnel_for(_geo).record_drop(_key, "location")
             elif _key in _funnel_location_ok:
                 _egypt_funnel.funnel_for(_geo).record_stage(_key, "location_ok")
+        from intelligence.pool_builder import is_stale as _is_stale
         _funnel_fresh = egypt_funnel.geo_keys(
-            [job for job in filtered if not _is_stale_job(job)]
+            [job for job in filtered if not _is_stale(job)]
         )
         for _key, _geo in _funnel_discovered.items():
             if _key in _funnel_location_ok and _key not in _funnel_fresh:
@@ -1560,6 +1559,15 @@ def main():
             else:
                 log.info("ℹ️ No qualifying jobs this run.")
                 sent_records = []
+
+            # v74: final funnel log — always after the send loop so routed/sent
+            # counters are complete; guarded so telemetry never breaks delivery.
+            if not config.DRY_RUN:
+                try:
+                    from egypt_funnel import log_funnel as _log_egypt_funnel
+                    _log_egypt_funnel(_egypt_funnel, "EG/Arab funnel", log)
+                except Exception as _exc:
+                    log.warning("EG/Arab funnel log failed: %s", _exc)
 
             # v72: hidden-jobs discovery telemetry (reset per run).
             _log_v72_signal_summary(None, None)
