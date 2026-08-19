@@ -287,21 +287,47 @@ def test_opportunity_block_format_matches_requested_card():
     block = format_opportunity_block(compute_opportunity_score(job))
     assert "OPPORTUNITY SCORE:" in block
     assert "Why prioritized:" in block
-    assert "Cyber relevance:" in block
-    assert "Freshness:" in block
-    assert "Location fit:" in block
-    assert "Employer signal:" in block
-    assert "Competition:" in block
-    assert "Skill match:" in block
+    assert "│ Cyber relevance" in block
+    assert "│ Freshness" in block
+    assert "│ Location fit" in block
+    assert "│ Employer signal" in block
+    assert "│ Competition" in block
+    assert "│ Skill match" in block
     assert "✓" in block
+    # v74 alignment rule: every factor row carries a numeric score — the
+    # block never renders mixed check-mark rows that break column alignment.
+    for label in ("Freshness", "Cyber relevance", "Seniority fit",
+                  "Source confidence", "Remote access"):
+        assert f"│ {label}" in block, label
+    # Each row's value is bold, which keeps the score column visually
+    # anchored regardless of the Telegram font used.
+    for line in block.splitlines():
+        if line.startswith("│"):
+            assert "<b>" in line and "</b>" in line, line
 
 
-def test_job_card_includes_opportunity_block():
+def test_job_card_default_is_clean_without_score_block():
+    """v74: the default card must stay short — header to apply link only.
+    The Opportunity Score block is OFF by default (config change)."""
     from telegram_sender import format_job_message
 
     job = _job("Security Engineer", company="F5", location="Cairo, Egypt",
                description="firewall vpn waf security architecture",
                tags=["ml_prob:0.92"])
     card = format_job_message(job)
+    assert "OPPORTUNITY SCORE:" not in card
+    assert "Apply Now" in card or "Source: <b>LinkedIn</b>" in card
+
+
+def test_job_card_shows_score_block_only_when_explicitly_enabled():
+    """v74: when the env flag is switched back on, the block reappears."""
+    from unittest import mock
+    from telegram_sender import format_job_message
+
+    job = _job("Security Engineer", company="F5", location="Cairo, Egypt",
+               description="firewall vpn waf security architecture",
+               tags=["ml_prob:0.92"])
+    with mock.patch("config.OPPORTUNITY_SCORE_ENABLED", True):
+        card = format_job_message(job)
     assert "OPPORTUNITY SCORE:" in card
     assert "Why prioritized:" in card
