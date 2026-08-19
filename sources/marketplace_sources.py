@@ -58,6 +58,10 @@ class SourceResult:
     transport: str = "direct"  # direct | jina | none
     error_code: str = ""
     attempted_urls: tuple[str, ...] = ()
+    # v74: which fallback ladder steps were attempted for auditing the rescue
+    # path of failing sources (direct | embedded_json | jina | jina_alt_endpoint |
+    # alt_endpoint | browser | jina_search).
+    ladder_steps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
