@@ -642,7 +642,11 @@ HIRING_SIGNAL_DEDUP_HOURS = int(os.getenv("HIRING_SIGNAL_DEDUP_HOURS", "168"))
 # v72: Personal Opportunity Score — per-job 0-100 composite with per-factor
 # breakdown rendered on the delivery card.  Ranking-layer only; it never
 # relaxes any gate.
-OPPORTUNITY_SCORE_ENABLED = _env_bool("OPPORTUNITY_SCORE_ENABLED", True)
+# v74: user asked to remove the block from the card, so the DEFAULT is now
+# False.  The score is still computed internally for pool ranking when
+# enabled via env; the card stays short: header → title → employer →
+# location → posted → level → skills → source → apply link.
+OPPORTUNITY_SCORE_ENABLED = _env_bool("OPPORTUNITY_SCORE_ENABLED", False)
 MIN_POOL_SIZE = int(os.getenv("MIN_POOL_SIZE", "5"))
 REQUEST_TIMEOUT  = 10
 SEED_MODE_ENV    = "SEED_MODE"
