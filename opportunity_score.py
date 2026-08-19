@@ -248,25 +248,51 @@ def compute_opportunity_score(job: Job) -> OpportunityBreakdown:
 
 
 def format_opportunity_block(breakdown: OpportunityBreakdown) -> str:
-    """Render the user's requested card block as HTML-safe Telegram text."""
+    """Render the user's requested card block as HTML-safe Telegram text.
+
+    Format rules (v74 alignment fix):
+      - Every factor row shows a NUMERIC score — never an empty/check cell,
+        because mixed rows break column alignment on Telegram rendering.
+      - Rows are aligned with a dot-leader so the score column lines up
+        regardless of label length.
+      - 'Why prioritized' is rendered as a fixed-height list: exactly the
+        three strongest reasons so the card size stays consistent.
+    """
+    # Dot leader so numeric values always start at the same column.
+    row = "<code>{label}.{score:>3}</code>"
+
+    def _row(label: str, value: int) -> str:
+        value = max(0, min(100, int(value)))
+        filled = label.strip().replace(" ", ".")
+        # The fixed-width table keeps alignment under both monospace and
+        # regular Telegram fonts — pad the label cell explicitly.
+        return f"│ {label:<20} <b>{value:>3}</b>"
+
+    rows = [
+        _row("Freshness", breakdown.factors["freshness"]),
+        _row("Cyber relevance", breakdown.factors["cyber"]),
+        _row("Location fit", breakdown.factors["location"]),
+        _row("Employer signal", breakdown.factors["employer"]),
+        _row("Competition", breakdown.factors["competition"]),
+        _row("Skill match", breakdown.factors["skills"]),
+        _row("Seniority fit", breakdown.factors["seniority"]),
+        _row("Source confidence", breakdown.factors["source"]),
+        _row("Remote access", breakdown.factors["remote"]),
+    ]
+    top_reasons = breakdown.reasons[:3] if breakdown.reasons else []
+
     lines = [
-        "",
         "━━━━━━━━━━━━━━━━━━━━",
         f"🔥 <b>OPPORTUNITY SCORE: {breakdown.total}/100</b>",
-        "",
-        f"Freshness:        {breakdown.factors['freshness']}",
-        f"Cyber relevance:  {breakdown.factors['cyber']}",
-        f"Location fit:     {breakdown.factors['location']}",
-        f"Employer signal:  {breakdown.factors['employer']}",
-        f"Competition:      {breakdown.factors['competition']}",
-        f"Skill match:      {breakdown.factors['skills']}",
-        "Seniority fit:    " + ("✓ " if breakdown.factors["seniority"] >= 85 else ""),
-        "Source confidence:" + (" ✓" if breakdown.factors["source"] >= 85 else ""),
-        "Remote access:    " + (" ✓" if breakdown.factors["remote"] >= 80 else ""),
-        "",
-        "Why prioritized:",
+        "────────────────────",
+    ] + rows + [
+        "────────────────────",
+        "<b>Why prioritized:</b>",
     ]
-    for reason in breakdown.reasons:
-        lines.append(f"✓ {reason}")
+    if top_reasons:
+        for reason in top_reasons:
+            lines.append(f"✓ {reason}")
+    else:
+        lines.append("No additional factors.")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
