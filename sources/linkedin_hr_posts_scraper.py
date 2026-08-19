@@ -69,6 +69,11 @@ _backend_parked: set[str] = set()
 # current cooldown window — the set is cleared once the window expires, at
 # which point another single forced recheck is permitted.
 _backend_forced_this_cooldown: set[str] = set()
+# v75: backends that already spent their one forced recheck during the
+# entire RUN (not just the cooldown window). A backend that came back
+# empty from a forced recheck proved it has nothing this run — re-hitting
+# it in a later window advances nothing and burns the HR budget.
+_backend_forced_this_run: set[str] = set()
 _cse_backoff_until = 0.0
 _cse_backoff_count = 0
 
@@ -118,6 +123,9 @@ def _mark_backend_hit(backend: str) -> None:
     # v69: a hit clears the forced-recheck bookkeeping so the backend
     # returns to the normal rotation with its single-forced-recheck quota.
     _backend_forced_this_cooldown.discard(backend)
+    # v75: a hit also clears the run-level forced-recheck lock — a backend
+    # that proves alive again earns back its stall-relaxation eligibility.
+    _backend_forced_this_run.discard(backend)
 
 
 def _is_backend_warm(backend: str) -> bool:
@@ -554,10 +562,18 @@ def _search_via_google_cse(query: str) -> list[tuple[str, str]]:
         # v65: transient backoff instead of a run-wide ban (default 15s
         # growing to 120s with consecutive failures).  The request layer
         # already caps each attempt to the remaining HR budget.
+        # v75: the run-start credential validation already confirmed the
+        # key; a mid-run request failure means quota/rate-limit or a key
+        # outage — continuing to retry the same dead endpoint every query
+        # just burns the HR budget, so CSE is parked for the remainder of
+        # the run (like every other capped backend) instead of backoff-only.
         _set_cse_backoff(0.0)
+        _backend_parked.add("google_cse")
         log.warning(
-            "LinkedIn HR Posts: Google CSE request failed; backed off for "
-            "up to 120s — remaining queries will retry after the window.",
+            "LinkedIn HR Posts: Google CSE request failed; parked for the "
+            "remainder of the run — the run-start key validation already "
+            "confirmed the credential, so retrying the same failing "
+            "endpoint per query advances nothing (resumes at the next run).",
         )
         return []
     out: list[tuple[str, str]] = []
@@ -705,7 +721,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         # genuinely empty responses; a backend whose cooldown came from a
         # short transient failure (CSE) is not rechecked — re-hitting a
         # known-failing API endpoint advances nothing.
-        eligible = [b for b in living if b in _backend_empty_cooldown and b not in _backend_parked]
+        eligible = [b for b in living if b in _backend_empty_cooldown and b not in _backend_parked and b not in _backend_forced_this_run]
         # v66: backends parked by the streak cap are out of the run entirely
         # — neither warm nor forceable. If the only empty-cooldown backends
         # are parked, the query plan returns what it collected so far and
@@ -749,6 +765,14 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                 # a repeatedly empty backend.
                 _mark_backend_empty(relaxed)
                 _increment_counter("search_backend_empty", relaxed)
+                # v75: a forced recheck that comes back empty proves the
+                # backend has nothing this run — it may be forced at most
+                # once per RUN (per window was the v69 cap), so lock it for
+                # the remainder of the run and free the HR budget for the
+                # surviving backends. CSE keeps its own bounded backoff and
+                # is exempt from the run-level cap.
+                if relaxed != "google_cse":
+                    _backend_forced_this_run.add(relaxed)
     return []
 
 
