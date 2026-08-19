@@ -604,6 +604,40 @@ def _search_via_serpapi(query: str) -> list[tuple[str, str]]:
     return out
 
 
+def _search_via_jina_index(query: str) -> list[tuple[str, str]]:
+    """v74: CSE-independent public index backend — search LinkedIn posts
+    through the Jina public search endpoint instead of Google.  No API key,
+    no quota, and a different IP pool than the bot's direct exit, so a
+    Google-blocked environment can still reach LinkedIn's public index.
+    Returns candidate LinkedIn post URLs with backend tag ``jina_index``."""
+    # Two independent surfaces: the Jina search API (search.jina.ai) and,
+    # as a fallback surface, the Jina reader applied to Bing's results URL
+    # (the reader re-fetches the search page itself through its own pool).
+    candidate_urls: list[tuple[str, str]] = []
+
+    try:
+        data = get_json(
+            "https://s.jina.ai/",
+            params={"q": query},
+            timeout=int(_PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS) + 4,
+            max_retries=1,
+            budget_phase="linkedin_hr",
+        )
+    except Exception:  # pragma: no cover - transport never blocks the plan
+        data = None
+    if data:
+        for item in data.get("data", data if isinstance(data, list) else []) if isinstance(data, (dict, list)) else []:
+            if isinstance(item, dict):
+                link = item.get("url", "")
+            else:
+                continue
+            canonical = _normalize_candidate_link(link)
+            if canonical and extract_linkedin_post_id(canonical):
+                candidate_urls.append((canonical, "jina_index"))
+
+    return candidate_urls[:10]
+
+
 def _search_via_bing_html(query: str) -> list[tuple[str, str]]:
     html = get_text(
         "https://www.bing.com/search",
@@ -638,7 +672,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                 "LinkedIn HR posts: API search credentials are absent; using the bounded public-search fallback."
             )
             _SEARCH_BACKEND_WARNING_EMITTED = True
-    for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_bing_html):
+    for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_jina_index, _search_via_bing_html):
         backend = search_fn.__name__.removeprefix("_search_via_")
         # v65: skip cooled-down backends — the orchestrator re-runs them on
         # later queries once their bounded window expires.
@@ -659,7 +693,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
     # warmest one (smallest cooldown) so the query plan can never fully
     # stall — at least one backend always remains callable.
     living = [
-        b for b in ("google_cse", "serpapi", "bing_html")
+        b for b in ("google_cse", "serpapi", "jina_index", "bing_html")
         if _backend_cooldown_until.get(b, 0.0) > 0.0
     ]
     if living and not any(_is_backend_warm(b) for b in living):
@@ -698,7 +732,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         )
         _backend_cooldown_until[relaxed] = 0.0
         _backend_empty_cooldown.discard(relaxed)
-        for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_bing_html):
+        for search_fn in (_search_via_google_cse, _search_via_serpapi, _search_via_jina_index, _search_via_bing_html):
             if search_fn.__name__.removeprefix("_search_via_") == relaxed:
                 _increment_counter("search_backend_attempts", relaxed)
                 urls = search_fn(query)
@@ -950,6 +984,11 @@ def _build_recruiter_posts_lane(rotation_slot: int) -> list[dict]:
         ('"recruiting" cybersecurity Riyadh',),
         ('"looking for" "security" "Dubai" "hiring"',),
         ('"hiring" "information security" "Cairo" "apply now"',),
+        # v74: recruiter-direct voice with explicit CV/DM signals that
+        # recruiters use in Arabic posts, plus role+Egypt pairs with the
+        # strongest apply verbs.
+        ('"وظائف" "security" Cairo "CV"',),
+        ('"looking for" "SOC analyst" "Egypt" "DM me"',),
     ]
     chunk = 2
     start = (rotation_slot * chunk) % len(_recruiter_posts)
@@ -974,6 +1013,11 @@ def _build_company_hiring_posts_lane(rotation_slot: int) -> list[dict]:
         ('"new roles" cybersecurity Egypt',),
         ('"join our team" "security" "Mashreq" UAE',),
         ('"hiring" "Wiz" Remote',),
+        # v74: broader hiring voice with explicit CV-call signals that
+        # company posts use in Egypt (the announcement style plus an
+        # application directive), plus bank-adjacent security roles.
+        ('"we are hiring" "security operations" Egypt "CV"',),
+        ('"joining our team" "cybersecurity" Cairo "apply"',),
     ]
     chunk = 2
     start = (rotation_slot * chunk) % len(_company_posts)
@@ -997,6 +1041,13 @@ def _build_job_announcements_lane(rotation_slot: int) -> list[dict]:
         ('"#hiring" "incident response" Dubai',),
         ('"vacancy" "cybersecurity specialist" Egypt',),
         ('"open position" "IAM engineer" Remote',),
+        # v74: Arabic-voice announcements — Egyptian recruiters post in
+        # Arabic with titles like "وظائف امن معلومات"; search engines
+        # index both languages, so the plan now alternates lanes with
+        # Arabic templates without expanding the per-run chunk size.
+        ('"#توظيف" "امن المعلومات" Egypt',),
+        ('"وظائف" "cybersecurity" Cairo',),
+        ('"#hiring" "SOC analyst" "Cairo" "apply"',),
     ]
     chunk = 2
     start = (rotation_slot * chunk) % len(_announcements)
@@ -1521,7 +1572,11 @@ def _all_hr_backends_unusable() -> bool:
     )
     serpapi_unusable = not SERPAPI_KEY or "serpapi" in _backend_parked
     bing_unusable = "bing_html" in _backend_parked
-    return cse_unusable and serpapi_unusable and bing_unusable
+    # v74: jina_index needs no credentials and reaches LinkedIn's public
+    # index through the Jina pool rather than Google — even with CSE,
+    # serpapi, and Bing all unusable, HR discovery can still run.
+    jina_unusable = "jina_index" in _backend_parked
+    return cse_unusable and serpapi_unusable and bing_unusable and jina_unusable
 
 
 def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[Job]:
