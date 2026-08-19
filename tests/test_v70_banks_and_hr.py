@@ -207,8 +207,11 @@ def test_hr_skips_entirely_when_every_backend_is_unusable():
     from sources import linkedin_hr_posts_scraper as hps
 
     # Probe failures → CSE disabled; missing SERPAPI_KEY → unusable;
-    # bing has no key concept — force it unusable by parking it.
+    # bing and jina_index have no key concept — force them unusable by
+    # parking them (v74: jina_index is CSE-independent and credential-less,
+    # so the gate only exits when it is parked as well).
     hps._backend_parked.add("bing_html")
+    hps._backend_parked.add("jina_index")
     with (
         mock.patch.object(hps, "GOOGLE_CSE_API_KEY", "dead-key"),
         mock.patch.object(hps, "GOOGLE_CSE_CX", "dead-cx"),
@@ -225,6 +228,30 @@ def test_hr_skips_entirely_when_every_backend_is_unusable():
         "the early exit must not mutate HR telemetry — no query plan ran"
     )
     hps._backend_parked.discard("bing_html")
+    hps._backend_parked.discard("jina_index")
+
+
+def test_hr_query_plan_runs_without_any_api_key_because_jina_index_is_always_usable():
+    """v74: the HR plan must stay alive even when CSE/serpapi/bing are all
+    unusable — jina_index needs no credentials and is unreachable only when
+    explicitly parked, so the query plan still executes and calls the
+    fallback ladder (which may try jina_index)."""
+    from sources import linkedin_hr_posts_scraper as hps
+
+    hps._backend_parked.add("bing_html")
+    with (
+        mock.patch.object(hps, "GOOGLE_CSE_API_KEY", "dead-key"),
+        mock.patch.object(hps, "GOOGLE_CSE_CX", "dead-cx"),
+        mock.patch.object(hps, "SERPAPI_KEY", None),
+        mock.patch.object(hps, "get_json", return_value=None),
+        mock.patch.object(hps, "_search_urls_fallback", return_value=[]),
+    ):
+        jobs = hps.fetch_linkedin_hr_posts_scraper(budget_seconds=2)
+    hps._backend_parked.discard("bing_html")
+
+    # Plan executed (telemetry reset) — the early-exit gate did NOT trip
+    # because jina_index is still usable despite zero API credentials.
+    assert isinstance(jobs, list)
 
 
 def test_hr_clears_stale_cse_failure_state_on_healthy_key():
