@@ -53,6 +53,9 @@ def _reset_module_state() -> None:
     hr._backend_empty_cooldown.clear()
     hr._backend_empty_streak.clear()
     hr._SEARCH_BACKEND_WARNING_EMITTED = False
+    hr._backend_forced_this_cooldown.clear()
+    hr._backend_forced_this_run.clear()
+    hr._backend_parked.clear()
 
 
 def test_hr_backends_use_a_dedicated_budget_phase():
@@ -104,32 +107,20 @@ def test_cse_failure_is_transistent_backoff_not_a_run_wide_ban():
         get_json.side_effect = RuntimeError("must not be called during backoff")
         assert hr._search_via_google_cse("iam hiring") == []
 
-    # After the window expires, CSE returns to the rotation automatically —
-    # even while _GOOGLE_CSE_DISABLED flag is still technically True.
-    hr._GOOGLE_CSE_DISABLED = True
-    hr._cse_backoff_until = time.time() - 1.0
-    # Backoff expiry must also release the shared cooldown map entry — the
-    # orchestrator's warm check reads the same map, otherwise CSE would
-    # stay skipped forever even after its own backoff expired.
-    hr._backend_cooldown_until.pop("google_cse", None)
-    call_made = False
-
-    def _succeed(url, **kw):
-        nonlocal call_made
-        call_made = True
-        return {"items": [{"link": "https://www.linkedin.com/posts/jane-doe-123456_activity-6978573042819072000-xYz"}]}
-
-    with mock.patch.object(hr, "GOOGLE_CSE_API_KEY", "fake-key"), \
-         mock.patch.object(hr, "GOOGLE_CSE_CX", "fake-cx"), \
-         mock.patch.object(hr, "get_json", side_effect=_succeed):
-        urls = hr._search_via_google_cse("soc analyst cairo")
-    assert call_made, "CSE must retry after backoff expiry"
-    assert len(urls) == 1 and urls[0][1] == "google_cse"
-    assert hr._cse_backoff_until == 0.0, "a healthy response clears the backoff"
-    assert hr._GOOGLE_CSE_DISABLED is False
-
-    # A healthy response restores the shared cooldown map too.
-    assert hr._backend_cooldown_until.get("google_cse", 0.0) == 0.0
+    # v75 contract: the run-start validation already confirmed the key,
+    # so a mid-run failure means quota/outage — CSE is PARKED for the run
+    # instead of silently backoff-retrying the same dead endpoint per query.
+    assert "google_cse" in hr._backend_parked, (
+        "mid-run CSE failure must park the backend for the run"
+    )
+    # Parked backends are excluded from the orchestrator's unusability
+    # check and the warm check, so subsequent queries skip CSE without any
+    # HTTP call — exactly the "do not burn budget on a dead credential"
+    # behavior the run logs demanded.
+    assert not hr._is_backend_warm("google_cse")
+    assert hr._all_hr_backends_unusable() is False, (
+        "jina_index (credential-free) keeps the query plan alive without CSE"
+    )
 
 
 def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
@@ -160,17 +151,18 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
             f"{backend} should be cooled down after empty streak"
         )
 
-    # But the NEXT query must still make at least one real HTTP call: the
-    # stall-relaxation path forces the warmest cooled backend open.
-    call_counts = {"google_cse": 0, "serpapi": 0, "bing_html": 0}
-
-    # v65: the orchestrator routes by function __name__, so the wrappers
-    # must preserve the original names — a plain side_effect mock has no
-    # __name__ (AttributeError), so we wrap the real functions instead.
+    # v75 contract: backends whose empty forced rechecks already happened
+    # DURING the loop above spent their single per-run forced recheck —
+    # they are locked in _backend_forced_this_run, so the final query does
+    # NOT force any backend open again. That is the point of the fix: a
+    # backend that came back empty has demonstrably nothing this run, and
+    # re-hitting it in a later window advances nothing and burns budget.
+    call_counts = {"google_cse": 0, "serpapi": 0, "bing_html": 0, "jina_index": 0}
     originals = {
         "google_cse": hr._search_via_google_cse,
         "serpapi": hr._search_via_serpapi,
         "bing_html": hr._search_via_bing_html,
+        "jina_index": hr._search_via_jina_index,
     }
 
     def _counting(name, fn):
@@ -180,31 +172,26 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
         wrapper.__name__ = fn.__name__
         return wrapper
 
-    # The relaxed backend must be the warmest one ELIGIBLE for forced
-    # rechecks — backends whose cooldown came from genuinely empty
-    # responses.  CSE's short transient-failure backoff is deliberately
-    # excluded (re-hitting a known-failing API endpoint advances nothing).
-    # Computed BEFORE the recheck: the forced call resets the relaxed
-    # backend's cooldown to a fresher value, which would flip the min.
-    warmest = min(
-        (b for b in ("google_cse", "serpapi", "bing_html")
-         if b in hr._backend_empty_cooldown),
-        key=lambda b: hr._backend_cooldown_until.get(b, 0.0),
-    )
-
     with mock.patch.object(hr, "_search_via_google_cse", new=_counting("google_cse", originals["google_cse"])), \
          mock.patch.object(hr, "_search_via_serpapi", new=_counting("serpapi", originals["serpapi"])), \
-         mock.patch.object(hr, "_search_via_bing_html", new=_counting("bing_html", originals["bing_html"])):
-        hr._search_urls_fallback("cloud security hiring")
-
-    # At least the relaxed backend got one forced recheck call.
-    total_forced = sum(call_counts.values())
-    assert total_forced >= 1, (
-        "orchestrator must force one recheck when every backend is cooled"
+         mock.patch.object(hr, "_search_via_bing_html", new=_counting("bing_html", originals["bing_html"])), \
+         mock.patch.object(hr, "_search_via_jina_index", new=_counting("jina_index", originals["jina_index"])):
+        # The query must still COMPLETE (never crash, never livelock) even
+        # when every backend is locked — the plan simply returns nothing.
+        urls = hr._search_urls_fallback("cloud security hiring")
+    assert urls == [], "a fully-locked plan returns empty, it never stalls"
+    assert not any(call_counts.values()), (
+        "no backend may be force-rechecked again after its per-run slot"
     )
-    assert call_counts[warmest] >= 1, (
-        f"the warmest backend ({warmest}) should be the one force-rechecked"
-    )
+    for backend in ("serpapi", "jina_index", "bing_html"):
+        assert backend in hr._backend_forced_this_run, (
+            f"{backend} must be locked after its empty forced recheck"
+        )
+    # google_cse is excluded from the per-run forced lock — it is a
+    # credential endpoint with its own bounded backoff, and re-hitting a
+    # known-failing API endpoint advances nothing (stall-relaxation only
+    # ever rechecks genuinely-empty backends).
+    assert "google_cse" not in hr._backend_forced_this_run
 
     # A hit must clear the cooldown so the backend returns immediately.
     _reset_module_state()
@@ -214,8 +201,10 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
     hr._backend_cooldown_until["serpapi"] = time.time() + 1000.0
     hr._backend_cooldown_until["google_cse"] = time.time() + 2000.0
     hr._backend_cooldown_until["bing_html"] = time.time() + 2000.0
+    hr._backend_cooldown_until["jina_index"] = time.time() + 2000.0
     # The warmest backend must carry the empty-cooldown flag so it is
-    # eligible for the forced recheck.
+    # eligible for the forced recheck (and must NOT already have spent its
+    # per-run forced slot).
     hr._backend_empty_cooldown.add("serpapi")
 
     # v65: mock all three backends (name-preserving wrappers) — the
