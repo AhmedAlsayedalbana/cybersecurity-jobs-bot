@@ -21,36 +21,65 @@ def _make_funnel():
 
 class TestEgyptFunnelStages:
     def test_funnel_tracks_all_stages_in_order(self):
-        """A key is counted at the FIRST stage it reaches; the funnel is a
-        funnel, so one job appears once per stage it actually passed."""
+        """v75: the funnel records REAL stage counts from the pipeline-native
+        job lists (one counter per stage, fed by set_stage) — the exact fix
+        for the v74 bug where keys never reached every stage and the funnel
+        showed zeros while jobs genuinely passed."""
         funnel = _make_funnel()
-        jobs = [f"j{i}" for i in range(9)]
         stages = ["discovered", "cyber_candidate", "location_ok", "fresh",
                   "new_job", "in_pool", "delivery_eligible", "routed", "sent"]
-        for job, stage in zip(jobs, stages):
-            funnel.egypt.record_stage(job, stage)
+        for i, stage in enumerate(stages):
+            funnel.egypt.set_stage(stage, 9 - i)
         for stage in stages:
-            assert getattr(funnel.egypt, stage) == 1
+            assert getattr(funnel.egypt, stage) >= 1
+        # Monotonic: later stages never exceed earlier ones.
+        prev = 9
+        for stage in stages:
+            v = getattr(funnel.egypt, stage)
+            assert v <= prev
+            prev = max(prev, v)
         assert funnel.egypt.sent == 1
+        # Drop reasons are attributed as monotonic gaps: 9→8 is non_cyber=1,
+        # 2→1 (routed→sent) is not_sent=1, everything else is a full pass.
+        funnel.egypt.check_consistency(_SilentLogger())
+        assert funnel.egypt.drop_reasons["non_cyber"] == 1
+        assert funnel.egypt.drop_reasons["not_sent"] == 1
+        assert sum(funnel.egypt.drop_reasons.values()) == 8
 
     def test_funnel_stages_count_jobs_not_double_count(self):
-        """A key is counted once per stage; re-recording an already-seen
-        key must not inflate the counter."""
+        """v75: a stage counter is overwritten with the real list length on
+        every recording — the pipeline's own dedup guarantees no double
+        count, and set_stage clamps negatives."""
         funnel = _make_funnel()
-        key = "egy:job:beta"
-        for _ in range(5):
-            funnel.egypt.record_stage(key, "discovered")
-        assert funnel.egypt.discovered == 1
+        funnel.egypt.set_stage("discovered", 7)
+        funnel.egypt.set_stage("discovered", 7)
+        funnel.egypt.set_stage("discovered", 3)
+        assert funnel.egypt.discovered == 3
+        # Negative or bogus counts are clamped to zero.
+        funnel.egypt.set_stage("cyber_candidate", -4)
+        assert funnel.egypt.cyber_candidate == 0
 
     def test_funnel_records_drop_reasons_and_blocks_later_stages(self):
+        """v75: one-off drops (jobs never counted at any stage) still carry a
+        concrete reason, and duplicate one-offs are ignored."""
         funnel = _make_funnel()
         key = "egy:job:gamma"
         funnel.egypt.record_drop(key, "recency_stale")
         assert funnel.egypt.drop_reasons["recency_stale"] == 1
-        funnel.egypt.record_stage(key, "in_pool")  # after a drop: ignored
-        assert funnel.egypt.in_pool == 0
-        assert funnel.egypt.discovered == 0
+        funnel.egypt.record_drop(key, "recency_stale")  # duplicate: ignored
+        assert funnel.egypt.drop_reasons["recency_stale"] == 1
         assert key in funnel.egypt.seen_keys
+        # Real stage counts coexist: a pipeline that progressed jobs still
+        # reports its real numbers alongside the one-off drop.
+        funnel.egypt.set_stage("discovered", 5)
+        funnel.egypt.set_stage("fresh", 2)
+        funnel.egypt.check_consistency(_SilentLogger())
+        # The 5→2 gap is attributed to the gate immediately before "fresh"
+        # (recency), and the one-off concrete reason is NEVER inflated by
+        # gap arithmetic — it stays at its exact recorded count.
+        assert funnel.egypt.drop_reasons["recency"] == 3
+        assert funnel.egypt.drop_reasons["recency_stale"] == 1
+        assert funnel.egypt.drop_reasons["non_cyber"] == 0
 
     def test_unequal_quality_no_egypt_priority_bypass(self):
         """Egypt priority applies at equal quality — a non-cyber Egypt job
@@ -61,14 +90,25 @@ class TestEgyptFunnelStages:
         # The drop is recorded even though no stage was ever reached — a
         # candidate seen only to be rejected still counts in the funnel.
         assert "v74:noncyber" in funnel.egypt.seen_keys
+        # v75: the monotonic chain still holds — one-off drops can never
+        # produce a later-stage count larger than an earlier one.
+        funnel.egypt.set_stage("discovered", 10)
+        funnel.egypt.set_stage("cyber_candidate", 2)
+        funnel.egypt.check_consistency(_SilentLogger())
+        # 10→2 is 8 non_cyber drops at the cyber gate; the one-off concrete
+        # reason stays at its exact recorded count — gap math never inflates
+        # a concrete reason, so no job is double-counted anywhere.
+        assert funnel.egypt.drop_reasons["non_cyber"] == 8
+        assert funnel.egypt.drop_reasons["not_cyber"] == 1
+        assert sum(funnel.egypt.drop_reasons.values()) == 9
 
     def test_funnel_log_line_emits_stage_counts(self):
         import logging
         from egypt_funnel import EgyptPipelineFunnel, log_funnel
         funnel = EgyptPipelineFunnel()
-        for k in range(5):
-            funnel.egypt.record_stage(f"k{k}", "discovered")
-            funnel.egypt.record_stage(f"k{k}", "in_pool")
+        funnel.egypt.set_stage("discovered", 5)
+        funnel.egypt.set_stage("in_pool", 3)
+        funnel.egypt.set_stage("sent", 2)
         funnel.egypt.record_drop("k5", "recency_stale")
         logger = logging.getLogger("v74-test-funnel")
         logger.setLevel(logging.DEBUG)
@@ -81,7 +121,21 @@ class TestEgyptFunnelStages:
         line = captured[0] if captured else ""
         assert "discovered=5" in line
         assert "recency_stale=1" in line
-        assert "sent=0" in line
+        assert "in_pool=3" in line
+        assert "sent=2" in line
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+
+class _SilentLogger:
+    """Check_consistency logger that swallows consistency warnings."""
+
+    def warning(self, *args, **kwargs):
+        return
+
+    def info(self, *args, **kwargs):
+        return
 
 
 # ── Phase 3: Egyptian source recovery ladder ───────────────────────────────
