@@ -358,7 +358,74 @@ def fetch_source(source_key: str) -> SourceResult:
         and not outcome.parsed
         and ladder_outcome is None
     )
-    if source.browser_fallback and js_only:
+
+    # v74: Egyptian recovery ladder — after the standard ladder answered
+    # nothing, sources with registered alternative surfaces get two cheap
+    # additional reads per URL: a direct GET (a DIFFERENT netloc is not the
+    # same endpoint the circuit marked open) and then the public reader on
+    # that URL.  This rescues the blocked-bank pattern from the run log
+    # where the careers page itself answered nothing but the jobs live on
+    # a sibling search UI.  Runs BEFORE the browser step so an honest
+    # recovery answer (parsed=True or no listings found) can close the book
+    # without burning any Playwright budget.
+    ladder_steps: list[str] = ["direct"]
+    if outcome.parsed and _SCRIPT_RE.search(outcome.raw_html or ""):
+        ladder_steps.append("embedded_json")
+    if ladder_was_attempted:
+        ladder_steps.append("jina")
+    recovery_outcomes: list[_Outcome] = []
+    if not outcome.jobs and not outcome.no_active_jobs:
+        for alt_url in _EGYPT_RECOVERY_URLS.get(source_key, ()):
+            if not alt_url:
+                continue
+            # Direct GET of the alternate URL (cheap, may differ in netloc
+            # from the blocked endpoint so it survives circuit-open).
+            alt_direct = _Outcome([], parsed=False, error_code="")
+            try:
+                alt_result = get_text_result(alt_url, timeout=int(_FAST_ATTEMPT_TIMEOUT_SECONDS), max_retries=1)
+                if alt_result.text:
+                    alt_page_jobs, alt_parsed = _jobs_from_html(alt_result.text, source, base_url=alt_url)
+                    alt_direct = _Outcome(alt_page_jobs, parsed=alt_parsed, no_active_jobs=alt_parsed and not alt_page_jobs)
+                    if not alt_page_jobs and alt_parsed:
+                        pass  # page read but no postings — fall through to reader
+                    elif not alt_result.text:
+                        alt_direct = _Outcome([], error_code=alt_result.error_code or "official_page_unavailable")
+                else:
+                    alt_direct = _Outcome([], error_code=alt_result.error_code or "official_page_unavailable")
+            except Exception as exc:  # pragma: no cover - transport never blocks
+                log.debug("%s: recovery direct on %s failed: %s", source_key, alt_url, exc)
+                alt_direct = _Outcome([], error_code="recovery_transport_failed")
+            if alt_direct.jobs:
+                return SourceResult(
+                    jobs=alt_direct.jobs, status="success", transport="alt_endpoint",
+                    attempted_urls=(source.url, alt_url), ladder_steps=tuple(ladder_steps + ["alt_endpoint"]),
+                )
+            if alt_direct.no_active_jobs:
+                recovery_outcomes.append(alt_direct)
+                ladder_steps.append("alt_endpoint")
+                continue
+            # The alternate URL through the public reader — a different page
+            # through a different IP pool than either the blocked endpoint
+            # or the careers-page reader.
+            reader_outcome = _fetch_via_public_reader_url(source, alt_url)
+            if reader_outcome is not None and reader_outcome.jobs:
+                return SourceResult(
+                    jobs=reader_outcome.jobs, status="success", transport="jina_alt_endpoint",
+                    attempted_urls=(source.url, alt_url), ladder_steps=tuple(ladder_steps + ["reader_alt"]),
+                )
+            if reader_outcome is not None and (reader_outcome.parsed or reader_outcome.no_active_jobs):
+                recovery_outcomes.append(reader_outcome)
+                ladder_steps.append("reader_alt")
+            elif reader_outcome is not None:
+                ladder_steps.append("reader_alt")
+    # Pick the most recent recovery evidence for the final audit line so the
+    # log shows where the honest no-listings verdict came from.
+    if not outcome.jobs and recovery_outcomes and not any(o.jobs for o in recovery_outcomes):
+        honest = any(o.no_active_jobs or o.parsed for o in recovery_outcomes)
+        if honest:
+            outcome = recovery_outcomes[-1]
+
+    if source.browser_fallback and js_only and ladder_outcome is None:
         # v70: a proven-failing source only reaches the browser here when
         # the public reader could not answer — give it one fast attempt
         # instead of the full source deadline. An honest reader answer
@@ -366,6 +433,12 @@ def fetch_source(source_key: str) -> SourceResult:
         # unanswered reader leaves this door open, and even then the
         # source pays at most the fast cap.
         ladder_answered = jina_result is not None and (jina_result.parsed or jina_result.no_active_jobs)
+        # v74: if the recovery ladder already produced honest evidence
+        # (parsed=True or no_active_jobs), Playwright cannot create jobs
+        # the reader already failed to see — skip it entirely.
+        if any(o.parsed or o.no_active_jobs for o in recovery_outcomes):
+            ladder_answered = True
+            ladder_outcome = recovery_outcomes[-1]
         # v70: a proven-failing source (public_fallback) only reaches the
         # browser because the reader could not answer — it gets one FAST
         # attempt, never the full source deadline. An honest reader answer
@@ -410,6 +483,7 @@ def fetch_source(source_key: str) -> SourceResult:
         transport="direct",
         error_code=f"{reason}:{outcome.error_code}" if outcome.error_code else reason,
         attempted_urls=(source.url,),
+        ladder_steps=tuple(ladder_steps),
     )
 
 
@@ -424,6 +498,90 @@ _JINA_PUBLIC_READER_HEADERS = {
 _PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS = float(
     os.getenv("CAREERS_READER_TIMEOUT_SECONDS", "8")
 )
+
+# v74: per-source recovery ladder — Egyptian sources whose direct endpoint,
+# embedded JSON, and careers-page reader ALL answered nothing get a second
+# public-reader pass against alternative URLs that are known to expose the
+# same jobs through a different surface (Workday search UIs, alternate
+# careers paths).  The Jina reader sits in a different IP pool from the
+# bot's exit, so an endpoint marked circuit-open for direct HTTP is NOT
+# circuit-open for the reader — this is the rescue path the blocked banks
+# (al_baraka, hdb, bank_abc, cib_egypt_wd, saib, vois, cybershield,
+# elsewedy_electric, dubizzle) actually need.  URLs are tried in order;
+# direct GET first (cheap when the netloc differs from the blocked one),
+# then the Jina reader of the same URL.
+_EGYPT_RECOVERY_URLS: dict[str, list[str]] = {
+    # Workday Egyptian tenants: their public search UI (not the JSON API)
+    "cib_egypt_wd": ["https://cibeg.wd1.myworkdayjobs.com/en-US/search", "https://cibeg.wd1.myworkdayjobs.com/en-US/cib_jobs"],
+    "valeo_egypt": ["https://valeo.wd3.myworkdayjobs.com/en-US/search", "https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs"],
+    # Blocked Egyptian bank portals with an alternate careers surface
+    "telecom_egypt": ["https://te.eg/wps/portal/te/Personal/Careers/jobs"],
+    "banque_misr": ["https://www.banquemisr.com/en/careers/current-vacancies", "https://careers.banquemisr.com"],
+    "aaib": ["https://aaib.com.eg/en/careers/current-vacancies"],
+    "adib_egypt": ["https://www.adib.com.eg/en/careers"],
+    "cib_egypt": ["https://www.cibeg.com/en/careers/our-openings", "https://www.cibeg.com/en/careers/apply"],
+    "qnb_egypt": ["https://www.qnb.com/en/group/careers"],
+    "banque_du_caire": ["https://www.bdc.com.eg/bdcwebsite/personal/careers.html/jobs"],
+    "bank_nxt": ["https://banknxt.com/careers/openings"],
+    "emirates_nbd_egypt": ["https://www.emiratesnbd.com/en/egypt/careers"],
+    "hsbc_egypt": ["https://www.hsbc.com/en-eg/careers"],
+    "mashreq_egypt": ["https://www.mashreq.com/egypt/careers/jobs"],
+    "al_baraka_bank": ["https://www.albarakabank.com.eg/en/careers", "https://www.albarakabank.com.eg/careers"],
+    "hdb": ["https://www.hdb-egypt.com/en/careers"],
+    "bank_abc": ["https://www.bankabc.com.eg/en/careers"],
+    "saib": ["https://www.saib.com.eg/en/careers"],
+    "vois": ["https://vois.com.eg/en/careers"],
+    "cybershield": ["https://www.cybershield.com.eg/en/careers"],
+    "etisalat_egypt": ["https://careers.etisalat.com.eg/jobs", "https://www.etisalat.com.eg/en/careers.html"],
+    "itida": ["https://www.itida.gov.eg/en/careers/jobs"],
+    "smart_village": ["https://www.smart-village.com/en/careers/jobs"],
+    "we_jina": ["https://te.eg/wps/portal/te/Personal/Careers"],
+    "raya": ["https://www.raya.com.eg/en/careers/jobs"],
+    "nbe": ["https://www.nbe.com.eg/en/Pages/Default.aspx/careers"],
+    # Non-Egyptian sources the user flagged with the same block pattern
+    "dubizzle": ["https://dubizzle.com/jobs/search/"],
+    "elsewedy_electric": ["https://www.elsewedy.com/en/careers", "https://careers.elsewedy.com"],
+    "qiddiya": ["https://qiddiya.com/en/careers/jobs"],
+    "oracle_hcm": [],  # never registered — placeholder kept explicit
+}
+
+# v74: share of a source's budget the DIRECT step may consume before the
+# fallback ladder gets the rest.  A failing bank must not spend its whole
+# 45s on a portal that will never answer; env CAREERS_DIRECT_ATTEMPT_CAP=0.3
+# means "up to 30% direct, the remainder is reserved for the ladder and the
+# (rarely-reached) browser step."  Kept configurable because the user
+# explicitly forbids raising timeouts as the fix.
+_DIRECT_ATTEMPT_CAP = float(os.getenv("CAREERS_DIRECT_ATTEMPT_CAP", "0.3"))
+
+
+def _fetch_via_public_reader_url(source: CareerSource, url: str) -> _Outcome | None:
+    """v74: public-reader pass against an arbitrary alternate URL (not the
+    source's canonical careers page).  Same reader contract as
+    ``_fetch_via_public_reader``: returns ``None`` only when the reader step
+    could not be attempted at all; an empty/honest answer is an ``_Outcome``."""
+    reader_url = _JINA_READER_URL_TEMPLATE.format(url=url)
+    html: str | None = None
+    try:
+        html = get_text(
+            reader_url, headers=_JINA_PUBLIC_READER_HEADERS,
+            timeout=int(_PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS),
+            max_retries=1,
+        )
+    except Exception as exc:  # pragma: no cover - escalates instead
+        log.debug("%s: recovery reader transport failed on %s: %s", source.key, url, exc)
+        return _Outcome([], error_code="jina_unavailable")
+    if not html:
+        return _Outcome([], error_code="jina_unavailable")
+    if len(html) > 5 * 1024 * 1024:
+        return _Outcome([], parsed=False, error_code="jina_too_large")
+    try:
+        page_jobs, parsed = _jobs_from_html(html, source, base_url=url)
+    except Exception as exc:  # pragma: no cover
+        log.debug("%s: recovery reader parse failed on %s: %s", source.key, url, exc)
+        return _Outcome([], parsed=False, error_code="jina_parse_failed")
+    if page_jobs:
+        return _Outcome(_dedupe_jobs(page_jobs), parsed=parsed)
+    return _Outcome([], parsed=parsed, no_active_jobs=parsed and not page_jobs, error_code="jina_empty")
 
 
 def _fetch_via_public_reader(source: CareerSource) -> _Outcome | None:
