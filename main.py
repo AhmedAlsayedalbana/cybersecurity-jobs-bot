@@ -217,6 +217,76 @@ import html as html_lib
 from html import unescape
 
 
+_AGENCY_SUFFIX_TOKENS = (
+    "agency", "agencies", "recruitment", "recruiters", "recruiting",
+    "staffing", "placements", "resourcing", "executive search",
+    "talent acquisition", "hr solutions", "talent solutions", "hr group",
+)
+
+
+def _detect_recruiter(job) -> str:
+    """v76 (spec point 6): recognise staffing agencies / recruiters so the
+    card separates them from the real employer.  Detection is deliberately
+    conservative: only an explicit agency/recruiting name pattern in the
+    company field sets the recruiter, so ordinary company names are never
+    split.  Returns the recruiter name or "" when nothing is known."""
+    import re as _re
+    company = str(getattr(job, "company", "") or "").strip()
+    if not company:
+        return ""
+    lower = company.lower()
+    is_agency = any(lower.endswith(t) for t in _AGENCY_SUFFIX_TOKENS) or \
+        any((" " + t) in (" " + lower) for t in _AGENCY_SUFFIX_TOKENS
+            if t.startswith(("talent", "executive", "hr ", "placements")))
+    if not is_agency:
+        return ""
+    # The card shows the real employer only when the listing itself names
+    # one (e.g. "Client: X", "on behalf of X").  We never guess an employer;
+    # if none is named, the agency name stays on the employer line as the
+    # verified poster, and the recruiter field still records the identity.
+    text = f"{job.title or ''} {job.description or ''}".lower()
+    for pattern in (
+        r"client:\s*([\w\s&.,'-]{2,40})",
+        r"on behalf of ([\w\s&.,'-]{2,40})",
+        r"for ([\w\s&.,'-]{2,40})\b",
+    ):
+        match = _re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return company
+
+
+def _enrich_canonical_record(jobs: list) -> None:
+    """v76: attach the canonical record (primary_category + category evidence
+    + source-backed skills + recruiter identity) to every job.  This is the
+    single enrichment point — telegram_sender formats from these fields only
+    and never re-extracts keywords, so no skill/category/employer can be
+    invented downstream (spec point 15)."""
+    from sources.job_classification import (
+        classify_category, extract_skills_with_evidence,
+    )
+    for job in jobs:
+        try:
+            verdict = classify_category(job)
+            job.primary_category = verdict.primary_category
+            job.category_confidence = verdict.confidence
+            job.category_evidence = verdict.evidence
+            job.secondary_categories = verdict.secondary_categories
+            job.skills_with_evidence = extract_skills_with_evidence(job)
+            # v76 (spec point 6): keep recruiter/agency identity separate from
+            # the hiring employer on the card; only set when a recruiter
+            # pattern is actually detected — never guessed.
+            if not getattr(job, "recruiter_name", ""):
+                try:
+                    detected = _detect_recruiter(job)
+                    if detected:
+                        job.recruiter_name = detected
+                except Exception:  # noqa: BLE001 — enrichment never breaks
+                    pass
+        except Exception as exc:  # noqa: BLE001 — defaults stay empty
+            log.debug("v76 canonical enrichment skipped: %s", exc)
+
+
 def _v72_verification_search_fn(spec: dict) -> list[tuple[str, str]]:
     """Wire the HR Posts backend ladder to the verification chain, in
     descending order of trust: CSE → SerpAPI → Bing.  Each backend keeps its
@@ -1300,6 +1370,11 @@ def main():
         filtered, rejected = classify_jobs(all_jobs)
         filtering_elapsed = time.monotonic() - filtering_started
         stats["filtered"] = len(filtered)
+        # v76: canonical record — category evidence + source-backed skills are
+        # attached to EVERY job immediately after classification (before the
+        # location/recency/dedup gates) so downstream formatting and routing
+        # never re-extract or invent values.
+        _enrich_canonical_record(all_jobs)
         classified = [job for job in all_jobs if job.cyber_verdict in {
             CyberVerdict.CONFIRMED.value, CyberVerdict.LIKELY.value,
         }]
@@ -1548,7 +1623,7 @@ def main():
                     # routed = posted-or-conflict-skipped in this run; since
                     # conflicts are skipped silently, routed = posted this run
                     # and any pool→routed gap is attributed to unrouted.
-                    def _geo_for_send(job: Any) -> str:
+                    def _geo_for_send(job) -> str:
                         _g = classify_delivery_geo(job)
                         return "egypt" if _g == egypt_funnel.EGYPT_GEO else (
                             "arab" if _g == egypt_funnel.ARAB_GEO else "")
