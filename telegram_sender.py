@@ -1333,6 +1333,12 @@ _LEVEL_LABELS = {
 
 
 def _domain_label(job) -> str:
+    # v76: card header comes from the canonical primary_category attached by
+    # the enrichment layer — the category always carries evidence, and the
+    # card never invents a domain by re-extracting keywords here.
+    primary = getattr(job, "primary_category", "") or ""
+    if primary:
+        return primary
     return _DOMAIN_LABELS.get(classify_intelligence_domain(job), "Cybersecurity")
 
 
@@ -1341,14 +1347,22 @@ def _level_label(job) -> str:
 
 
 def _display_level(job) -> str:
-    """Use a helpful neutral default when a standard IC role omits seniority."""
+    """Use a helpful neutral default when a standard IC role omits seniority.
+
+    v76 (spec point 9): the "Open" (all-levels) label is only trustworthy
+    when the listing itself verified it (status_open_verified=True).  An
+    unverified "Open" would otherwise be guessed seniority on the card —
+    so unverified Open falls back to the neutral role-based default.
+    """
     level = _level_label(job)
     if level != "Open":
         return level
+    if getattr(job, "status_open_verified", False):
+        return "Open"
     title = (getattr(job, "title", "") or "").lower()
     if re.search(r"\b(engineer|analyst|specialist|consultant|administrator|developer)\b", title):
         return "Mid-Level"
-    return level
+    return "Mid-Level"
 
 
 def _detect_level(text):
@@ -1597,11 +1611,20 @@ def _extract_skills(text):
 
 def _domain_header_icon(domain: str) -> str:
     return {
+        # v76 canonical vocabulary (job_classification.py)
+        "Pentest / Red Team": "🎯",
+        "GRC / Risk & Compliance": "📋",
+        "AppSec": "🔒",
+        "Cloud Security": "☁️",
+        "Network Security": "🌐",
+        "IAM / Access Security": "🔑",
+        "SOC / Threat / Incident Response": "🛰️",
+        "Security Engineering": "🛡️",
+        # legacy vocab (kept for older snapshots)
         "Cloud & Infrastructure Security": "☁️",
         "SOC / Blue Team": "🛰️",
         "Penetration Testing / Red Team": "🎯",
         "AppSec / DevSecOps": "🔒",
-        "Network Security": "🌐",
         "GRC / Compliance": "📋",
         "Training / Program": "🎓",
     }.get(domain, "🛡️")
@@ -1738,6 +1761,38 @@ def format_hiring_signal_message(signal) -> str:
     return "\n".join(lines).strip()
 
 
+def _real_employer(job, recruiter: str) -> str:
+    """v76 (spec point 6): returns the real hiring-employer name ONLY when a
+    recruiter/agency is known AND the listing itself names a different
+    employer (e.g. "Client: Vodafone Egypt", "on behalf of X", "for <Co>").
+    The extracted name is trimmed to a plausible company-name span (2-5
+    words, no verbs/sentence fragments) — a greedy sentence capture is
+    never allowed.  Returns "" when the listing does not name an employer;
+    we never guess."""
+    import re as _re
+    _COMMON_VERBS = ("hire|need|is|are|was|were|seek|looking|seeking|join|welcome|"
+                     "grow|expand|build|provide|offer|looking for|to monitor|to work|"
+                     "who|that|which|will|has|have|should|can|could|must|wants")
+    _SENTENCE_END = r"(?=\s*\b(?:" + _COMMON_VERBS + r")\b|\s*[,;:.\x22]|\s*$)"
+    recruiter = (recruiter or "").strip().lower()
+    if not recruiter or recruiter == (job.company or "").lower():
+        return ""
+    text = f"{job.title or ''} {job.description or ''}".lower()
+    for pattern in (r"client:\s*((?:[\w&.,'-]+\s+){0,4}[\w&.,'-]+)" + _SENTENCE_END,
+                    r"on behalf of ((?:[\w&.,'-]+\s+){0,4}[\w&.,'-]+)" + _SENTENCE_END,
+                    r"\bfor ((?:[\w&.,'-]+\s+){0,3}[\w&.,'-]+)" + _SENTENCE_END):
+        match = _re.search(pattern, text)
+        if match:
+            name = match.group(1).strip()
+            # Keep it a plausible company name: drop trailing garbage words
+            # like "is hiring" / "needs an" that the verb fence missed.
+            name = _re.sub(r"\s+(?:is hiring|needs|needs an|needs a|wants a|"
+                           r"hiring|looking for|seeking)$", "", name)
+            if 2 <= len(name.split()) <= 5 and not _re.search(r"\b(the|a|an)\s+$", name + " "):
+                return name.title() if name.islower() else name
+    return ""
+
+
 def format_hr_post_message(job) -> str:
     """Format an evidence-backed LinkedIn hiring post in the same card style."""
     text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
@@ -1799,41 +1854,89 @@ def format_hr_post_message(job) -> str:
 
 
 def format_job_message(job):
-    """Format a compact, professional HTML card for a standard job listing."""
+    """Format a compact, professional HTML card for a standard job listing.
+
+    Layout (v77, requested by the user):
+      🌐 DOMAIN HEADER
+
+      🔐 <title> | <company-suffix>
+
+      🏢 Company: <company>
+      📍 Location: <location>
+      💼 Level: <level>
+      🕒 Posted: <label>
+      📌 Type: <type>
+
+      Key Skills
+      • <skill 1>
+      • <skill 2> …
+
+      ⭐ Good fit if you have: <one-line fit summary>
+
+      🔗 Source: <source>
+      🚀 Apply Now
+    """
     # HR posts retain their dedicated evidence/contact template.
-    if (getattr(job, "content_type", "") or "").lower() == "hr_post":
+    if (getattr(job, "content_type", "").lower()) == "hr_post":
         return format_hr_post_message(job)
 
-    text = (job.title + " " + job.description + " " + _flatten_tags(job.tags)).lower()
     level = _display_level(job)
     domain = _domain_label(job)
-    skills = _extract_skills(text)
     title = _escape(job.title)
     company = _escape(job.company) if job.company else "Unknown"
-    employment = [level]
-    if job.job_type:
-        employment.append(_escape(job.job_type))
+
+    # v76 (spec point 6): the recruiter/agency is NEVER shown as the employer.
+    # recruiter_name holds the agency; when the listing names a different
+    # real employer (e.g. "Client: Vodafone Egypt"), the employer line shows
+    # the real employer and the recruiter line shows the agency.  The raw
+    # company field (the verified poster) is kept only when no real employer
+    # is known — never guessed.
+    recruiter = str(getattr(job, "recruiter_name", "") or "").strip()
+    real_employer = _real_employer(job, recruiter)
+    if real_employer:
+        company = _escape(real_employer)
+
+    # Title line — a distinguishing employer-suffix (e.g. "Fortinet | Arabic
+    # Speaker") may sit beside the title when present in the raw listing.
+    title_suffix = _escape(_title_suffix(job))
+    if title_suffix:
+        title_line = f"🔐 <b>{title}</b> | {title_suffix}"
+    else:
+        title_line = f"🔐 <b>{title}</b>"
 
     lines = [
         f"{_domain_header_icon(domain)} <b>{domain}</b>",
         "",
-        f"🔐 <b>{title}</b>",
+        title_line,
         "",
-        f"🏢 <b>{company}</b>",
-        f"📍 {_display_location(job)}",
-        f"🕒 Posted: {_posted_label(job)}",
-        f"💼 {' · '.join(employment)}",
+        f"🏢 <b>Company:</b> {company}",
+        f"📍 <b>Location:</b> {_display_location(job)}",
+        f"💼 <b>Level:</b> {level}",
+        f"🕒 <b>Posted:</b> {_posted_label(job)}",
     ]
     if job.salary:
-        lines.append(f"💰 {_escape(str(job.salary))}")
-    if skills:
-        lines.extend(["", f"⚙️ {skills}"])
+        lines.append(f"💰 <b>Salary:</b> {_escape(str(job.salary))}")
+    lines.append(f"📌 <b>Type:</b> {_escape(job.job_type) if job.job_type else 'Full-time'}")
+    # v76 (spec point 6): recruiter/agency — only when distinct from the
+    # hiring company (agency listings).
+    if recruiter and recruiter.lower() != (job.company or "").lower():
+        lines.append(f"🤝 <b>Recruited by:</b> {_escape(recruiter)}")
+    # v76 (spec point 15): skills are source-backed evidence attached by the
+    # canonical enrichment layer — they are NEVER re-extracted from text here
+    # (that was the invented-skills bug).  No skills with evidence → no block.
+    skills_with_evidence = getattr(job, "skills_with_evidence", None) or {}
+    if skills_with_evidence:
+        lines.extend(["", "<b>Key Skills</b>"])
+        lines.extend("• " + skill for skill in skills_with_evidence)
+    fit_line = _fit_line(job)
+    if fit_line:
+        lines.extend(["", f"⭐ <b>Good fit if you have:</b>", fit_line])
 
     apply_url = job.canonical_url or job.url
     if apply_url:
         lines.extend([
             "",
-            f"🌐 Source: <b>{_escape(_source_label(job))}</b>",
+            f"🔗 <b>Source:</b> {_escape(_source_label(job))}",
             f'<a href="{_escape(apply_url)}">🚀 Apply Now →</a>',
         ])
     # v72: Personal Opportunity Score — ranking layer on top of the card.
@@ -1851,6 +1954,60 @@ def format_job_message(job):
         except Exception:  # scoring display must never break delivery
             log.debug("v72 opportunity score render skipped", exc_info=True)
     return "\n".join(lines).strip()
+
+
+def _title_suffix(job) -> str:
+    """v77: optional suffix shown next to the title (e.g. "Fortinet | Arabic
+    # Speaker").  Extracted only from explicit listing evidence: a trailing
+    # pipe/bar segment in the stored title, or explicit tags that read like
+    # requirements (language, clearance, certification markers).  Empty when
+    # there is no trustworthy suffix — never guessed."""
+    raw_title = getattr(job, "title", "") or ""
+    if "|" in raw_title:
+        _, _, suffix = raw_title.partition("|")
+        suffix = suffix.strip()
+        if 1 < len(suffix) <= 60:
+            return suffix
+    tags = [str(t) for t in (getattr(job, "tags", None) or [])
+            if isinstance(t, str) and t.strip()]
+    # Only well-known requirement-style tags surface as a suffix, so a plain
+    # company tag never ends up next to the title.
+    requirement_tags = [t for t in tags[:2]
+                        if re.search(r"\b(?:arabic|english|french|clearance|"
+                                     r"native|fluent|bilingual|onsite|on-site|"
+                                     r"remote|hybrid)\b", t, re.IGNORECASE)]
+    return " | ".join(requirement_tags) if requirement_tags else ""
+
+
+def _fit_line(job) -> str:
+    """v77: one-line candidate-fit summary built ONLY from the canonical
+    evidence: the top two source-backed skills plus the location's country.
+    No invented attributes — when evidence is missing the section is simply
+    omitted."""
+    skills_with_evidence = getattr(job, "skills_with_evidence", None) or {}
+    top_skills = list(skills_with_evidence)[:2]
+    if not top_skills:
+        return ""
+    parts = "+".join(top_skills) + " experience"
+    country = _country_of(job)
+    if country:
+        parts += f" and {country} location"
+    return parts
+
+
+def _country_of(job) -> str:
+    """v77: country name extracted from the source-backed location only.
+    Returns '' when the location carries no country."""
+    import re as _re
+    location = (getattr(job, "location", "") or "").strip()
+    if not location:
+        return ""
+    if "," in location:
+        # Last segment after the final comma, trimmed.
+        country = location.rsplit(",", 1)[-1].strip()
+        if 1 < len(country) <= 30:
+            return country
+    return ""
 
 
 # 
