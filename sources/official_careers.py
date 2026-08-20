@@ -267,6 +267,31 @@ _FAST_ATTEMPT_SECOND_CAP_SECONDS = float(os.getenv("CAREERS_FAST_ATTEMPT_SECOND_
 _FAST_BROWSER_CAP_SECONDS = float(os.getenv("CAREERS_FAST_BROWSER_CAP_SECONDS", "15"))
 
 
+def _source_direct_budget_seconds(source: CareerSource) -> float:
+    """v76: maximum wall-clock the DIRECT step may consume before the
+    fallback ladder gets the rest.  Previously _DIRECT_ATTEMPT_CAP was
+    defined but never enforced, which let a hanging Egyptian portal burn
+    the entire source deadline (30s) so the recovery ladder was never
+    reached — the exact failure seen for AAIB/ADIB/Banque Misr/ITIDA.
+    A failing bank must not spend its whole budget on one portal; the
+    ladder and the (rare) browser step keep the remainder."""
+    return max(2.0, _DIRECT_ATTEMPT_CAP * _source_budget_seconds(source))
+
+
+def _fetch_direct_with_cap(source: CareerSource, *, direct_budget_seconds: float) -> _Outcome:
+    """_fetch_direct but stopped by wall-clock so the fallback ladder is
+    guaranteed a chance.  Uses a lightweight elapsed-time check plus an
+    absolute ceiling on the first page: when the first page itself hangs
+    for longer than the budget, pagination stops immediately."""
+    if source.backend not in ("greenhouse", "workday", "ashby", "amazon"):
+        # HTML page sources: each page costs ~8-10s, so the loop stops
+        # pagination at this wall-clock cap and the fallback ladder
+        # (alt endpoints + public reader) keeps the rest of the budget.
+        outcome = _fetch_html_pages(source, budget_seconds=direct_budget_seconds)
+        return outcome
+    return _fetch_direct(source)
+
+
 def fetch_source(source_key: str) -> SourceResult:
     """Fetch one official source and report an honest health status.
 
@@ -277,7 +302,7 @@ def fetch_source(source_key: str) -> SourceResult:
     browser fallback — that is a duplicate scan, not a rescue.
     """
     source = SOURCES_BY_KEY[source_key]
-    outcome = _fetch_direct(source)
+    outcome = _fetch_direct_with_cap(source, direct_budget_seconds=_source_direct_budget_seconds(source))
     if outcome.jobs:
         return SourceResult(
             jobs=outcome.jobs,
@@ -726,7 +751,7 @@ def _page_url(source: CareerSource, page: int) -> str:
     return urlunparse(parsed._replace(query=urlencode(params)))
 
 
-def _fetch_html_pages(source: CareerSource) -> _Outcome:
+def _fetch_html_pages(source: CareerSource, budget_seconds: float | None = None) -> _Outcome:
     page = source.page_start
     all_jobs: list[Job] = []
     parsed_any = False
@@ -739,7 +764,14 @@ def _fetch_html_pages(source: CareerSource) -> _Outcome:
     # connectionerror pileups burn 20-60s on dead banks in the 2026-08-17
     # runs.  Content that arrives stays paginated as before.
     page_transport_failures = 0
+    t0 = time.monotonic()
     while True:
+        if budget_seconds is not None and (time.monotonic() - t0) >= budget_seconds:
+            # v76: the direct page loop stopped at its wall-clock cap so
+            # the fallback ladder (alt endpoints + public reader) keeps
+            # the rest of the source budget instead of timing out entirely.
+            log.debug("%s: direct page loop capped at %.1fs, ladder takes over", source.key, budget_seconds)
+            return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code="direct_budget_capped", raw_html=raw_html)
         result = get_text_result(_page_url(source, page), timeout=int(_FAST_ATTEMPT_TIMEOUT_SECONDS), max_retries=1)
         if result.text and page == source.page_start:
             # v68: keep the first page's raw HTML so the fallback ladder can
