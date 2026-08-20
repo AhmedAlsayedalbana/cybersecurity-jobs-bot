@@ -355,6 +355,9 @@ def test_job_message_uses_the_compact_professional_card_layout():
     }
     message = format_job_message(job)
 
+    # v77: the card follows the user-requested template — domain header,
+    # title line, then labeled detail lines (Company/Location/Level/Posted/
+    # Type), a "Key Skills" bulleted block, and the source/apply footer.
     # Header category comes from the canonical primary_category when present;
     # without enrichment the card keeps the legacy Security Engineering.
     has_header = (
@@ -363,15 +366,20 @@ def test_job_message_uses_the_compact_professional_card_layout():
     )
     assert has_header
     assert "🔐 <b>Access Management - Ping / Okta Engineer</b>" in message
-    assert "🏢 <b>Accenture</b>" in message
-    assert "📍 Cairo, Cairo Governorate, Egypt" in message
-    assert "🕒 Posted: 2 hours ago" in message
-    assert "💼 Mid-Level · Full-time" in message
-    assert "⚙️ Ping Identity · Okta · Identity Security · IAM" in message
-    assert "🌐 Source: <b>LinkedIn</b>" in message
+    assert "🏢 <b>Company:</b> Accenture" in message
+    assert "📍 <b>Location:</b> Cairo, Cairo Governorate, Egypt" in message
+    assert "🕒 <b>Posted:</b> 2 hours ago" in message
+    assert "📌 <b>Type:</b> Full-time" in message
+    assert "<b>Level:</b> Mid-Level" in message
+    # v76/v77: skills appear as a "Key Skills" bulleted block from the
+    # source-backed canonical evidence — never re-extracted from free text.
+    assert "<b>Key Skills</b>" in message
+    for skill in ("Ping Identity", "Okta", "Identity Security", "IAM"):
+        assert f"• {skill}" in message
+    assert "Source:" in message and "LinkedIn" in message
     assert '<a href="https://example.com/' in message
     assert "🚀 Apply Now →</a>" in message
-    assert message.index("🌐 Source: <b>LinkedIn</b>") < message.index("🚀 Apply Now →</a>")
+    assert message.index("Source:") < message.index("🚀 Apply Now →</a>")
     assert "Match Strength" not in message
 
 
