@@ -156,6 +156,16 @@ class Job:
     # employee post, company announcement) and survived the official
     # verification chain — full provenance stays in the tags as well.
     verified_by_signal: bool = False
+    # ── v76 canonical record (data-integrity layer).  All fields default to
+    #    "unknown" so no value is ever invented; the delivery layer formats
+    #    them as-is and hides unverifiable fields.
+    primary_category: str = ""
+    category_confidence: float = 0.0
+    category_evidence: list = field(default_factory=list)
+    secondary_categories: list = field(default_factory=list)
+    skills_with_evidence: dict = field(default_factory=dict)
+    recruiter_name: str = ""
+    status_open_verified: bool = False
 
     @property
     def unique_id(self) -> str:
