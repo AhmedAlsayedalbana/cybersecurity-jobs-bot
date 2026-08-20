@@ -44,7 +44,7 @@ class TestV68FallbackLadder:
         ]
         reader_outcome = oc._Outcome(rescued_jobs, parsed=True)
 
-        with mock.patch.object(oc, "_fetch_direct", return_value=empty_outcome), \
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=empty_outcome), \
              mock.patch.object(oc, "_fetch_via_public_reader", return_value=reader_outcome), \
              mock.patch.object(oc, "_fetch_with_browser") as browser:
             result = oc.fetch_source("aaib")
@@ -76,7 +76,9 @@ class TestV68FallbackLadder:
                 source_key="banque_misr", provenance_hash="p2"),
         ]
 
-        with mock.patch.object(oc, "_fetch_direct", return_value=outcome), \
+        # v76: the direct step now runs through _fetch_direct_with_cap, so
+        # the mock targets the cap wrapper rather than _fetch_direct itself.
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=outcome), \
              mock.patch.object(oc, "_jobs_from_html", return_value=(extracted, True)) as jfh, \
              mock.patch.object(oc, "_fetch_via_public_reader") as reader:
             result = oc.fetch_source("banque_misr")
@@ -96,7 +98,7 @@ class TestV68FallbackLadder:
 
         empty = oc._Outcome([], parsed=False)
 
-        with mock.patch.object(oc, "_fetch_direct", return_value=empty), \
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=empty), \
              mock.patch.object(oc, "_fetch_via_public_reader", return_value=empty), \
              mock.patch.object(oc, "_fetch_with_browser") as browser:
             browser.return_value = oc._Outcome([], parsed=False)
@@ -123,7 +125,7 @@ class TestV68FallbackLadder:
         source = _make_source(key="cib_egypt")
         outcome = oc._Outcome([], parsed=False)
 
-        with mock.patch.object(oc, "_fetch_direct", return_value=outcome), \
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=outcome), \
              mock.patch.object(oc, "_fetch_via_public_reader", return_value=oc._Outcome([], error_code="jina_unavailable")), \
              mock.patch.object(oc, "_fetch_with_browser") as browser:
             browser.return_value = oc._Outcome([], parsed=False)
@@ -140,7 +142,7 @@ class TestV68FallbackLadder:
         source = _make_source(key="hsbc_egypt")
         outcome = oc._Outcome([], parsed=False, raw_html="<p>nothing useful</p>")
 
-        with mock.patch.object(oc, "_fetch_direct", return_value=outcome), \
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=outcome), \
              mock.patch.object(oc, "_fetch_via_public_reader", return_value=oc._Outcome([], parsed=False, error_code="jina_too_large")), \
              mock.patch.object(oc, "_fetch_with_browser") as browser:
             result = oc.fetch_source("hsbc_egypt")
