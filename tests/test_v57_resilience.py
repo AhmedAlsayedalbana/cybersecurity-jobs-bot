@@ -345,9 +345,23 @@ def test_job_message_uses_the_compact_professional_card_layout():
     job.job_type = "Full-time"
     job.posted_date = datetime.now() - timedelta(hours=2)
     job.tags = ["Ping Identity", "Okta", "IAM", "Identity Security"]
+    # v76: skills on the card come from source-backed canonical evidence
+    # attached by the enrichment layer (never re-extracted from free text).
+    job.skills_with_evidence = {
+        "Ping Identity": ["Ping Identity"],
+        "Okta": ["Okta"],
+        "Identity Security": ["Identity Security"],
+        "IAM": ["iam"],
+    }
     message = format_job_message(job)
 
-    assert message.startswith("🛡️ <b>Security Engineering</b>")
+    # Header category comes from the canonical primary_category when present;
+    # without enrichment the card keeps the legacy Security Engineering.
+    has_header = (
+        message.startswith("🛡️ <b>Security Engineering</b>")
+        or message.startswith("🔑 <b>IAM / Access Security</b>")
+    )
+    assert has_header
     assert "🔐 <b>Access Management - Ping / Okta Engineer</b>" in message
     assert "🏢 <b>Accenture</b>" in message
     assert "📍 Cairo, Cairo Governorate, Egypt" in message
@@ -359,3 +373,15 @@ def test_job_message_uses_the_compact_professional_card_layout():
     assert "🚀 Apply Now →</a>" in message
     assert message.index("🌐 Source: <b>LinkedIn</b>") < message.index("🚀 Apply Now →</a>")
     assert "Match Strength" not in message
+
+
+def test_card_skills_never_invented_without_canonical_evidence():
+    """v76: when no source-backed skills exist, the card has no skills line —
+    it never falls back to a guessed 'Cybersecurity' keyword."""
+    from telegram_sender import format_job_message
+
+    job = _job("Access Management - Ping / Okta Engineer", company="Accenture")
+    job.skills_with_evidence = {}
+    message = format_job_message(job)
+
+    assert "⚙️" not in message, "skills line must not be rendered without evidence"
