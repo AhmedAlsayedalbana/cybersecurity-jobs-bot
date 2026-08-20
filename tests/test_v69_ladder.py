@@ -80,7 +80,9 @@ class TestV69LadderBlocksPlaywright:
         oc.SOURCES_BY_KEY[key] = src
         browser_outcome = browser_outcome or oc._Outcome([], parsed=False, error_code="should_not_run")
         if direct_outcome is not None:
-            with mock.patch.object(oc, "_fetch_direct", return_value=direct_outcome):
+            # v76: the direct step now runs through the budget-cap wrapper,
+            # so the injected outcome must be attached to the wrapper.
+            with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=direct_outcome):
                 with mock.patch.object(oc, "_fetch_via_public_reader", return_value=reader_outcome):
                     with mock.patch.object(oc, "_fetch_with_browser", return_value=browser_outcome):
                         try:
@@ -154,7 +156,7 @@ class TestV69LadderBlocksPlaywright:
         browser = oc._Outcome([_job(title="Security Engineer", source="pharco")], parsed=True)
         browser_mock = mock.MagicMock(return_value=browser)
         result = None
-        with mock.patch.object(oc, "_fetch_direct", return_value=direct):
+        with mock.patch.object(oc, "_fetch_direct_with_cap", return_value=direct):
             with mock.patch.object(oc, "_fetch_with_browser", browser_mock):
                 result = self._fetch_source("pharco")
                 oc.SOURCES_BY_KEY.pop("pharco", None)
