@@ -194,7 +194,9 @@ def test_location_never_invented():
                description="ISO 27001 compliance audits and risk registers.")
     _enrich(job)
     card = _card(job)
-    assert "📍 Cairo, Egypt" in card
+    # v77: the location renders on an explicitly labeled line, exactly as
+    # stored in the source record — never with anything invented.
+    assert "📍 <b>Location:</b> Cairo, Egypt" in card
     # Nothing derived from the recruiter pattern "for X" or the category
     # may leak into the location line:
     lines = [l for l in card.split("\n") if l.startswith("📍")]
