@@ -1,14 +1,16 @@
-"""v65: HR Posts resilience regression tests.
+"""v65 (v78): HR Posts resilience regression tests.
 
-The observed run log showed Google CSE disabled for the ENTIRE run after a
-single failure, and every search backend returning ``run_budget_exhausted``
-because HR shared the unified crawler's "linkedin" budget phase. This file
-locks in the three contracts introduced in v65:
+v78: Google CSE was removed entirely (no longer supported) — HR discovery
+now runs on serpapi / jina_index / bing_html only, with jina_index as a
+credential-free primary backend so the query plan can always run.
+
+Contracts locked in:
 
 1. HR backends run on a dedicated ``linkedin_hr`` budget phase, so the
    parallel unified crawler can never drain HR's window.
-2. A transient CSE failure triggers a bounded backoff (15s → 120s), never a
-   run-wide permanent ban; a healthy response clears the backoff.
+2. A transient SerpAPI failure (credential/quota/outage) detected at
+   run-start validation PARKS the backend for the run instead of burning
+   the HR budget retrying a dead credential per query.
 3. A backend that comes back genuinely empty is cooled down per bounded
    window — and if every backend is cooled, the orchestrator forces one
    recheck so the query plan can never fully stall.
@@ -29,26 +31,16 @@ class _MultiContext:
         for c in reversed(self._ctxs): c.__exit__(*exc)
 
 
-def _truthy_creds():
-    return (
-        mock.patch.object(hr, "GOOGLE_CSE_API_KEY", "fake-key"),
-        mock.patch.object(hr, "GOOGLE_CSE_CX", "fake-cx"),
-        mock.patch.object(hr, "SERPAPI_KEY", "fake-serpapi"),
-    )
-
-
 def _empty_http_contexts():
     """All backends get mocked to return empty results with truthy creds."""
     return [
+        mock.patch.object(hr, "SERPAPI_KEY", "fake-serpapi"),
         mock.patch.object(hr, "get_json", return_value=None),
         mock.patch.object(hr, "get_text", return_value=None),
-    ] + list(_truthy_creds())
+    ]
 
 
 def _reset_module_state() -> None:
-    hr._GOOGLE_CSE_DISABLED = False
-    hr._cse_backoff_until = 0.0
-    hr._cse_backoff_count = 0
     hr._backend_cooldown_until.clear()
     hr._backend_empty_cooldown.clear()
     hr._backend_empty_streak.clear()
@@ -61,21 +53,14 @@ def _reset_module_state() -> None:
 def test_hr_backends_use_a_dedicated_budget_phase():
     """HR requests must never share the unified crawler's "linkedin" phase."""
     phase_names: list[str] = []
-    fake_request = mock.MagicMock()
 
-    def _capture(method, url, session=None, params=None, headers=None,
-                 timeout=30, max_retries=2, use_proxy=True,
-                 budget_phase="other_sources"):
-        phase_names.append(budget_phase)
-        return None
-
-    with mock.patch.object(hr, "get_json") as get_json, \
+    with mock.patch.object(hr, "SERPAPI_KEY", "fake-serpapi"), \
+         mock.patch.object(hr, "get_json") as get_json, \
          mock.patch.object(hr, "get_text", return_value=None) as get_text:
         get_json.return_value = None
-        get_json.side_effect = lambda url, **kw: None
         get_text.side_effect = lambda url, **kw: None
-        hr._search_via_google_cse("cybersecurity hiring cairo")
         hr._search_via_serpapi("cybersecurity hiring cairo")
+        hr._search_via_jina_index("cybersecurity hiring cairo")
         hr._search_via_bing_html("cybersecurity hiring cairo")
 
     for _, kwargs in get_json.call_args_list + get_text.call_args_list:
@@ -87,55 +72,60 @@ def test_hr_backends_use_a_dedicated_budget_phase():
     )
 
 
-def test_cse_failure_is_transistent_backoff_not_a_run_wide_ban():
-    """A single CSE failure must not silence the primary backend forever."""
+def test_unusable_serpapi_key_is_parked_at_run_start():
+    """A SerpAPI key rejected by the provider must not burn budget per
+    query — run-start validation parks the backend for the whole run."""
     _reset_module_state()
 
-    # One transient failure → bounded backoff, NOT permanent disable.
-    with mock.patch.object(hr, "GOOGLE_CSE_API_KEY", "fake-key"), \
-         mock.patch.object(hr, "GOOGLE_CSE_CX", "fake-cx"), \
-         mock.patch.object(hr, "get_json", return_value=None):
-        urls = hr._search_via_google_cse("security analyst cairo")
-    assert urls == []
-    assert hr._cse_backoff_until > time.time(), "backoff window should be set"
-    assert hr._cse_backoff_until - time.time() <= 135, (
-        "backoff must stay bounded (≤ 120s + jitter)"
-    )
+    def _fail(url, *, params=None, **kw):
+        return None
 
-    # Queries inside the backoff window skip CSE quickly (no HTTP call).
-    with mock.patch.object(hr, "get_json") as get_json:
-        get_json.side_effect = RuntimeError("must not be called during backoff")
-        assert hr._search_via_google_cse("iam hiring") == []
+    with mock.patch.object(hr, "SERPAPI_KEY", "bad-key"), \
+         mock.patch.object(hr, "get_json", side_effect=_fail):
+        hr._validate_hr_backend_keys()
 
-    # v75 contract: the run-start validation already confirmed the key,
-    # so a mid-run failure means quota/outage — CSE is PARKED for the run
-    # instead of silently backoff-retrying the same dead endpoint per query.
-    assert "google_cse" in hr._backend_parked, (
-        "mid-run CSE failure must park the backend for the run"
+    assert "serpapi" in hr._backend_parked, (
+        "an unusable SerpAPI key must park the backend for the run"
     )
-    # Parked backends are excluded from the orchestrator's unusability
-    # check and the warm check, so subsequent queries skip CSE without any
-    # HTTP call — exactly the "do not burn budget on a dead credential"
-    # behavior the run logs demanded.
-    assert not hr._is_backend_warm("google_cse")
+    # jina_index needs no credentials — the query plan can still run.
     assert hr._all_hr_backends_unusable() is False, (
-        "jina_index (credential-free) keeps the query plan alive without CSE"
+        "jina_index (credential-free) keeps the query plan alive without serpapi"
     )
+
+    # With all other backends also unavailable, the HR phase must skip
+    # entirely instead of paying for guaranteed empties.
+    hr._backend_parked.add("jina_index")
+    hr._backend_parked.add("bing_html")
+    assert hr._all_hr_backends_unusable() is True, (
+        "when every backend is unusable the HR phase must skip"
+    )
+
+
+def test_successful_key_probe_clears_any_stale_park_state():
+    """A healthy run-start probe must return serpapi to the rotation."""
+    _reset_module_state()
+    hr._backend_parked.add("serpapi")
+    hr._backend_cooldown_until["serpapi"] = time.time() + 1e9
+
+    with mock.patch.object(hr, "SERPAPI_KEY", "good-key"), \
+         mock.patch.object(hr, "get_json", return_value={"organic": []}):
+        hr._validate_hr_backend_keys()
+
+    assert "serpapi" not in hr._backend_parked
+    assert hr._backend_cooldown_until.get("serpapi", 0.0) == 0.0
 
 
 def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
     """Repeatedly empty backends are cooled down per window; the orchestrator
     always forces at least one backend callable so the plan never stalls."""
     _reset_module_state()
-    # Make all real HTTP paths return nothing.  Note: credentials are
-    # patched at MODULE level (the same way the scraper reads them), which
-    # works for the module-global names imported from config.
+    # Make all real HTTP paths return nothing.  Credentials are patched at
+    # MODULE level (the same way the scraper reads them).
     contexts = _empty_http_contexts()
     for ctx in contexts:
         ctx.__enter__()
     try:
-        # Verify the credentials patches are actually active.
-        assert hr.GOOGLE_CSE_API_KEY == "fake-key", "CSE creds patch must be live"
+        assert hr.SERPAPI_KEY == "fake-serpapi", "serpapi creds patch must be live"
         for i in range(6):  # exceeds the default empty streak limit (4)
             urls = hr._search_urls_fallback("pentest hiring")
             if urls != []:
@@ -146,7 +136,7 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
             ctx.__exit__(None, None, None)
 
     # All three backends should now be in cooldown.
-    for backend in ("google_cse", "serpapi", "bing_html"):
+    for backend in ("serpapi", "jina_index", "bing_html"):
         assert hr._backend_cooldown_until.get(backend, 0.0) > time.time(), (
             f"{backend} should be cooled down after empty streak"
         )
@@ -157,9 +147,8 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
     # NOT force any backend open again. That is the point of the fix: a
     # backend that came back empty has demonstrably nothing this run, and
     # re-hitting it in a later window advances nothing and burns budget.
-    call_counts = {"google_cse": 0, "serpapi": 0, "bing_html": 0, "jina_index": 0}
+    call_counts = {"serpapi": 0, "bing_html": 0, "jina_index": 0}
     originals = {
-        "google_cse": hr._search_via_google_cse,
         "serpapi": hr._search_via_serpapi,
         "bing_html": hr._search_via_bing_html,
         "jina_index": hr._search_via_jina_index,
@@ -172,8 +161,7 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
         wrapper.__name__ = fn.__name__
         return wrapper
 
-    with mock.patch.object(hr, "_search_via_google_cse", new=_counting("google_cse", originals["google_cse"])), \
-         mock.patch.object(hr, "_search_via_serpapi", new=_counting("serpapi", originals["serpapi"])), \
+    with mock.patch.object(hr, "_search_via_serpapi", new=_counting("serpapi", originals["serpapi"])), \
          mock.patch.object(hr, "_search_via_bing_html", new=_counting("bing_html", originals["bing_html"])), \
          mock.patch.object(hr, "_search_via_jina_index", new=_counting("jina_index", originals["jina_index"])):
         # The query must still COMPLETE (never crash, never livelock) even
@@ -187,11 +175,6 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
         assert backend in hr._backend_forced_this_run, (
             f"{backend} must be locked after its empty forced recheck"
         )
-    # google_cse is excluded from the per-run forced lock — it is a
-    # credential endpoint with its own bounded backoff, and re-hitting a
-    # known-failing API endpoint advances nothing (stall-relaxation only
-    # ever rechecks genuinely-empty backends).
-    assert "google_cse" not in hr._backend_forced_this_run
 
     # A hit must clear the cooldown so the backend returns immediately.
     _reset_module_state()
@@ -199,7 +182,6 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
     # path reaches serpapi as the warmest candidate (earliest cooldown).
     hr._backend_empty_streak["serpapi"] = hr._BACKEND_EMPTY_STREAK_LIMIT
     hr._backend_cooldown_until["serpapi"] = time.time() + 1000.0
-    hr._backend_cooldown_until["google_cse"] = time.time() + 2000.0
     hr._backend_cooldown_until["bing_html"] = time.time() + 2000.0
     hr._backend_cooldown_until["jina_index"] = time.time() + 2000.0
     # The warmest backend must carry the empty-cooldown flag so it is
@@ -207,12 +189,9 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
     # per-run forced slot).
     hr._backend_empty_cooldown.add("serpapi")
 
-    # v65: mock all three backends (name-preserving wrappers) — the
-    # orchestrator iterates every backend in the rotation, so a mock
-    # without __name__ on any one of them crashes the lookup.
-    def _empty_any(query):
+    def _empty_serpapi(query):
         return []
-    _empty_any.__name__ = "_search_via_google_cse"
+    _empty_serpapi.__name__ = "_search_via_serpapi"
 
     def _hit(query):
         return [("https://www.linkedin.com/posts/jane-doe-123456_activity-6978573042819072000-xYz", "serpapi")]
@@ -222,9 +201,14 @@ def test_empty_backend_gets_bounded_cooldown_but_never_fully_stalls():
         return []
     _empty_bing.__name__ = "_search_via_bing_html"
 
-    with mock.patch.object(hr, "_search_via_google_cse", new=_empty_any), \
-         mock.patch.object(hr, "_search_via_serpapi", new=_hit), \
-         mock.patch.object(hr, "_search_via_bing_html", new=_empty_bing):
+    def _empty_jina(query):
+        return []
+    _empty_jina.__name__ = "_search_via_jina_index"
+
+    with mock.patch.object(hr, "_search_via_serpapi", new=_hit), \
+         mock.patch.object(hr, "_search_via_bing_html", new=_empty_bing), \
+         mock.patch.object(hr, "_search_via_jina_index", new=_empty_jina), \
+         mock.patch.object(hr, "SERPAPI_KEY", "fake-serpapi"):
         urls = hr._search_urls_fallback("incident response hiring")
     print("hit urls:", urls, "cooldown:", hr._backend_cooldown_until)
     assert urls and urls[0][1] == "serpapi", f"expected a serpapi hit, got {urls}"
