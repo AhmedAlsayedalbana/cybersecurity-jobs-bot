@@ -7,9 +7,9 @@ Coverage:
    2026-08-18 run). The audit also reports the reader's own outcome.
 2. official_careers.py: circuit-opened sources attempt the public reader
    step instead of going straight to recovery rotation.
-3. linkedin_hr_posts_scraper.py: CSE backoff expiry never resets the
-   failure streak (park eventually fires), and each backend gets at most
-   one forced recheck per cooldown window.
+3. linkedin_hr_posts_scraper.py: a rejected SerpAPI key is parked once at
+   run start (no per-query retries — v78 removed Google CSE), and each
+   backend gets at most one forced recheck per cooldown window.
 4. telegram_sender.py: "soar" title anchor, "nozomi"/"malomatia" vendor
    and recognised-employer context (Senior SOAR Engineer @ malomatia and
    Designated Engineer @ Nozomi Networks now pass with real skills).
@@ -170,46 +170,48 @@ class TestV69HRBackendHygiene:
     """The 2026-08-18 run spent its HR budget on 1-second cycles: the CSE
     backoff window kept expiring between spaced queries and the streak was
     reset to zero on every expiry (park never reached), while the same
-    cooled backend was force-rechecked every cycle until it was parked."""
+    cooled backend was force-rechecked every cycle until it was parked.
+    v78: Google CSE removed (no longer supported) — the keyed backend is
+    now SerpAPI, probed once at run start; a rejected key parks it for the
+    whole run instead of retrying per query."""
 
-    def test_cse_expiry_never_resets_failure_streak(self):
-        """Backoff expiry re-enables CSE but must leave the failure count
-        intact so the park cap is eventually reached."""
+    def test_rejected_serpapi_key_is_parked_once_and_not_retried(self):
+        """A rejected SerpAPI key at run start must park the backend once
+        instead of burning budget on per-query retries (the v69 diagnosis
+        showed exactly this livelock on the old CSE key)."""
         from sources import linkedin_hr_posts_scraper as hps
-        original = (hps._cse_backoff_count, hps._GOOGLE_CSE_DISABLED)
+        original = hps._backend_parked.copy()
         try:
-            hps._GOOGLE_CSE_DISABLED = True
-            hps._cse_backoff_count = 4
-            hps._cse_backoff_until = 1.0  # already expired
-            with mock.patch("sources.linkedin_hr_posts_scraper.get_json", return_value=None):
-                with mock.patch.object(hps, "_is_backend_warm", return_value=False):
-                    hps._search_via_google_cse("cybersecurity egypt")
-            assert hps._cse_backoff_count == 4, (
-                "expiry must not reset the streak — a livelock otherwise"
+            with mock.patch.object(hps, "SERPAPI_KEY", "bad-key"), \
+                 mock.patch("sources.linkedin_hr_posts_scraper.get_json", return_value=None):
+                hps._validate_hr_backend_keys()
+                jobs = hps.fetch_linkedin_hr_posts_scraper(budget_seconds=5)
+            assert "serpapi" in hps._backend_parked, (
+                "a rejected SerpAPI key must park the backend for the run"
+            )
+            assert isinstance(jobs, list), (
+                "the plan must finish cleanly instead of livelocking"
             )
         finally:
-            hps._GOOGLE_CSE_DISABLED = original[1]
-            hps._cse_backoff_count = original[0]
-            hps._cse_backoff_until = 0.0
-
-    def test_cse_parks_after_park_streak(self):
-        """Once the streak crosses the park cap, CSE is parked for the run."""
-        from sources import linkedin_hr_posts_scraper as hps
-        original = (hps._cse_backoff_count, hps._GOOGLE_CSE_DISABLED, hps._backend_parked.copy())
-        try:
-            hps._GOOGLE_CSE_DISABLED = True
-            hps._cse_backoff_count = int(hps._BACKEND_PARK_STREAK)
-            hps._cse_backoff_until = 1.0
-            with mock.patch("sources.linkedin_hr_posts_scraper.get_json", return_value=None):
-                with mock.patch.object(hps, "_is_backend_warm", return_value=False):
-                    hps._search_via_google_cse("cybersecurity egypt")
-            assert "google_cse" in hps._backend_parked
-        finally:
-            hps._GOOGLE_CSE_DISABLED = original[1]
-            hps._cse_backoff_count = original[0]
-            hps._cse_backoff_until = 0.0
             hps._backend_parked.clear()
-            hps._backend_parked.update(original[2])
+            hps._backend_parked.update(original)
+
+    def test_healthy_serpapi_key_resets_park_and_cooldown(self):
+        """A healthy SerpAPI key probe must clear stale park/cooldown
+        state so the backend starts the run healthy."""
+        from sources import linkedin_hr_posts_scraper as hps
+        original = hps._backend_parked.copy()
+        try:
+            hps._backend_parked.add("serpapi")
+            hps._backend_cooldown_until["serpapi"] = float("inf")
+            with mock.patch.object(hps, "SERPAPI_KEY", "good-key"), \
+                 mock.patch("sources.linkedin_hr_posts_scraper.get_json", return_value={"organic": []}):
+                hps._validate_hr_backend_keys()
+            assert "serpapi" not in hps._backend_parked
+            assert hps._backend_cooldown_until.get("serpapi", 0.0) == 0.0
+        finally:
+            hps._backend_parked.clear()
+            hps._backend_parked.update(original)
 
     def test_single_forced_recheck_per_cooldown_window(self):
         """A backend in the empty-cooldown may be forced at most once per
