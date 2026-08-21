@@ -63,8 +63,6 @@ def test_hr_telemetry_records_public_search_fallback(monkeypatch):
     bing_html = f'<html><a href="{post_url}">Hiring</a></html>'
     scraper._reset_hr_telemetry(budget_seconds=25, queries_planned=1)
     with monkeypatch.context() as ctx:
-        ctx.setattr(scraper, "GOOGLE_CSE_API_KEY", "")
-        ctx.setattr(scraper, "GOOGLE_CSE_CX", "")
         ctx.setattr(scraper, "SERPAPI_KEY", "")
         ctx.setattr(scraper, "get_text", lambda *_args, **_kwargs: bing_html)
         assert scraper._search_urls('site:linkedin.com/posts "#hiring" cybersecurity Egypt')
