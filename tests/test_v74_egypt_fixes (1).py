@@ -217,18 +217,16 @@ class TestHRPostsJinaIndexGate:
     def test_jina_index_unusable_only_when_explicitly_parked(self):
         from sources.linkedin_hr_posts_scraper import (_all_hr_backends_unusable,
                                                        _backend_parked)
-        with mock.patch.dict(_backend_parked, {"google_cse": time.time() - 1e6,
-                                               "serpapi": time.time() - 1e6,
+        with mock.patch.dict(_backend_parked, {"serpapi": time.time() - 1e6,
                                                "bing_html": time.time() - 1e6}):
             # jina_index has NO credentials and therefore must never park:
             # the whole HR plan must stay alive on jina_index alone.
             assert not _all_hr_backends_unusable()
 
-    def test_unusable_requires_all_four_backends_parked(self):
+    def test_unusable_requires_all_backends_parked(self):
         from sources.linkedin_hr_posts_scraper import (_all_hr_backends_unusable,
                                                        _backend_parked)
-        parked = {"google_cse": time.time() - 1e6,
-                  "serpapi": time.time() - 1e6,
+        parked = {"serpapi": time.time() - 1e6,
                   "bing_html": time.time() - 1e6,
                   "jina_index": time.time() - 1e6}
         with mock.patch.dict(_backend_parked, parked, clear=True):
