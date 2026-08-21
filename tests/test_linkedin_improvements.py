@@ -66,9 +66,7 @@ class HrConfidenceTests(unittest.TestCase):
     def test_hr_search_uses_public_fallback_after_api_backends_return_nothing(self):
         post_url = "https://www.linkedin.com/feed/update/urn:li:activity:7341234567890123456/"
         bing_html = f'<html><li class="b_algo"><a href="{post_url}">Hiring</a></li></html>'
-        with patch.object(hr_scraper, "GOOGLE_CSE_API_KEY", ""), \
-             patch.object(hr_scraper, "GOOGLE_CSE_CX", ""), \
-             patch.object(hr_scraper, "SERPAPI_KEY", ""), \
+        with patch.object(hr_scraper, "SERPAPI_KEY", ""), \
              patch.object(hr_scraper, "get_text", return_value=bing_html):
             found = hr_scraper._search_urls('site:linkedin.com/posts "#hiring" cybersecurity Egypt')
 
@@ -83,7 +81,7 @@ class HrConfidenceTests(unittest.TestCase):
             ),
             location="Egypt",
             apply_info={"email": "sec@example.com", "whatsapp": "+201001234567"},
-            source_backend="google_cse",
+            source_backend="bing_html",
             company="Acme Security",
         )
         self.assertGreaterEqual(hiring_score, config.HR_HIRING_THRESHOLD)
@@ -109,7 +107,7 @@ class HrConfidenceTests(unittest.TestCase):
             'content="2026-08-15T09:00:00Z">' + (" " * 600) + "</html>"
         )
         with patch.object(hr_scraper, "get_text", return_value=html):
-            post = hr_scraper._scrape_linkedin_post(post_url, "google_cse")
+            post = hr_scraper._scrape_linkedin_post(post_url, "bing_html")
 
         self.assertIsNotNone(post)
         assert post is not None
@@ -125,7 +123,7 @@ class HrConfidenceTests(unittest.TestCase):
             'content="2026-08-15T09:00:00Z">' + (" " * 600) + "</html>"
         )
         with patch.object(hr_scraper, "get_text", return_value=html):
-            post = hr_scraper._scrape_linkedin_post(post_url, "google_cse")
+            post = hr_scraper._scrape_linkedin_post(post_url, "bing_html")
 
         self.assertIsNone(post)
 
