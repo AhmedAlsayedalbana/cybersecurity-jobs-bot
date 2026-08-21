@@ -398,25 +398,23 @@ class TestV68HrPostsFinal:
         assert not accepted
         assert evidence == "no_hiring_intent"
 
-    def test_cse_failure_streak_parks_backend(self):
-        """CSE persistent failures now park the backend like any other —
-        the v68 diagnosis showed CSE backoff firing twice then being
-        re-hit every query."""
+    def test_unusable_serpapi_key_is_parked_at_run_start(self):
+        """v78: Google CSE removed (no longer supported) — the keyed
+        serpapi backend is probed once at run start; a rejected key parks
+        the backend for the whole run instead of burning budget per query
+        (the v68 diagnosis showed exactly this per-query waste on the old
+        CSE key)."""
         from sources import linkedin_hr_posts_scraper as hps
 
-        # Force the failure counter past the park cap.
-        hps._cse_backoff_count = 0
-        hps._backend_parked.discard("google_cse")
-        for _ in range(hps._BACKEND_PARK_STREAK + 2):
-            hps._set_cse_backoff(5.0)
-            hps._search_via_google_cse("site:linkedin.com/posts #hiring cybersecurity Egypt")
-        assert "google_cse" in hps._backend_parked, (
-            "CSE must be parked after persistent failures like other backends"
+        hps._backend_parked.discard("serpapi")
+        with mock.patch.object(hps, "SERPAPI_KEY", "bad-key"), \
+             mock.patch.object(hps, "get_json", return_value=None):
+            hps._validate_hr_backend_keys()
+        assert "serpapi" in hps._backend_parked, (
+            "a rejected SerpAPI key must park the backend for the run"
         )
         # Housekeeping: leave module state clean for other tests.
-        hps._backend_parked.discard("google_cse")
-        hps._cse_backoff_count = 0
-        hps._cse_backoff_until = 0.0
+        hps._backend_parked.discard("serpapi")
 
     def test_post_verification_records_rejection_telemetry(self):
         """A declined pre-scrape URL records its rejection reason in the
