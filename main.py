@@ -289,16 +289,17 @@ def _enrich_canonical_record(jobs: list) -> None:
 
 def _v72_verification_search_fn(spec: dict) -> list[tuple[str, str]]:
     """Wire the HR Posts backend ladder to the verification chain, in
-    descending order of trust: CSE → SerpAPI → Bing.  Each backend keeps its
-    own park/streak state from the HR Posts run, so a backend already parked
-    for that run is silently skipped (one backend's failure must not cost the
-    bot a fresh request cap)."""
+    descending order of trust: Jina Index (CSE-free, no key) → SerpAPI →
+    Bing.  v78: Google CSE removed (no longer supported).  Each backend keeps
+    its own park/streak state from the HR Posts run, so a backend already
+    parked for that run is silently skipped (one backend's failure must not
+    cost the bot a fresh request cap)."""
     from sources.linkedin_hr_posts_scraper import (
-        _search_via_google_cse, _search_via_serpapi, _search_via_bing_html,
+        _search_via_jina_index, _search_via_serpapi, _search_via_bing_html,
     )
     query = spec.get("query", "")
     ladder = [
-        ("google_cse", _search_via_google_cse),
+        ("jina_index", _search_via_jina_index),
         ("serpapi", _search_via_serpapi),
         ("bing", _search_via_bing_html),
     ]
