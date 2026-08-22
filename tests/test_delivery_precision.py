@@ -47,29 +47,42 @@ def test_explicit_remote_role_with_egypt_office_location_routes_only_remote():
     assert "egypt" not in route_job(job)
 
 
-def test_global_physical_job_cannot_borrow_egypt_query_hint():
+def test_global_physical_job_is_accepted_for_remote_discovery():
+    # v78: Global physical jobs are now accepted to feed the remote channel.
     job = _job(location="London, United Kingdom", geo_hint="egypt")
 
     assert classify_geo(job) == "global"
-    assert not passes_geo_filter(job)
-    assert not _is_telegram_eligible(job)
+    assert passes_geo_filter(job)
+    assert _is_telegram_eligible(job)
+    assert "remote" in route_job(job)
+    # v78: specialty channels (like soc/pentest) are now permitted for global jobs
+    # if the role proves cyber relevance, acting as discovery for the remote channel.
+    # We only assert that they DON'T go to regional geo channels.
+    assert "egypt" not in route_job(job)
+    assert "gulf" not in route_job(job)
 
 
-def test_global_hybrid_job_is_not_treated_as_worldwide_remote():
+def test_global_hybrid_job_is_accepted_for_remote_discovery():
     job = _job(location="Berlin, Germany", is_remote=True)
     job.job_type = "Hybrid"
 
     assert not is_remote_job(job)
     assert classify_geo(job) == "global"
-    assert not passes_geo_filter(job)
+    assert passes_geo_filter(job)
+    assert "remote" in route_job(job)
+    assert "egypt" not in route_job(job)
+    assert "gulf" not in route_job(job)
 
 
-def test_unknown_physical_location_cannot_use_source_geo_hint():
+def test_unknown_physical_location_is_accepted_for_remote_discovery():
     job = _job(location="Not specified", geo_hint="arab")
 
     assert classify_geo(job) == "arab"  # discovery telemetry only
     assert classify_delivery_geo(job) == "global"
-    assert not passes_geo_filter(job)
+    assert passes_geo_filter(job)
+    assert "remote" in route_job(job)
+    assert "egypt" not in route_job(job)
+    assert "gulf" not in route_job(job)
 
 
 def test_training_job_cannot_route_to_soc_from_description_only_signal():
