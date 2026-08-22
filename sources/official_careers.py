@@ -329,7 +329,7 @@ def fetch_source(source_key: str) -> SourceResult:
     # actually JS-only and only after both cheaper steps returned nothing.
     ladder_outcome = None
     ladder_was_attempted = False
-    if not outcome.jobs and not outcome.no_active_jobs:
+    if not outcome.jobs and (not outcome.no_active_jobs or outcome.error_code == "direct_budget_capped"):
         if outcome.parsed and _SCRIPT_RE.search(outcome.raw_html or ""):
             page_jobs, _ = _jobs_from_html(outcome.raw_html or "", source, base_url=source.url)
             if page_jobs:
@@ -541,28 +541,28 @@ _EGYPT_RECOVERY_URLS: dict[str, list[str]] = {
     "valeo_egypt": ["https://valeo.wd3.myworkdayjobs.com/en-US/search", "https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs"],
     # Blocked Egyptian bank portals with an alternate careers surface
     "telecom_egypt": ["https://te.eg/wps/portal/te/Personal/Careers/jobs"],
-    "banque_misr": ["https://www.banquemisr.com/en/careers/current-vacancies", "https://careers.banquemisr.com"],
-    "aaib": ["https://aaib.com.eg/en/careers/current-vacancies"],
-    "adib_egypt": ["https://www.adib.com.eg/en/careers"],
-    "cib_egypt": ["https://www.cibeg.com/en/careers/our-openings", "https://www.cibeg.com/en/careers/apply"],
-    "qnb_egypt": ["https://www.qnb.com/en/group/careers"],
-    "banque_du_caire": ["https://www.bdc.com.eg/bdcwebsite/personal/careers.html/jobs"],
-    "bank_nxt": ["https://banknxt.com/careers/openings"],
-    "emirates_nbd_egypt": ["https://www.emiratesnbd.com/en/egypt/careers"],
-    "hsbc_egypt": ["https://www.hsbc.com/en-eg/careers"],
-    "mashreq_egypt": ["https://www.mashreq.com/egypt/careers/jobs"],
-    "al_baraka_bank": ["https://www.albarakabank.com.eg/en/careers", "https://www.albarakabank.com.eg/careers"],
-    "hdb": ["https://www.hdb-egypt.com/en/careers"],
-    "bank_abc": ["https://www.bankabc.com.eg/en/careers"],
-    "saib": ["https://www.saib.com.eg/en/careers"],
-    "vois": ["https://vois.com.eg/en/careers"],
+    "banque_misr": ["https://www.banquemisr.com/en/careers/current-vacancies", "https://careers.banquemisr.com", "https://www.linkedin.com/company/banque-misr/jobs/"],
+    "aaib": ["https://aaib.com.eg/en/careers/current-vacancies", "https://www.linkedin.com/company/aaibegypt/jobs/"],
+    "adib_egypt": ["https://www.adib.com.eg/en/careers", "https://www.linkedin.com/company/adibegypt/jobs/"],
+    "cib_egypt": ["https://www.cibeg.com/en/careers/our-openings", "https://www.cibeg.com/en/careers/apply", "https://www.linkedin.com/company/cibegypt/jobs/"],
+    "qnb_egypt": ["https://www.qnb.com/en/group/careers", "https://www.linkedin.com/company/qnb-al-ahli/jobs/"],
+    "banque_du_caire": ["https://www.bdc.com.eg/bdcwebsite/personal/careers.html/jobs", "https://www.linkedin.com/company/banque-du-caire/jobs/"],
+    "bank_nxt": ["https://banknxt.com/careers/openings", "https://www.linkedin.com/company/banknxt/jobs/"],
+    "emirates_nbd_egypt": ["https://www.emiratesnbd.com/en/egypt/careers", "https://www.linkedin.com/company/emirates-nbd/jobs/"],
+    "hsbc_egypt": ["https://www.hsbc.com/en-eg/careers", "https://www.linkedin.com/company/hsbc/jobs/"],
+    "mashreq_egypt": ["https://www.mashreq.com/egypt/careers/jobs", "https://www.linkedin.com/company/mashreq/jobs/"],
+    "al_baraka_bank": ["https://www.albarakabank.com.eg/en/careers", "https://www.albarakabank.com.eg/careers", "https://www.linkedin.com/company/al-baraka-bank-egypt/jobs/"],
+    "hdb": ["https://www.hdb-egypt.com/en/careers", "https://www.linkedin.com/company/housing-&-development-bank/jobs/"],
+    "bank_abc": ["https://www.bankabc.com.eg/en/careers", "https://www.linkedin.com/company/bank-abc-in-egypt/jobs/"],
+    "saib": ["https://www.saib.com.eg/en/careers", "https://www.linkedin.com/company/saib-bank/jobs/"],
+    "vois": ["https://vois.com.eg/en/careers", "https://www.linkedin.com/company/vois/jobs/"],
     "cybershield": ["https://www.cybershield.com.eg/en/careers"],
-    "etisalat_egypt": ["https://careers.etisalat.com.eg/jobs", "https://www.etisalat.com.eg/en/careers.html"],
-    "itida": ["https://www.itida.gov.eg/en/careers/jobs"],
+    "etisalat_egypt": ["https://careers.etisalat.com.eg/jobs", "https://www.etisalat.com.eg/en/careers.html", "https://www.linkedin.com/company/etisalat-egypt/jobs/"],
+    "itida": ["https://www.itida.gov.eg/en/careers/jobs", "https://www.linkedin.com/company/itida/jobs/"],
     "smart_village": ["https://www.smart-village.com/en/careers/jobs"],
-    "we_jina": ["https://te.eg/wps/portal/te/Personal/Careers"],
-    "raya": ["https://www.raya.com.eg/en/careers/jobs"],
-    "nbe": ["https://www.nbe.com.eg/en/Pages/Default.aspx/careers"],
+    "we_jina": ["https://te.eg/wps/portal/te/Personal/Careers", "https://www.linkedin.com/company/telecom-egypt/jobs/"],
+    "raya": ["https://www.raya.com.eg/en/careers/jobs", "https://www.linkedin.com/company/raya/jobs/"],
+    "nbe": ["https://www.nbe.com.eg/en/Pages/Default.aspx/careers", "https://www.linkedin.com/company/national-bank-of-egypt/jobs/"],
     # Non-Egyptian sources the user flagged with the same block pattern
     "dubizzle": ["https://dubizzle.com/jobs/search/"],
     "elsewedy_electric": ["https://www.elsewedy.com/en/careers", "https://careers.elsewedy.com"],
@@ -663,7 +663,7 @@ def _fetch_direct(source: CareerSource) -> _Outcome:
 
 
 def _fetch_greenhouse(source: CareerSource) -> _Outcome:
-    data = get_json(f"https://api.greenhouse.io/v1/boards/{source.board}/jobs?content=true", timeout=20)
+    data = get_json(f"https://api.greenhouse.io/v1/boards/{source.board}/jobs?content=true", timeout=40)
     if not isinstance(data, dict) or "jobs" not in data:
         return _Outcome([], error_code="greenhouse_unavailable")
     rows = data.get("jobs")
@@ -689,7 +689,7 @@ def _fetch_workday(source: CareerSource) -> _Outcome:
             endpoint,
             payload={"appliedFacets": {}, "limit": source.page_size, "offset": offset, "searchText": ""},
             headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=30,
+            timeout=60,
         )
         if not isinstance(data, dict):
             return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code="workday_unavailable")
@@ -710,7 +710,7 @@ def _fetch_workday(source: CareerSource) -> _Outcome:
 def _fetch_ashby(source: CareerSource) -> _Outcome:
     # Ashby exposes a public board payload.  Some installations disable this
     # endpoint; in that case the official board page remains the fallback.
-    data = get_json(f"https://api.ashbyhq.com/posting-api/job-board/{source.board}", timeout=20)
+    data = get_json(f"https://api.ashbyhq.com/posting-api/job-board/{source.board}", timeout=40)
     if isinstance(data, dict):
         rows = data.get("jobs") or data.get("jobPostings")
         if isinstance(rows, list):
@@ -727,7 +727,7 @@ def _fetch_amazon(source: CareerSource) -> _Outcome:
         data = get_json(
             source.url,
             params={"base_query": source.query, "loc_query": "", "result_limit": 100, "page": page, "sort": "recent"},
-            timeout=30,
+            timeout=60,
         )
         if not isinstance(data, dict):
             return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code="amazon_unavailable")
