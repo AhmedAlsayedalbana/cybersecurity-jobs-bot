@@ -468,6 +468,10 @@ def route_job(job):
         geo_result = ["gulf"]
     elif geo == "remote":
         geo_result = ["remote"]
+    elif geo == "global":
+        # v78: Physical roles from outside the Egypt/Arab region are eligible
+        # for the remote channel ONLY (acting as a global discovery channel).
+        geo_result = ["remote"]
 
     # Topic routing: exactly one specialty topic.
     topic_result = []
