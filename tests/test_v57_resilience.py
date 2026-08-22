@@ -243,7 +243,10 @@ def test_non_cyber_and_generic_likely_roles_cannot_enter_telegram():
     confirmed_without_location = _job("NetSuite Administrator")
     confirmed_without_location.cyber_verdict = CyberVerdict.CONFIRMED.value
     confirmed_without_location.location = "London, UK"
-    assert not _is_telegram_eligible(confirmed_without_location)
+    # v78: Global physical roles now pass the delivery eligibility gate to
+    # feed the remote discovery channel.
+    assert _is_telegram_eligible(confirmed_without_location)
+    assert getattr(confirmed_without_location, "filter_reason", "") != "reject_geo_filter"
 
 
 def test_cloudsec_requires_explicit_cloud_security_evidence():
@@ -314,10 +317,12 @@ def test_cyber_gate_runs_before_location_gate(monkeypatch):
     )
     accepted, rejected = classify_jobs([job])
 
-    assert accepted == []
-    assert rejected == [job]
+    # v78: Global physical roles are now accepted to feed the remote discovery channel.
+    assert accepted == [job]
+    assert rejected == []
     assert job.cyber_verdict == CyberVerdict.CONFIRMED.value
-    assert job.filter_reason == "reject_geo_filter"
+    # v78: accepted jobs now carry their acceptance reason in filter_reason
+    assert job.filter_reason == "accept_domain_title_anchor"
 
 
 def test_protected_telegram_phase_survives_an_upstream_total_budget_overrun(monkeypatch):
