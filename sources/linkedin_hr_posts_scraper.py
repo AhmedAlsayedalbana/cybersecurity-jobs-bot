@@ -5,7 +5,7 @@ Discovery layers (in priority order):
 2. Company-focused discovery (company + hiring signals)
 3. Recruiter / Hiring-manager discovery
 4. Hiring-intent discovery
-5. Search-engine discovery (SerpAPI / Jina Index / Bing) as FALLBACK only
+5. Search-engine discovery (Google CSE / SerpAPI / Bing) as FALLBACK only
 
 Budget: 90s (up from 25s).
 Adaptive query ranking based on acceptance rates.
@@ -41,36 +41,24 @@ from sources.http_utils import get_json, get_text
 
 log = logging.getLogger(__name__)
 
-# v78: Google CSE was removed entirely — the service is no longer supported.
-# Discovery now runs on serpapi / jina_index / bing_html only.
 _SEARCH_BACKEND_WARNING_EMITTED = False
 _HR_TELEMETRY: dict[str, object] = {}
 
 # v65: backend-level cooldowns replace hard per-run bans.
-# A backend that fails or comes back genuinely empty is cooled down for a
-# bounded window — long enough to stop burning budget on a dead backend,
-# short enough that a temporary blip (transient CSE 4xx, an empty search
-# results page) never silences the backend for the whole run.
 _BACKEND_EMPTY_STREAK_LIMIT = int(os.getenv("HR_BACKEND_EMPTY_STREAK_LIMIT", "4"))
 _BACKEND_COOLDOWN_SECONDS = int(os.getenv("HR_BACKEND_COOLDOWN_SECONDS", "60"))
 # v66: a backend that keeps coming back empty even after stall-relaxation
-# rechecks is parked for the remainder of the run instead of being hit once
-# per query (the v65 log showed 16 consecutive empties — every query paying
-# for a backend that demonstrably has nothing).
 _BACKEND_PARK_STREAK = int(os.getenv("HR_BACKEND_MAX_EMPTY_STREAK_BEFORE_PARK", "8"))
 _backend_cooldown_until: dict[str, float] = {}
 _backend_empty_cooldown: set[str] = set()
 _backend_empty_streak: dict[str, int] = {}
 _backend_parked: set[str] = set()
 # v69: backends that already spent their one forced recheck during the
-# current cooldown window — the set is cleared once the window expires, at
-# which point another single forced recheck is permitted.
 _backend_forced_this_cooldown: set[str] = set()
 # v75: backends that already spent their one forced recheck during the
-# entire RUN (not just the cooldown window). A backend that came back
-# empty from a forced recheck proved it has nothing this run — re-hitting
-# it in a later window advances nothing and burns the HR budget.
 _backend_forced_this_run: set[str] = set()
+
+
 def _backend_cooldown_expired(backend: str) -> bool:
     return time.time() >= _backend_cooldown_until.get(backend, 0.0)
 
@@ -80,20 +68,12 @@ def _mark_backend_empty(backend: str) -> None:
     _backend_empty_streak[backend] = streak
     if streak >= max(1, _BACKEND_EMPTY_STREAK_LIMIT):
         _backend_cooldown_until[backend] = time.time() + max(5.0, float(_BACKEND_COOLDOWN_SECONDS))
-        # v65: remember that this cooldown came from genuinely empty responses
-        # — the stall-relaxation path only rechecks backends flagged here so
-        # that short transient-failure backoffs are never picked as the
-        # forced recheck.
         _backend_empty_cooldown.add(backend)
         log.info(
             "LinkedIn HR Posts: backend '%s' empty %d times in a row; "
             "cooled down for %ds (recheck resumes automatically).",
             backend, streak, _BACKEND_COOLDOWN_SECONDS,
         )
-    # v66: after the park streak (which counts forced stall-relaxation
-    # rechecks too), the backend is parked for the rest of the run. It is
-    # skipped by the orchestrator and never picked by stall-relaxation,
-    # ending the per-query retry loop while the other backends keep serving.
     if (
         streak >= max(1, _BACKEND_PARK_STREAK)
         and backend not in _backend_parked
@@ -125,7 +105,6 @@ def _is_backend_warm(backend: str) -> bool:
     if backend in _backend_parked:
         return False
     return _backend_cooldown_expired(backend)
-
 
 # ============================================================
 # v61: DISCOVERY QUERY MATRICES
@@ -261,7 +240,7 @@ SOURCE_QUALITY_BONUS = {
     # v68 dedicated-lane methods — verified against the post body itself
     # before acceptance, so they carry the same trust as recruiter posts.
     "recruiter_posts": 2, "company_hiring_posts": 3, "job_announcements": 2,
-    "jina_index": 3, "serpapi": 2, "bing_html": 1,
+    "serpapi": 1, "bing_html": 0, "jina_index": 2,
 }
 
 _ROLE_MAP = [
@@ -482,6 +461,9 @@ def _normalize_candidate_link(url: str) -> str:
     return canonical
 
 
+# Google CSE search function removed in v78 as the service is no longer supported.
+
+
 def _search_via_serpapi(query: str) -> list[tuple[str, str]]:
     if not SERPAPI_KEY:
         return []
@@ -500,6 +482,9 @@ def _search_via_serpapi(query: str) -> list[tuple[str, str]]:
         max_retries=0,
         budget_phase="linkedin_hr",
     )
+    if data is None:
+        _backend_parked.add("serpapi")
+        return []
     if not data:
         return []
     out: list[tuple[str, str]] = []
@@ -511,7 +496,7 @@ def _search_via_serpapi(query: str) -> list[tuple[str, str]]:
 
 
 def _search_via_jina_index(query: str) -> list[tuple[str, str]]:
-    """v74 (v78: now a primary backend): CSE-free public index backend — search LinkedIn posts
+    """v74: CSE-independent public index backend — search LinkedIn posts
     through the Jina public search endpoint instead of Google.  No API key,
     no quota, and a different IP pool than the bot's direct exit, so a
     Google-blocked environment can still reach LinkedIn's public index.
@@ -578,52 +563,28 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                 "LinkedIn HR posts: API search credentials are absent; using the bounded public-search fallback."
             )
             _SEARCH_BACKEND_WARNING_EMITTED = True
+    # v78: Google CSE removed.
     for search_fn in (_search_via_serpapi, _search_via_jina_index, _search_via_bing_html):
         backend = search_fn.__name__.removeprefix("_search_via_")
-        # v65: skip cooled-down backends — the orchestrator re-runs them on
-        # later queries once their bounded window expires.
         if not _is_backend_warm(backend):
             continue
         _increment_counter("search_backend_attempts", backend)
         urls = search_fn(query)
         if urls:
-            # v65: a real hit clears the backend's empty streak and any
-            # cooldown — the backend is healthy again for the rest of the
-            # query plan.
             _mark_backend_hit(backend)
             _increment_counter("search_backend_hits", backend, len(urls))
             return urls
         _mark_backend_empty(backend)
         _increment_counter("search_backend_empty", backend)
-    # v65: if every backend is currently cooled down, briefly relax the
-    # warmest one (smallest cooldown) so the query plan can never fully
-    # stall — at least one backend always remains callable.
+
     living = [
         b for b in ("serpapi", "jina_index", "bing_html")
         if _backend_cooldown_until.get(b, 0.0) > 0.0
     ]
     if living and not any(_is_backend_warm(b) for b in living):
-        # v65: stall-relaxation rechecks a backend whose cooldown came from
-        # genuinely empty responses — never a short transient-failure
-        # backoff — otherwise the relaxed slot keeps bouncing between
-        # failure backoffs and the query plan livelocks.
-        # Stall-relaxation only rechecks backends whose cooldown came from
-        # genuinely empty responses; a backend whose cooldown came from a
-        # short transient failure is not rechecked — re-hitting a
-        # known-failing API endpoint advances nothing.
         eligible = [b for b in living if b in _backend_empty_cooldown and b not in _backend_parked and b not in _backend_forced_this_run]
-        # v66: backends parked by the streak cap are out of the run entirely
-        # — neither warm nor forceable. If the only empty-cooldown backends
-        # are parked, the query plan returns what it collected so far and
-        # lets the next run try again.
         if not eligible:
             return []
-        # v69: a backend may be forced at most ONCE per cooldown window —
-        # the 2026-08-18 run forced the same backend every ~1s cycle for the
-        # whole window, burning the HR budget on identical dead-end checks.
-        # After one forced recheck the backend stays in cooldown until the
-        # window expires, and stall-relaxation moves on to the rest of the
-        # plan instead of livelocking on the same stale backend.
         not_forced = [b for b in eligible if b not in _backend_forced_this_cooldown]
         if not_forced:
             relaxed = min(not_forced, key=lambda b: _backend_cooldown_until[b])
@@ -643,23 +604,11 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                 _increment_counter("search_backend_attempts", relaxed)
                 urls = search_fn(query)
                 if urls:
-                    # v65: a forced recheck that produces results clears the
-                    # backend's streak and cooldown, same as the normal loop.
                     _mark_backend_hit(relaxed)
                     _increment_counter("search_backend_hits", relaxed, len(urls))
                     return urls
-                # v69: a forced recheck that comes back empty re-enters the
-                # cooldown so the backend keeps its single-forced-recheck
-                # quota for the remainder of THIS window (it already spent
-                # it) while the plan moves on to other backends.
-                # a repeatedly empty backend.
                 _mark_backend_empty(relaxed)
                 _increment_counter("search_backend_empty", relaxed)
-                # v75: a forced recheck that comes back empty proves the
-                # backend has nothing this run — it may be forced at most
-                # once per RUN (per window was the v69 cap), so lock it for
-                # the remainder of the run and free the HR budget for the
-                # surviving backends.
                 _backend_forced_this_run.add(relaxed)
     return []
 
@@ -976,14 +925,13 @@ def _build_job_announcements_lane(rotation_slot: int) -> list[dict]:
 
 def _build_fallback_queries() -> list[dict]:
     """Build fallback queries for search-engine backends."""
-    # v78: Google CSE removed (no longer supported) — fallback queries now
-    # route through the remaining backends (serpapi / jina_index / bing_html).
+    # v78: fallback to jina_index and serpapi since CSE is removed.
     return [
-        {"query": 'site:linkedin.com/posts "#hiring" "cybersecurity" Egypt', "method": "fallback_index"},
-        {"query": 'site:linkedin.com/posts "#hiring" "SOC analyst" Egypt', "method": "fallback_index"},
-        {"query": 'site:linkedin.com/posts "#hiring" "penetration tester" Egypt', "method": "fallback_index"},
-        {"query": 'site:linkedin.com/posts "#hiring" "information security" Egypt', "method": "fallback_index"},
-        {"query": 'site:linkedin.com/posts "#hiring" "security engineer" Egypt', "method": "fallback_index"},
+        {"query": 'site:linkedin.com/posts "#hiring" "cybersecurity" Egypt', "method": "jina_index"},
+        {"query": 'site:linkedin.com/posts "#hiring" "SOC analyst" Egypt', "method": "serpapi"},
+        {"query": 'site:linkedin.com/posts "#hiring" "penetration tester" Egypt', "method": "jina_index"},
+        {"query": 'site:linkedin.com/posts "#hiring" "information security" Egypt', "method": "serpapi"},
+        {"query": 'site:linkedin.com/posts "#hiring" "security engineer" Egypt', "method": "jina_index"},
     ]
 
 
@@ -1265,7 +1213,7 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
         ),
         "Accept-Language": "ar,en;q=0.9",
     }
-    html = get_text(url, headers=headers, budget_phase="linkedin")
+    html = get_text(url, headers=headers, budget_phase="linkedin_hr")
     if not html or len(html) < 200:
         _record_rejection("post_page_unavailable")
         return None
@@ -1295,7 +1243,7 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
             "Accept-Language": "ar,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         }
-        mobile_html = get_text(url, headers=mobile_headers, budget_phase="linkedin")
+        mobile_html = get_text(url, headers=mobile_headers, budget_phase="linkedin_hr")
         if mobile_html and len(mobile_html) > 200:
             mobile_text = _extract_text_from_html(mobile_html)
             if len(mobile_text) > len(raw_text):
@@ -1414,57 +1362,36 @@ def _scrape_linkedin_post(url: str, backend: str) -> dict | None:
 # ============================================================
 
 def _validate_hr_backend_keys() -> None:
-    """v70 (v78): validate search-backend credentials once before the query
-    plan starts — a key that is missing, obviously malformed, or rejected by
-    the provider (quota/invalid) is detected at the first request and the
+    """v70: validate search-backend credentials once before the query plan
+    starts — a key that is missing, obviously malformed, or rejected by the
+    provider (quota/invalid) is detected at the first request and the
     backend is marked unusable so the query plan never pays for it again.
-
-    v78: Google CSE was removed entirely (no longer supported) — serpapi is
-    the keyed backend validated here; jina_index needs no credentials at all.
     """
-    if not SERPAPI_KEY:
+    # v70/v78: A healthy key at startup must clear any stale failure state
+    # (park, cooldown) left over from previous runs.
+    if SERPAPI_KEY:
+        _backend_parked.discard("serpapi")
+        _backend_cooldown_until.pop("serpapi", None)
+    else:
         return
+
+    # One cheap probe request to surface 403/invalid-key/usage-limit errors.
     probe = get_json(
         "https://serpapi.com/search",
-        params={"q": "test", "engine": "google", "api_key": SERPAPI_KEY},
+        params={"q": "test", "api_key": SERPAPI_KEY, "num": "1"},
         max_retries=0,
         budget_phase="linkedin_hr",
     )
     if probe is None:
-        probe2 = get_json(
-            "https://serpapi.com/search",
-            params={"q": "x", "engine": "google", "api_key": SERPAPI_KEY},
-            max_retries=0,
-            budget_phase="linkedin_hr",
+        _backend_parked.add("serpapi")
+        log.warning(
+            "LinkedIn HR Posts: SerpAPI key is unusable (credential "
+            "or quota error) — SerpAPI skipped for the rest of the run.",
         )
-        if probe2 is None:
-            _backend_parked.add("serpapi")
-            log.warning(
-                "LinkedIn HR Posts: SerpAPI key is unusable (credential or "
-                "quota error) — serpapi skipped for the rest of the run; "
-                "fix the key to restore that backend (jina_index and Bing "
-                "remain available).",
-            )
-            return
-    # A successful response means the key is fine — clear any stale failure
-    # state so serpapi starts the run healthy.
-    _backend_cooldown_until.pop("serpapi", None)
-    _backend_empty_cooldown.discard("serpapi")
-    _backend_parked.discard("serpapi")
 
 
 def _all_hr_backends_unusable() -> bool:
-    """v70: true when no search backend can answer this run — the query plan
-    would pay for guaranteed empties, so the HR phase skips entirely and
-    waits for the next run (keys refreshed, backends cooled down).
-
-    Per-backend notes:
-    - serpapi / bing_html: unusable when missing credentials or parked.
-      A cooled-down backend (temporary empties) is NOT unusable — the
-      bounded cooldown will expire and the backend may recover, and
-      stall-relaxation is allowed to recheck it.
-    - jina_index: needs no credentials; unusable only when parked.
-    """
+    """v70: true when no search backend can answer this run."""
     serpapi_unusable = not SERPAPI_KEY or "serpapi" in _backend_parked
     bing_unusable = "bing_html" in _backend_parked
     jina_unusable = "jina_index" in _backend_parked
@@ -1478,9 +1405,9 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
     budget = int(budget_seconds or LI_HR_POST_BUDGET_SECONDS)
     rotation_slot = int(time.time() // (4 * 3600))
     # v70: key health is checked once at the start instead of letting every
-    # query pay for a known-dead backend. An unusable SerpAPI key is
-    # detected early by run-start validation and parked entirely for the
-    # rest of the run — in the 2026-08-18 run a failing key made the HR phase burn
+    # query pay for a known-dead backend. An invalid or quota-exhausted CSE
+    # key is detected early and CSE is skipped entirely for the rest of the
+    # run — in the 2026-08-18 run a failing CSE key made the HR phase burn
     # 33 queries while no backend could find LinkedIn posts at all.
     _validate_hr_backend_keys()
     if _all_hr_backends_unusable():
@@ -1538,10 +1465,8 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
         # v61: For Layers 1-4, use search engine as the transport mechanism
         # (we search LinkedIn via search engines since we don't have LinkedIn API access)
         # Layer 5 explicitly uses the fallback
-        # v78: every search-engine method (native layers + fallback) now
-        # routes through the same backend ladder — Google CSE is gone.
         if method in ("linkedin_native", "company_discovery", "recruiter_discovery",
-                       "hiring_intent", "fallback_index"):
+                       "hiring_intent"):
             urls = _search_urls_fallback(query_text)
         else:
             urls = _search_urls_fallback(query_text)
