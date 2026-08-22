@@ -50,7 +50,8 @@ class DeliveryLocation:
 
     @property
     def eligible(self) -> bool:
-        return self.geo in {"egypt", "arab", "remote"}
+        # v78: Global jobs are now eligible for delivery (routed to remote channel).
+        return self.geo in {"egypt", "arab", "remote", "global"}
 
 
 def _has_hybrid_marker(job: Any) -> bool:
@@ -139,7 +140,8 @@ def validate_location_for_channel(job: Any, channel: str) -> tuple[bool, Deliver
     if channel in {"gulf", "arab"}:  # ``gulf`` remains the legacy channel key.
         return decision.geo == "arab", decision
     if channel == "remote":
-        return decision.geo == "remote", decision
+        # v78: Remote channel now accepts global physical jobs as a discovery layer.
+        return decision.geo in ("remote", "global"), decision
     # Specialty channels accept only jobs that have already passed the shared
     # Egypt/Arab physical or explicit-worldwide-remote policy.
     return True, decision
