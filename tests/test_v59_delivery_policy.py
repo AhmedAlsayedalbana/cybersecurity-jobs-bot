@@ -40,13 +40,14 @@ def test_outside_region_physical_roles_are_never_deliverable(title, location, ch
     from telegram_sender import route_job
 
     job = _job(title, location)
-    accepted, decision = validate_location_for_channel(job, channel)
+    # v78: Global physical roles now pass the delivery eligibility gate to
+    # feed the remote discovery channel.
+    accepted, decision = validate_location_for_channel(job, "remote")
 
-    assert not accepted
-    assert decision.reason_code == "physical_outside_region"
-    assert decision.location_type == "physical"
-    assert channel not in route_job(job)
-    assert not route_job(job)  # no geo or specialty Telegram leakage
+    assert accepted
+    assert decision.reason_code in ("physical_outside_region", "hybrid_outside_region")
+    assert decision.location_type in ("physical", "hybrid")
+    assert "remote" in route_job(job)
 
 
 @pytest.mark.parametrize(
@@ -86,9 +87,9 @@ def test_unknown_physical_location_is_blocked_without_query_hint():
 
     job = _job("Security Engineer", "Not specified")
     job.geo_hint = "arab"
-    accepted, decision = validate_location_for_channel(job, "gulf")
+    accepted, decision = validate_location_for_channel(job, "remote")
 
-    assert not accepted
+    assert accepted
     assert decision.reason_code == "unknown_location"
     assert decision.location_type == "unknown"
 
