@@ -40,21 +40,24 @@ class DeliveryPrecisionTests(unittest.TestCase):
     def test_global_physical_job_cannot_borrow_query_location(self):
         job = _job(location="London, United Kingdom", geo_hint="egypt")
         self.assertEqual(classify_geo(job), "global")
-        self.assertFalse(passes_geo_filter(job))
-        self.assertFalse(_is_telegram_eligible(job))
+        # v78: Global physical roles now pass the delivery eligibility gate.
+        self.assertTrue(passes_geo_filter(job))
+        self.assertTrue(_is_telegram_eligible(job))
 
     def test_hybrid_global_job_is_not_remote(self):
         job = _job(location="Berlin, Germany", is_remote=True)
         job.job_type = "Hybrid"
         self.assertFalse(is_remote_job(job))
         self.assertEqual(classify_geo(job), "global")
-        self.assertFalse(passes_geo_filter(job))
+        # v78: Global physical roles now pass the delivery eligibility gate.
+        self.assertTrue(passes_geo_filter(job))
 
     def test_unknown_physical_location_cannot_use_query_hint(self):
         job = _job(location="Not specified", geo_hint="arab")
         self.assertEqual(classify_geo(job), "arab")
         self.assertEqual(classify_delivery_geo(job), "global")
-        self.assertFalse(passes_geo_filter(job))
+        # v78: Global physical roles now pass the delivery eligibility gate.
+        self.assertTrue(passes_geo_filter(job))
 
     def test_training_post_does_not_become_soc_vacancy(self):
         job = _job(
