@@ -273,8 +273,6 @@ FINDWORK_API_KEY = os.getenv("FINDWORK_API_KEY", "")
 JOOBLE_API_KEY   = os.getenv("JOOBLE_API_KEY", "")
 REED_API_KEY     = os.getenv("REED_API_KEY", "")
 SERPAPI_KEY      = os.getenv("SERPAPI_KEY", "")
-# v78: Google CSE removed (no longer supported) — any GOOGLE_CSE_* env vars
-# left in deployment secrets are ignored by the codebase.
 
 #  Geo Patterns 
 EGYPT_PATTERNS = {
