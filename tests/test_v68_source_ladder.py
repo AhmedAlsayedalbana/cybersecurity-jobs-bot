@@ -398,20 +398,16 @@ class TestV68HrPostsFinal:
         assert not accepted
         assert evidence == "no_hiring_intent"
 
-    def test_unusable_serpapi_key_is_parked_at_run_start(self):
-        """v78: Google CSE removed (no longer supported) — the keyed
-        serpapi backend is probed once at run start; a rejected key parks
-        the backend for the whole run instead of burning budget per query
-        (the v68 diagnosis showed exactly this per-query waste on the old
-        CSE key)."""
+    def test_serpapi_failure_parks_backend(self):
+        """SerpAPI failure now parks the backend."""
         from sources import linkedin_hr_posts_scraper as hps
 
         hps._backend_parked.discard("serpapi")
-        with mock.patch.object(hps, "SERPAPI_KEY", "bad-key"), \
-             mock.patch.object(hps, "get_json", return_value=None):
-            hps._validate_hr_backend_keys()
+        with mock.patch("sources.linkedin_hr_posts_scraper.get_json", return_value=None), \
+             mock.patch("sources.linkedin_hr_posts_scraper.SERPAPI_KEY", "fake-key"):
+            hps._search_via_serpapi("site:linkedin.com/posts #hiring cybersecurity Egypt")
         assert "serpapi" in hps._backend_parked, (
-            "a rejected SerpAPI key must park the backend for the run"
+            "SerpAPI must be parked after failure"
         )
         # Housekeeping: leave module state clean for other tests.
         hps._backend_parked.discard("serpapi")
