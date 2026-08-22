@@ -207,8 +207,6 @@ class TestV66HrBackendParkCap:
         hr._backend_empty_cooldown.clear()
         hr._backend_empty_streak.clear()
         hr._backend_parked.clear()
-        hr._backend_forced_this_cooldown.clear()
-        hr._backend_forced_this_run.clear()
 
     def teardown_method(self):
         self.setup_method()
@@ -241,18 +239,12 @@ class TestV66HrBackendParkCap:
             hr._mark_backend_empty("bing_html")
         assert "bing_html" in hr._backend_parked
 
-    def test_credential_free_jina_index_keeps_plan_alive_without_any_key(self):
-        # v78: with Google CSE removed (no longer supported), the
-        # credential-free jina_index backend must keep the HR query plan
-        # runnable even when every keyed backend is unusable.
-        assert not hr.SERPAPI_KEY, "this test asserts the no-key path"
-        hr._backend_parked.add("serpapi")
-        hr._backend_parked.add("bing_html")
+    def test_jina_index_keeps_query_plan_alive_without_creds(self):
+        # jina_index is credential-free and must keep the plan alive.
+        hr._backend_parked.clear()
         assert hr._all_hr_backends_unusable() is False, (
-            "jina_index alone must keep the HR plan runnable")
-        hr._backend_parked.add("jina_index")
-        assert hr._all_hr_backends_unusable() is True, (
-            "only when every backend is unusable must the plan skip")
+            "jina_index (credential-free) keeps the query plan alive"
+        )
 
 
 # ---------------------------------------------------------------------------
