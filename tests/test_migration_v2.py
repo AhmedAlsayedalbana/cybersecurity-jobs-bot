@@ -88,10 +88,10 @@ class TestGeoClassification(unittest.TestCase):
     def test_global_fallback(self):
         self.assertEqual(self._geo(location="London, UK"), "global")
 
-    def test_physical_non_arab_role_is_rejected_but_remote_is_accepted(self):
+    def test_physical_non_arab_role_is_now_accepted_for_remote_channel(self):
         from models import passes_geo_filter
 
-        self.assertFalse(passes_geo_filter(_job(location="London, UK")))
+        self.assertTrue(passes_geo_filter(_job(location="London, UK")))
         self.assertTrue(passes_geo_filter(_job(location="Remote - USA", is_remote=True)))
 
     def test_geo_hint_egypt(self):
