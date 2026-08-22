@@ -81,7 +81,7 @@ class HrConfidenceTests(unittest.TestCase):
             ),
             location="Egypt",
             apply_info={"email": "sec@example.com", "whatsapp": "+201001234567"},
-            source_backend="bing_html",
+            source_backend="serpapi",
             company="Acme Security",
         )
         self.assertGreaterEqual(hiring_score, config.HR_HIRING_THRESHOLD)
@@ -107,7 +107,7 @@ class HrConfidenceTests(unittest.TestCase):
             'content="2026-08-15T09:00:00Z">' + (" " * 600) + "</html>"
         )
         with patch.object(hr_scraper, "get_text", return_value=html):
-            post = hr_scraper._scrape_linkedin_post(post_url, "bing_html")
+            post = hr_scraper._scrape_linkedin_post(post_url, "serpapi")
 
         self.assertIsNotNone(post)
         assert post is not None
@@ -123,7 +123,7 @@ class HrConfidenceTests(unittest.TestCase):
             'content="2026-08-15T09:00:00Z">' + (" " * 600) + "</html>"
         )
         with patch.object(hr_scraper, "get_text", return_value=html):
-            post = hr_scraper._scrape_linkedin_post(post_url, "bing_html")
+            post = hr_scraper._scrape_linkedin_post(post_url, "serpapi")
 
         self.assertIsNone(post)
 
@@ -169,7 +169,6 @@ class HrConfidenceTests(unittest.TestCase):
 class DirectBypassTests(unittest.TestCase):
     def test_direct_hosts_bypass_proxy_pool(self):
         self.assertTrue(http_utils._is_direct_url("https://serpapi.com/search"))
-        self.assertTrue(http_utils._is_direct_url("https://www.googleapis.com/customsearch/v1"))
         self.assertTrue(http_utils._is_direct_url("https://api.rapidapi.com/some-endpoint"))
 
 
