@@ -32,6 +32,9 @@ _SECURITY_TERMS = (
     "cloud security", "network security", "vulnerability", "threat",
     "incident response", "امن سيبراني", "الأمن السيبراني", "امن المعلومات",
     "أمن المعلومات", "اختبار اختراق", "اختراق", "حماية الشبكات",
+    "malware", "forensics", "cryptography", "identity access", "iam",
+    "compliance", "iso 27001", "soc2", "gdpr", "pci dss", "risk assessment",
+    "ethical hacking", "bug bounty", "security audit", "osint",
 )
 _DATE_ISO_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})(?:[T\s]([0-2]\d:[0-5]\d(?::[0-5]\d)?))?")
 _RELATIVE_RE = re.compile(
@@ -83,11 +86,11 @@ PUBLIC_SPECS: tuple[MarketplaceSpec, ...] = (
     MarketplaceSpec("peopleperhour", "PeoplePerHour", ("https://www.peopleperhour.com/freelance-cyber-security-jobs",), "client_project", "remote", 20),
     MarketplaceSpec("guru", "Guru", ("https://www.guru.com/m/find/freelance-jobs/cyber-security/",), "client_project", "remote", 20),
     MarketplaceSpec("workana", "Workana", ("https://www.workana.com/en/jobs?query=cybersecurity",), "client_project", "remote", 20),
-    MarketplaceSpec("wuzzuf", "Wuzzuf", ("https://wuzzuf.net/a/Cybersecurity-Jobs-in-Egypt?start=0",), "job_listing", "egypt", 15),
-    MarketplaceSpec("bayt", "Bayt", ("https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/", "https://www.bayt.com/en/saudi-arabia/jobs/cyber-security-jobs/"), "job_listing", "egypt", 17),
-    MarketplaceSpec("gulftalent", "GulfTalent", ("https://www.gulftalent.com/jobs/cybersecurity",), "job_listing", "gulf", 18),
-    MarketplaceSpec("tanqeeb", "Tanqeeb", ("https://www.tanqeeb.com/en/s/cyber-security-jobs",), "job_listing", "gulf", 19),
-    MarketplaceSpec("akhtaboot", "Akhtaboot", ("https://www.akhtaboot.com/en/egypt/jobs/search?keywords=cybersecurity",), "job_listing", "egypt", 19),
+    MarketplaceSpec("wuzzuf", "Wuzzuf", ("https://wuzzuf.net/a/Cybersecurity-Jobs-in-Egypt?start=0", "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Egypt"), "job_listing", "egypt", 15),
+    MarketplaceSpec("bayt", "Bayt", ("https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/", "https://www.bayt.com/en/saudi-arabia/jobs/cyber-security-jobs/", "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Saudi%20Arabia"), "job_listing", "egypt", 17),
+    MarketplaceSpec("gulftalent", "GulfTalent", ("https://www.gulftalent.com/jobs/cybersecurity", "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=United%20Arab%20Emirates"), "job_listing", "gulf", 18),
+    MarketplaceSpec("tanqeeb", "Tanqeeb", ("https://www.tanqeeb.com/en/s/cyber-security-jobs", "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Middle%20East"), "job_listing", "gulf", 19),
+    MarketplaceSpec("akhtaboot", "Akhtaboot", ("https://www.akhtaboot.com/en/egypt/jobs/search?keywords=cybersecurity", "https://www.linkedin.com/jobs/search/?keywords=cybersecurity&location=Jordan"), "job_listing", "egypt", 19),
 )
 RESTRICTED_SPECS: tuple[MarketplaceSpec, ...] = (
     MarketplaceSpec("fiverr", "Fiverr", (), "service_offer", "remote", 20, False),
