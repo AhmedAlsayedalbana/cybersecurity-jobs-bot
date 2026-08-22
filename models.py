@@ -502,9 +502,8 @@ def passes_geo_filter(job: "Job") -> bool:
     name are discovery hints, never a bypass for a global physical listing.
     """
     geo = classify_delivery_geo(job)
-    # Physical roles are eligible only in Egypt or another Arab country.
-    # Any genuinely remote role is eligible worldwide.
-    if geo in ("egypt", "arab", "remote"):
+    # v78: Accept global jobs to feed the remote discovery channel.
+    if geo in ("egypt", "arab", "remote", "global"):
         return True
 
     return False
