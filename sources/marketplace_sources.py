@@ -504,9 +504,10 @@ def _parse(content: str, spec: MarketplaceSpec, base_url: str, transport: str) -
 
 
 def _fetch_via_jina(url: str) -> str | None:
-    # v78: 25 → 12s. Direct(10s) + Jina(12s) must fit inside the 25s
-    # orchestrator ceiling for single-URL boards (Bayt/Tanqeeb/Akhtaboot kept
-    # dying at 25.0s AFTER doing the work). No retry change, no gate change.
+    # v78: 25 → 12s single attempt (max_retries=0). Direct(10s, 1 attempt) +
+    # Jina(12s, 1 attempt) = 22s fits the 25s ceiling. The old 2-attempt
+    # pattern (20s+24s) guaranteed the orchestrator kill at 25.0s — the real
+    # cause of the Bayt/Tanqeeb/Wuzzuf/Akhtaboot timeout streak, not speed.
     _jina_limiter.acquire()
     result = get_text_result(
         f"https://r.jina.ai/{url}",
@@ -518,7 +519,7 @@ def _fetch_via_jina(url: str) -> str | None:
             "X-Max-Tokens": "12000",
         },
         timeout=12,
-        max_retries=1,
+        max_retries=0,
     )
     return result.text
 
@@ -536,8 +537,9 @@ def fetch_marketplace(spec_key: str) -> SourceResult:
     target_blocked = False
     for url in spec.urls:
         attempted.append(url)
-        # v78: 15 → 10s so direct+Jina(12s) fits the 25s source ceiling.
-        direct = get_text_result(url, timeout=10, max_retries=1)
+        # v78: 15 → 10s single attempt so direct(10s)+Jina(12s) fits the 25s
+        # source ceiling.
+        direct = get_text_result(url, timeout=10, max_retries=0)
         if direct.text:
             if spec.key in _TARGET_PARSER_KEYS and _target_content_is_blocked(direct.text):
                 target_blocked = True
