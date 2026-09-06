@@ -1469,6 +1469,11 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
 
     # v61: Track per-query metrics for adaptive ranking
     query_stats: dict[str, dict] = {}
+    # v78 fail-fast: when every backend is dry (no URLs at all), running all
+    # 33 queries burns the 90s HR budget for nothing. Stop after 8 straight
+    # empty queries with zero run-wide discoveries. Verification thresholds
+    # are untouched — this only skips guaranteed-empty searches.
+    _empty_streak = 0
 
     for query_info in all_queries:
         query_text = query_info["query"]
@@ -1502,11 +1507,21 @@ def fetch_linkedin_hr_posts_scraper(budget_seconds: int | None = None) -> list[J
             urls = _search_urls_fallback(query_text)
 
         if not urls:
+            _empty_streak += 1
+            if _empty_streak >= 8 and int(_HR_TELEMETRY.get("urls_discovered", 0)) == 0:
+                log.info(
+                    "linkedin_hr_posts_scraper: fail-fast after %d empty queries "
+                    "with zero discoveries — backends are dry this run.",
+                    _empty_streak,
+                )
+                _HR_TELEMETRY["early_stop"] = True
+                break
             remaining = budget - (time.time() - start)
             if remaining <= 0:
                 break
             time.sleep(min(random.uniform(0.5, 1.2), remaining))
             continue
+        _empty_streak = 0
 
         _HR_TELEMETRY["urls_discovered"] = int(_HR_TELEMETRY.get("urls_discovered", 0)) + len(urls)
         query_stats[query_text]["found"] = len(urls)

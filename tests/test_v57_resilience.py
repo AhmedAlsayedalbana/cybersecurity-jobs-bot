@@ -264,10 +264,13 @@ def test_cloudsec_requires_explicit_cloud_security_evidence():
 def test_requested_source_order_keeps_linkedin_first():
     import config
 
+    # v78 geographic contract: LinkedIn → Egypt careers/boards → Arab boards
+    # → foreign aggregators/ATS.
     assert config.source_priority("linkedin_unified") < config.source_priority("company_careers")
-    assert config.source_priority("company_careers") < config.source_priority("greenhouse_cybersec")
-    assert config.source_priority("greenhouse_cybersec") < config.source_priority("indeed")
-    assert config.source_priority("indeed") < config.source_priority("wuzzuf")
+    assert config.source_priority("company_careers") < config.source_priority("wuzzuf")
+    assert config.source_priority("wuzzuf") < config.source_priority("bayt")
+    assert config.source_priority("bayt") < config.source_priority("indeed")
+    assert config.source_priority("indeed") < config.source_priority("greenhouse_cybersec")
 
 
 def test_arab_focus_rotation_covers_every_arab_country_with_soc_pentest_emphasis():

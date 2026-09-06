@@ -235,12 +235,11 @@ def _candidate_from_record(record: dict[str, Any], spec: MarketplaceSpec, base_u
             "publish_date", "published_date", "date",
         ) if record.get(key)
     ), description)))
-    # v77 out-of-box: boards like Contra rarely stamp dates — fall back to
-    # now() instead of discarding. Recency gate (7d) + pool fresh-first
-    # ordering still rank dated jobs first; undated rank last but stay eligible.
-    if posted is None:
-        posted = datetime.now()
-    if not title or not url or not _is_security(f"{title} {description}"):
+    # v78: honest None when the board stamps no date. A faked now() inflated
+    # freshness scores (+6) and let undated listings outrank genuinely fresh
+    # LinkedIn jobs, breaking the 70% LinkedIn contract. Undated jobs stay
+    # eligible via the non-strict recency path with neutral (0) freshness.
+    if not title or not url or not posted or not _is_security(f"{title} {description}"):
         return None
     return title, url, description[:800], posted
 
@@ -303,10 +302,7 @@ def _target_candidate_from_record(
         "publish_date", "published_date", "date",
     )
     posted = _parse_posted_date(posted_raw or description)
-    # v77: same undated fallback as above — Contra/markup drift must not
-    # zero the source when titles+URLs are recognizable security roles.
-    if posted is None and recognizable and is_security:
-        posted = datetime.now()
+    # v78: honest missing-date signal (see above) — never fake now().
     if not recognizable or not is_security or not posted:
         return None, recognizable, bool(recognizable and is_security)
     return _TargetListing(
@@ -356,10 +352,8 @@ def _target_link_records(content: str, spec: MarketplaceSpec, base_url: str, *, 
         if not is_security:
             continue
         if not posted:
-            # v77: keep link-based security listings with now() fallback
-            # instead of counting them incomplete — recency + pool order
-            # handle freshness downstream.
-            posted = datetime.now()
+            incomplete_security += 1
+            continue
         rows.append(_TargetListing(
             title=title,
             url=url,
@@ -510,6 +504,9 @@ def _parse(content: str, spec: MarketplaceSpec, base_url: str, transport: str) -
 
 
 def _fetch_via_jina(url: str) -> str | None:
+    # v78: 25 → 12s. Direct(10s) + Jina(12s) must fit inside the 25s
+    # orchestrator ceiling for single-URL boards (Bayt/Tanqeeb/Akhtaboot kept
+    # dying at 25.0s AFTER doing the work). No retry change, no gate change.
     _jina_limiter.acquire()
     result = get_text_result(
         f"https://r.jina.ai/{url}",
@@ -520,7 +517,7 @@ def _fetch_via_jina(url: str) -> str | None:
             "X-Cache-Tolerance": "300",
             "X-Max-Tokens": "12000",
         },
-        timeout=25,
+        timeout=12,
         max_retries=1,
     )
     return result.text
@@ -539,7 +536,8 @@ def fetch_marketplace(spec_key: str) -> SourceResult:
     target_blocked = False
     for url in spec.urls:
         attempted.append(url)
-        direct = get_text_result(url, timeout=15, max_retries=1)
+        # v78: 15 → 10s so direct+Jina(12s) fits the 25s source ceiling.
+        direct = get_text_result(url, timeout=10, max_retries=1)
         if direct.text:
             if spec.key in _TARGET_PARSER_KEYS and _target_content_is_blocked(direct.text):
                 target_blocked = True

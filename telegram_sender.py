@@ -1056,6 +1056,23 @@ def send_jobs(jobs, *, dry_run: bool = False):
     topic_globally_sent: set[str] = set()
 
     limit = MAX_JOBS_PER_CHANNEL
+    # v78 contract: GEO channels (egypt/gulf) send EVERY matching geo job —
+    # no 10-cap. Topic channels keep MAX_JOBS_PER_CHANNEL with a HARD 70/30
+    # LinkedIn split (7 LI + 3 non-LI of 10): LI slots are reserved, never
+    # backfilled by non-LI, so the LinkedIn share is guaranteed, not hoped for.
+    _GEO_UNCAPPED = {"egypt", "gulf"}
+    channel_limits: dict[str, int] = {
+        k: (10 ** 9 if k in _GEO_UNCAPPED else limit) for k in send_order
+    }
+    try:
+        _li_ratio = float(getattr(config, "LINKEDIN_PER_CHANNEL_TARGET_RATIO", 0.70))
+    except (TypeError, ValueError):
+        _li_ratio = 0.70
+    _li_ratio = max(0.0, min(1.0, _li_ratio))
+    _li_slots_capped = max(1, round(limit * _li_ratio))  # 7 of 10
+    _non_li_slots_capped = max(0, limit - _li_slots_capped)  # 3 of 10
+    channel_li_sent: dict[str, int] = {k: 0 for k in send_order}
+    channel_nonli_sent: dict[str, int] = {k: 0 for k in send_order}
     sent_records = []
     db = get_db()
     # v67: pending-FIRST delivery — queued senders from earlier runs
@@ -1112,7 +1129,7 @@ def send_jobs(jobs, *, dry_run: bool = False):
                 continue
             if dry_run:
                 thread_id = thread_id or 0
-            if channel_summary[ch_key] >= limit:
+            if channel_summary[ch_key] >= channel_limits[ch_key]:
                 continue
             queue = channel_queues.get(ch_key, [])
             if not queue:
@@ -1161,8 +1178,14 @@ def send_jobs(jobs, *, dry_run: bool = False):
                 # The likely cap is an upper bound on *remaining* capacity,
                 # never a target and never a reservation that displaces a
                 # confirmed candidate.  Queue ordering guarantees confirmed
-                # items are exhausted first.
-                if is_likely and likely_sent[ch_key] >= likely_limit:
+                # items are exhausted first. v78: uncapped GEO channels scale
+                # the cap with queue size so "send all Egypt/Gulf jobs" is not
+                # throttled by a cap tuned for 10-slot topic channels.
+                _likely_cap = (
+                    likely_limit if ch_key not in _GEO_UNCAPPED
+                    else max(likely_limit, int(len(queue) * 0.25) + 1)
+                )
+                if is_likely and likely_sent[ch_key] >= _likely_cap:
                     continue
 
                 # ── 2-day stale gate ─────────────────────────────────────
@@ -1214,6 +1237,19 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     delivery_lifecycle["already_sent"] += 1
                     continue
 
+                # ── v78 HARD 70/30 per-channel LinkedIn split ──────────
+                # Topic channels: LI sends stop at 7, non-LI at 3 — neither
+                # side backfills the other's reservation. GEO channels are
+                # exempt (uncapped: every geo job goes). Queues are already
+                # LI-first interleaved, so the first sends honour the split
+                # without any accuracy gate being touched.
+                _job_is_li = _is_li_job(job)
+                if ch_key not in _GEO_UNCAPPED:
+                    if _job_is_li and channel_li_sent[ch_key] >= _li_slots_capped:
+                        continue
+                    if not _job_is_li and channel_nonli_sent[ch_key] >= _non_li_slots_capped:
+                        continue
+
                 message = format_job_message(job)
 
                 # v73: a pair the pending-first drain already delivered this
@@ -1243,6 +1279,10 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     continue
 
                 channel_summary[ch_key] += 1
+                if _is_li_job(job):
+                    channel_li_sent[ch_key] += 1
+                else:
+                    channel_nonli_sent[ch_key] += 1
                 if is_likely:
                     likely_sent[ch_key] += 1
                 total_sent += 1
@@ -1252,16 +1292,19 @@ def send_jobs(jobs, *, dry_run: bool = False):
                 if is_topic and job_dedup_key:
                     topic_globally_sent.add(job_dedup_key)
 
-                # Log source type for visibility
+                # Log source type for visibility (v78 bands follow
+                # config.SOURCE_PRIORITY_BY_KEY: LI=10, regional+ATS<=85,
+                # freelance<=255, discovery beyond).
                 src_priority = _source_priority_key(job)
                 src_tag = (
                     "LI" if src_priority <= 12 else
-                    "EG" if src_priority <= 22 else
-                    "FL" if src_priority <= 25 else
+                    "REG" if src_priority <= 85 else
+                    "FL" if src_priority <= 255 else
                     "SRC"
                 )
+                _clim_label = "∞" if ch_key in _GEO_UNCAPPED else str(channel_limits[ch_key])
                 log.info(
-                    f"   [{'DRY_RUN ' if dry_run else ''}{ch_key}] {channel_summary[ch_key]}/{limit} ✓ "
+                    f"   [{'DRY_RUN ' if dry_run else ''}{ch_key}] {channel_summary[ch_key]}/{_clim_label} ✓ "
                     f"[{src_tag}] {job.title[:45]}"
                 )
                 if not dry_run:
@@ -1327,7 +1370,9 @@ def send_jobs(jobs, *, dry_run: bool = False):
     for k, v in channel_summary.items():
         ch_name = CHANNELS.get(k, {}).get("name", k)
         bar = "✅" if v > 0 else "⚪"
-        log.info(f"   {bar} {ch_name}: {v} jobs")
+        _li_n = channel_li_sent.get(k, 0)
+        _share = f" (LI {_li_n}/{v}={_li_n * 100 // v}%)" if v else ""
+        log.info(f"   {bar} {ch_name}: {v} jobs{_share}")
     log.info("=" * 40)
     pending_after = 0 if dry_run else db.count_pending_delivery_rows()
     pending_unique_after = 0 if dry_run else db.count_pending_unique_jobs()

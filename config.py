@@ -514,16 +514,21 @@ SOURCE_PRIORITY_BY_KEY = {
     "linkedin_hiring": 10, "linkedin_hr_hunter": 10, "linkedin_hr_post": 10,
     "linkedin_egypt_arabic": 10, "linkedin_egypt_companies": 10,
     "linkedin_gulf_companies": 10, "linkedin_arab": 10,
-    # Official company careers, then direct ATS boards
-    "company_careers": 20, "greenhouse_cybersec": 30,
-    "greenhouse_expanded": 30, "greenhouse": 30, "lever": 30,
-    "lever_expanded": 30,
-    # General and regional job boards
-    "indeed": 40, "bayt": 50, "gulftalent": 60, "naukrigulf": 70,
-    "qureos": 80,
-    # Egyptian / Arab boards
-    "wuzzuf": 90, "forasna": 100, "tanqeeb": 110, "akhtaboot": 120,
-    "wazzif": 130, "jobzella": 140, "shaghalni": 150,
+    # Official company careers (Egypt banks/telecom live here), then
+    # v78 non-LinkedIn geographic order: Egyptian boards → Arab boards →
+    # foreign aggregators/ATS. Within one freshness+geo bucket the Egyptian
+    # site always wins; accuracy gates are untouched, only tie-break order.
+    "company_careers": 20,
+    # Egyptian boards
+    "wuzzuf": 42, "forasna": 44, "wazzif": 46, "jobzella": 48,
+    "shaghalni": 50, "egytech_fyi": 52, "drjobpro": 54,
+    # Arab / regional boards
+    "bayt": 56, "gulftalent": 58, "naukrigulf": 60, "akhtaboot": 62,
+    "tanqeeb": 64, "qureos": 66,
+    # Foreign aggregators and direct ATS (after regional supply)
+    "indeed": 75, "greenhouse_cybersec": 80,
+    "greenhouse_expanded": 80, "greenhouse": 80, "lever": 80,
+    "lever_expanded": 80,
     # Freelance platforms
     "upwork": 160, "freelancer": 170, "mostaql": 180, "khamsat": 190,
     "contra": 200, "peopleperhour": 210, "guru": 220, "workana": 230,

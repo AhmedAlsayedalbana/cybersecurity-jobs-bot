@@ -540,9 +540,13 @@ _PUBLIC_READER_ATTEMPT_TIMEOUT_SECONDS = float(
 # direct GET first (cheap when the netloc differs from the blocked one),
 # then the Jina reader of the same URL.
 _EGYPT_RECOVERY_URLS: dict[str, list[str]] = {
-    # Workday Egyptian tenants: their public search UI (not the JSON API)
-    "cib_egypt_wd": ["https://cibeg.wd1.myworkdayjobs.com/en-US/search", "https://cibeg.wd1.myworkdayjobs.com/en-US/cib_jobs"],
-    "valeo_egypt": ["https://valeo.wd3.myworkdayjobs.com/en-US/search", "https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs"],
+    # Workday Egyptian tenants: their public search UI (not the JSON API).
+    # v78: LinkedIn company-jobs mirrors appended — when the Workday JSON API
+    # is IP-blocked (workday_unavailable two runs in a row: CIB WD + Valeo),
+    # the ladder still surfaces the same employer's public LinkedIn postings
+    # instead of a hard zero. Same pattern as the other Egyptian banks above.
+    "cib_egypt_wd": ["https://cibeg.wd1.myworkdayjobs.com/en-US/search", "https://cibeg.wd1.myworkdayjobs.com/en-US/cib_jobs", "https://www.linkedin.com/company/cibegypt/jobs/"],
+    "valeo_egypt": ["https://valeo.wd3.myworkdayjobs.com/en-US/search", "https://valeo.wd3.myworkdayjobs.com/en-US/valeo_jobs", "https://www.linkedin.com/company/valeo/jobs/"],
     # Blocked Egyptian bank portals with an alternate careers surface
     "telecom_egypt": ["https://te.eg/wps/portal/te/Personal/Careers/jobs"],
     "banque_misr": ["https://www.banquemisr.com/en/careers/current-vacancies", "https://careers.banquemisr.com", "https://www.linkedin.com/company/banque-misr/jobs/"],
