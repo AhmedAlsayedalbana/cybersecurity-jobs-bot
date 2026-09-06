@@ -2,7 +2,7 @@ name: Cybersecurity Jobs Bot v56 (merged)
 
 on:
   schedule:
-   - cron: "0 */3 * * *"   # Every 3 hours
+   - cron: "0 */4 * * *"   # Every 4 hours
   workflow_dispatch:
 
 concurrency:
