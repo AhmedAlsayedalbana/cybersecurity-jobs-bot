@@ -111,9 +111,19 @@ def _maybe_add_job(job: dict, jobs: list) -> None:
 
 
 def fetch_arab_careers() -> list[Job]:
-    """Fetch cybersecurity jobs from Arab company career pages."""
+    """Fetch cybersecurity jobs from Arab company career pages.
+
+    v80: internal 19s guard — 13 sequential Jina reads can exceed the 25s
+    orchestrator ceiling, which used to kill the thread and DISCARD already
+    found candidates (e.g. SABIC's 5). Now partial results always survive.
+    """
+    import time as _time
     jobs: list[Job] = []
+    _deadline = _time.monotonic() + 19
     for spec in _ARAB_COMPANY_SPECS:
+        if _time.monotonic() >= _deadline:
+            log.debug(" Arab careers: internal budget reached, returning %d partial", len(jobs))
+            break
         try:
             jina_url = f"https://r.jina.ai/{spec['url']}"
             markdown = get_text(

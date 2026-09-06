@@ -17,7 +17,8 @@ from unittest.mock import patch
 
 
 class BotLogicTests(unittest.TestCase):
-    def test_remote_job_routes_to_remote_and_topic(self):
+    def test_remote_job_routes_to_remote_only(self):
+        # v80: foreign/remote jobs go to Remote ONLY, never topic channels.
         job = Job(
             title="SOC Analyst",
             company="Remotive Co",
@@ -26,7 +27,7 @@ class BotLogicTests(unittest.TestCase):
             source="remotive",
             is_remote=True,
         )
-        self.assertEqual(route_job(job), ["remote", "soc"])
+        self.assertEqual(route_job(job), ["remote"])
 
     def test_egypt_soc_routes_to_egypt_and_soc(self):
         job = Job(

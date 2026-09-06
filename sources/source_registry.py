@@ -20,7 +20,24 @@ from dataclasses import dataclass
 from typing import Callable
 
 import config
-from sources.egypt_boards import fetch_wazzif
+from sources.egypt_boards import fetch_linkedin_egypt_companies_direct, fetch_wazzif
+
+
+def _fetch_eg_linkedin_companies() -> list:
+    """v80: 20 Egypt cyber-employer LinkedIn pages (second LinkedIn lane).
+
+    Restamped to source_key="eg_linkedin_companies": the URL/host is
+    LinkedIn (counts toward the 70% LI share via the "linkedin"-in-source
+    rule) while the key avoids the strict-source unknown-age reject, since
+    company pages carry no per-posting dates. Undated → neutral score,
+    ranked last, honestly.
+    """
+    rows = fetch_linkedin_egypt_companies_direct()
+    for row in rows:
+        row.source_key = "eg_linkedin_companies"
+        row.content_type = "job_listing"
+        row.origin_priority = 12
+    return rows
 from sources.egypt_direct import fetch_careers_egypt
 from sources.expanded_sources import fetch_expanded_sources
 from sources.greenhouse_expanded import fetch_greenhouse_expanded
@@ -77,6 +94,15 @@ def _build_specs() -> list[SourceSpec]:
         SourceSpec("linkedin_unified", "LinkedIn Unified",
             fetch_linkedin_unified_async, config.source_priority("linkedin_unified"), "core", "gold",
             recency_required=True),
+
+        # v80: second LinkedIn lane — 20 Egypt cyber-employer company pages.
+        # LinkedIn-attributed supply (doubles LI Egypt coverage without new
+        # queries); 20 sequential guest reads fit a 40s ceiling with the
+        # fetcher's internal 30s guard returning partials.
+        SourceSpec("eg_linkedin_companies", "LinkedIn Egypt Companies",
+            _fetch_eg_linkedin_companies, config.source_priority("eg_linkedin_companies", 12),
+            "egypt", "silver", recency_required=True, allow_empty_runs=True,
+            supports_geo_hint=True, source_timeout_seconds=40),
 
         SourceSpec("egytech_fyi", "EgyTech.fyi",
             fetch_careers_egypt, config.source_priority("company_careers", 20), "egypt", "silver",

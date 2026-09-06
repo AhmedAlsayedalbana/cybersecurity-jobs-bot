@@ -69,15 +69,25 @@ def _parse_jina_markdown(markdown: str, spec: dict) -> list[dict]:
 
 
 def fetch_recruitment_agencies() -> list[Job]:
-    """Fetch cybersecurity jobs from MENA recruitment agency websites."""
+    """Fetch cybersecurity jobs from MENA recruitment agency websites.
+
+    v80: internal 19s guard — same partial-loss pattern as arab_careers
+    (robertwalters' candidate was discarded by the 25s ceiling kill).
+    """
+    import time as _time
     jobs = []
+    _deadline = _time.monotonic() + 19
     for spec in _AGENCY_SPECS:
+        if _time.monotonic() >= _deadline:
+            log.debug(" Recruitment agencies: internal budget reached, returning %d partial", len(jobs))
+            break
         try:
             jina_url = f"https://r.jina.ai/{spec['url']}"
             markdown = get_text(
                 jina_url,
                 headers={"Accept": "text/markdown"},
-                timeout=15,
+                timeout=10,
+                max_retries=0,
                 budget_phase="other_sources",
             )
             if not markdown or len(markdown) < 100:

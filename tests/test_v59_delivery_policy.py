@@ -78,8 +78,8 @@ def test_explicit_worldwide_remote_stays_remote_despite_company_country():
     assert accepted
     assert decision.geo == "remote"
     assert decision.reason_code == "remote_worldwide"
-    assert "remote" in route_job(job)
-    assert "soc" in route_job(job)
+    # v80: remote jobs live in Remote ONLY — never in topic channels.
+    assert route_job(job) == ["remote"]
 
 
 def test_unknown_physical_location_is_blocked_without_query_hint():

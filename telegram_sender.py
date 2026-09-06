@@ -446,17 +446,21 @@ def _channel_priority(ch_key: str) -> int:
 
 def route_job(job):
     """
-    Route a job to channels — v50 model:
+    Route a job to channels — v80 model:
 
-    GEO channels  (egypt / arab / remote): based on location only.
-    TOPIC channels (soc / grc / pentest / ...): based on keywords only.
+    GEO channels: egypt (Egypt only) / gulf (Arab world only) /
+    remote (remote + worldwide, the SOLE home of non-Arab jobs).
+    TOPIC channels (soc / grc / pentest / ...): Arab-located jobs ONLY.
+    A foreign/remote job is NEVER routed to a topic channel — it goes to
+    Remote and stops there.
 
-    A job CAN and SHOULD appear in BOTH a geo channel AND ONE topic channel.
-    Example: "GRC Analyst in Cairo" → egypt + grc
+    An Arab job appears in BOTH its geo channel AND ONE topic channel.
+    Example: "GRC Analyst in Cairo" → egypt + grc.
+    Example: "SOC Analyst (Remote, USA)" → remote ONLY.
 
-    INTERNSHIP ROUTING: True internship jobs go to BOTH their geo channel AND
-    the internships topic channel (instead of a specialty domain channel).
-    Within topic channels, a job goes to exactly ONE channel.
+    INTERNSHIP ROUTING: True Arab internship jobs go to BOTH their geo
+    channel AND the internships topic channel. Within topic channels, a job
+    goes to exactly ONE channel.
     """
     # Geo routing: one geo lane only. ``classify_delivery_geo`` gives explicit
     # remote work precedence over an employer's Egypt/Arab office address.
@@ -469,15 +473,17 @@ def route_job(job):
     elif geo == "remote":
         geo_result = ["remote"]
     elif geo == "global":
-        # v78: Physical roles from outside the Egypt/Arab region are eligible
-        # for the remote channel ONLY (acting as a global discovery channel).
+        # Physical roles from outside the Egypt/Arab region are eligible
+        # for the remote channel ONLY (the global discovery channel).
         geo_result = ["remote"]
 
-    # Topic routing: exactly one specialty topic.
+    # Topic routing: exactly one specialty topic, Arab geo ONLY. Foreign and
+    # remote jobs never enter topic channels — Remote is their only home.
     topic_result = []
-    topic_channel = _topic_channel_for_job(job, "")
-    if topic_channel and topic_channel in CHANNELS:
-        topic_result = [topic_channel]
+    if geo in ("egypt", "arab"):
+        topic_channel = _topic_channel_for_job(job, "")
+        if topic_channel and topic_channel in CHANNELS:
+            topic_result = [topic_channel]
 
     # Final router safety check.  The sender repeats it immediately before
     # enqueue and send so future fallback code cannot bypass this decision.
@@ -1015,12 +1021,16 @@ def send_jobs(jobs, *, dry_run: bool = False):
         if not affinity_domains:
             continue
 
-        # Candidates: must be in affinity domain, NOT already claimed by another channel
+        # Candidates: must be in affinity domain, Arab-located (v80: topic
+        # channels never take foreign/remote jobs), and NOT already claimed
+        # by another channel.
         candidates = []
         for j in jobs_scored:
             jkey = _delivery_identity(j)
             if jkey in direct_claimed or jkey in fallback_globally_claimed:
                 continue  # already used elsewhere — skip
+            if classify_delivery_geo(j) not in ("egypt", "arab"):
+                continue  # v80: fallback is Arab-only like direct routing
             domain = _job_domain(j)
             if domain in affinity_domains and has_channel_evidence(j, ch_key):
                 candidates.append(j)
@@ -1062,21 +1072,29 @@ def send_jobs(jobs, *, dry_run: bool = False):
     topic_globally_sent: set[str] = set()
 
     limit = MAX_JOBS_PER_CHANNEL
-    # v78 contract: GEO channels (egypt/gulf) send EVERY matching geo job —
-    # no 10-cap. Topic channels keep MAX_JOBS_PER_CHANNEL with a HARD 70/30
-    # LinkedIn split (7 LI + 3 non-LI of 10): LI slots are reserved, never
-    # backfilled by non-LI, so the LinkedIn share is guaranteed, not hoped for.
-    _GEO_UNCAPPED = {"egypt", "gulf"}
+    # v80 contract: EVERY group caps at 10 sends/run — Remote at 15 (it is
+    # the sole worldwide-discovery group). Each cap splits HARD 70/30
+    # LinkedIn/non-LinkedIn computed per channel (10 → 7+3, 15 → 11+4): LI
+    # slots are reserved, never backfilled by non-LI, so the LinkedIn share
+    # is guaranteed, not hoped for.
+    try:
+        _remote_limit = int(getattr(config, "MAX_JOBS_REMOTE_CHANNEL", 15))
+    except (TypeError, ValueError):
+        _remote_limit = 15
     channel_limits: dict[str, int] = {
-        k: (10 ** 9 if k in _GEO_UNCAPPED else limit) for k in send_order
+        k: (_remote_limit if k == "remote" else limit) for k in send_order
     }
     try:
         _li_ratio = float(getattr(config, "LINKEDIN_PER_CHANNEL_TARGET_RATIO", 0.70))
     except (TypeError, ValueError):
         _li_ratio = 0.70
     _li_ratio = max(0.0, min(1.0, _li_ratio))
-    _li_slots_capped = max(1, round(limit * _li_ratio))  # 7 of 10
-    _non_li_slots_capped = max(0, limit - _li_slots_capped)  # 3 of 10
+    channel_li_slots: dict[str, int] = {
+        k: max(1, int(channel_limits[k] * _li_ratio + 0.5)) for k in send_order
+    }
+    channel_nonli_slots: dict[str, int] = {
+        k: max(0, channel_limits[k] - channel_li_slots[k]) for k in send_order
+    }
     channel_li_sent: dict[str, int] = {k: 0 for k in send_order}
     channel_nonli_sent: dict[str, int] = {k: 0 for k in send_order}
     sent_records = []
@@ -1184,13 +1202,10 @@ def send_jobs(jobs, *, dry_run: bool = False):
                 # The likely cap is an upper bound on *remaining* capacity,
                 # never a target and never a reservation that displaces a
                 # confirmed candidate.  Queue ordering guarantees confirmed
-                # items are exhausted first. v78: uncapped GEO channels scale
-                # the cap with queue size so "send all Egypt/Gulf jobs" is not
-                # throttled by a cap tuned for 10-slot topic channels.
-                _likely_cap = (
-                    likely_limit if ch_key not in _GEO_UNCAPPED
-                    else max(likely_limit, int(len(queue) * 0.25) + 1)
-                )
+                # items are exhausted first. Scaled per channel cap (10 → 2,
+                # 15 → 3) so every group keeps the same precision ratio.
+                _likely_cap = max(1, int(channel_limits[ch_key] * max(
+                    0.0, min(1.0, config.CYBER_LIKELY_MAX_SHARE))))
                 if is_likely and likely_sent[ch_key] >= _likely_cap:
                     continue
 
@@ -1243,18 +1258,17 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     delivery_lifecycle["already_sent"] += 1
                     continue
 
-                # ── v78 HARD 70/30 per-channel LinkedIn split ──────────
-                # Topic channels: LI sends stop at 7, non-LI at 3 — neither
-                # side backfills the other's reservation. GEO channels are
-                # exempt (uncapped: every geo job goes). Queues are already
-                # LI-first interleaved, so the first sends honour the split
-                # without any accuracy gate being touched.
+                # ── v80 HARD 70/30 per-channel LinkedIn split ──────────
+                # LI sends stop at the channel's LI slots, non-LI at its
+                # non-LI slots — neither side backfills the other's
+                # reservation. Queues are already LI-first interleaved, so
+                # the first sends honour the split without any accuracy
+                # gate being touched.
                 _job_is_li = _is_li_job(job)
-                if ch_key not in _GEO_UNCAPPED:
-                    if _job_is_li and channel_li_sent[ch_key] >= _li_slots_capped:
-                        continue
-                    if not _job_is_li and channel_nonli_sent[ch_key] >= _non_li_slots_capped:
-                        continue
+                if _job_is_li and channel_li_sent[ch_key] >= channel_li_slots[ch_key]:
+                    continue
+                if not _job_is_li and channel_nonli_sent[ch_key] >= channel_nonli_slots[ch_key]:
+                    continue
 
                 message = format_job_message(job)
 
@@ -1308,9 +1322,8 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     "FL" if src_priority <= 255 else
                     "SRC"
                 )
-                _clim_label = "∞" if ch_key in _GEO_UNCAPPED else str(channel_limits[ch_key])
                 log.info(
-                    f"   [{'DRY_RUN ' if dry_run else ''}{ch_key}] {channel_summary[ch_key]}/{_clim_label} ✓ "
+                    f"   [{'DRY_RUN ' if dry_run else ''}{ch_key}] {channel_summary[ch_key]}/{channel_limits[ch_key]} ✓ "
                     f"[{src_tag}] {job.title[:45]}"
                 )
                 if not dry_run:

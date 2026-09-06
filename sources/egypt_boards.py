@@ -67,6 +67,11 @@ def _make_job(
     url = (url or "").strip()
     if not title or not url:
         return None
+    # v80: NEVER backdate to utcnow(). A faked now() inflated freshness (+6)
+    # and let dateless board jobs outrank genuinely fresh LinkedIn postings,
+    # breaking the 70% LinkedIn contract and printing false "just now" ages.
+    # Dateless stays None: non-strict recency accepts it, scorer is neutral,
+    # pool ranks it last, 70/30 caps its share. Honest at every layer.
     return Job(
         title=title,
         company=_clean(company) or "Employer",
@@ -75,7 +80,7 @@ def _make_job(
         source=source,
         source_key=source,
         description=_clean(description)[:500],
-        posted_date=posted_date or datetime.utcnow(),
+        posted_date=posted_date,
         geo_hint="egypt",
         origin_priority=priority,
         tags=[source, "egypt", "egypt_board", *([f"job_id:{job_id}"] if job_id else [])],
@@ -479,10 +484,16 @@ def fetch_linkedin_egypt_companies_direct() -> list[Job]:
         "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
     }
 
+    # v80: internal guard — 20 sequential guest reads must never exceed the
+    # spec ceiling, or partial company results would be discarded by the kill.
+    _deadline = time.time() + 30
     for company_name, slug in EGYPT_CYBER_COMPANIES:
+        if time.time() >= _deadline:
+            log.debug("LinkedIn Egypt Companies: internal budget reached, returning %d partial", len(jobs))
+            break
         url = f"https://www.linkedin.com/company/{slug}/jobs/"
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=6)
             if resp.status_code not in (200, 301, 302):
                 continue
             html = resp.text

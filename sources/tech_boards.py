@@ -57,10 +57,17 @@ BIG_TECH_GREENHOUSE = [
 ]
 
 def _fetch_big_tech_greenhouse():
+    # v80: internal 19s guard — one slow Greenhouse slug used to push the
+    # whole 17-slug loop past the 25s ceiling, discarding ~200 found jobs.
+    import time as _time
     jobs = []
+    _deadline = _time.monotonic() + 19
     for slug, name in BIG_TECH_GREENHOUSE:
+        if _time.monotonic() >= _deadline:
+            log.debug("Big Tech Greenhouse: internal budget reached, returning %d partial", len(jobs))
+            break
         url  = f"https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-        data = get_json(url, headers=_H)
+        data = get_json(url, headers=_H, timeout=8, max_retries=0)
         if not data or "jobs" not in data:
             continue
         for item in data["jobs"]:

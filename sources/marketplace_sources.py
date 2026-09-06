@@ -237,11 +237,11 @@ def _candidate_from_record(record: dict[str, Any], spec: MarketplaceSpec, base_u
             "publish_date", "published_date", "date",
         ) if record.get(key)
     ), description)))
-    # v78: honest None when the board stamps no date. A faked now() inflated
-    # freshness scores (+6) and let undated listings outrank genuinely fresh
-    # LinkedIn jobs, breaking the 70% LinkedIn contract. Undated jobs stay
-    # eligible via the non-strict recency path with neutral (0) freshness.
-    if not title or not url or not posted or not _is_security(f"{title} {description}"):
+    # v80: dateless boards stay dateless (posted=None) — HONEST undated, not
+    # faked now(). The non-strict recency path accepts them with neutral (0)
+    # freshness; the pool ranks them after dated jobs and the 70/30 split
+    # caps their share. Dropping them instead is what zeroed PPH/Guru.
+    if not title or not url or not _is_security(f"{title} {description}"):
         return None
     return title, url, description[:800], posted
 
@@ -304,8 +304,9 @@ def _target_candidate_from_record(
         "publish_date", "published_date", "date",
     )
     posted = _parse_posted_date(posted_raw or description)
-    # v78: honest missing-date signal (see above) — never fake now().
-    if not recognizable or not is_security or not posted:
+    # v80: same honest-undated rule — a recognizable security listing without
+    # a date is a real job with unknown age, not parser drift.
+    if not recognizable or not is_security:
         return None, recognizable, bool(recognizable and is_security)
     return _TargetListing(
         title=title,
@@ -353,9 +354,9 @@ def _target_link_records(content: str, spec: MarketplaceSpec, base_url: str, *, 
         posted = _parse_posted_date(context)
         if not is_security:
             continue
-        if not posted:
-            incomplete_security += 1
-            continue
+        # v80: dateless-but-recognizable security links are honest-undated
+        # jobs (posted=None → neutral score, ranked last, 70/30-capped), not
+        # "incomplete" drift. Only unrecognizable markup counts as drift.
         rows.append(_TargetListing(
             title=title,
             url=url,
@@ -537,7 +538,12 @@ def fetch_marketplace(spec_key: str) -> SourceResult:
     target_incomplete_security = 0
     target_explicit_empty = False
     target_blocked = False
-    for url in spec.urls:
+    # v80: LinkedIn-mirror URLs are skipped — linkedin_unified already covers
+    # them with a proper budget and telemetry. Fetching them here wasted ~22s
+    # per board (the reason 2-3-URL specs always died at the 25s ceiling) and
+    # double-counted LinkedIn supply.
+    urls = [u for u in spec.urls if "linkedin.com" not in u.lower()] or list(spec.urls)
+    for url in urls:
         attempted.append(url)
         # v78: 15 → 10s single attempt so direct(10s)+Jina(12s) fits the 25s
         # source ceiling.

@@ -84,9 +84,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # TELEGRAM_CHAT_ID — rather than forcing a rename, both are read here and
 # TELEGRAM_CHAT_ID wins if both happen to be set.
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_GROUP_ID", "")
-# v79: 3 → 1s between messages (Telegram allows ~30 msg/s; 1s keeps a wide
-# safety margin while making 300 sends feasible inside the telegram budget).
-TELEGRAM_SEND_DELAY = 1  # seconds between messages
+# v80: back to 3s. The 1s experiment caused a 429 flood (28 queued, 0 sent):
+# Telegram allows ~30 msg/s across chats but only ~20/min to the SAME group —
+# all our topics live in one supergroup, so 1 msg/s × 60 = 60/min trips
+# "Too Many Requests retry_after 30". 3s (≈20/min) is the proven-safe rate.
+TELEGRAM_SEND_DELAY = 3  # seconds between messages
 HEALTH_REPORT_CHAT_ID = os.getenv("HEALTH_REPORT_CHAT_ID", "") or TELEGRAM_CHAT_ID
 
 # Telegram topic thread IDs - None means the topic is not configured.
@@ -516,6 +518,9 @@ SOURCE_PRIORITY_BY_KEY = {
     "linkedin_hiring": 10, "linkedin_hr_hunter": 10, "linkedin_hr_post": 10,
     "linkedin_egypt_arabic": 10, "linkedin_egypt_companies": 10,
     "linkedin_gulf_companies": 10, "linkedin_arab": 10,
+    # v80: second LinkedIn lane (Egypt employer company pages). Rank 12 keeps
+    # it inside the LinkedIn family, ahead of all non-LinkedIn supply.
+    "eg_linkedin_companies": 12,
     # Official company careers (Egypt banks/telecom live here), then
     # v78 non-LinkedIn geographic order: Egyptian boards → Arab boards →
     # foreign aggregators/ATS. Within one freshness+geo bucket the Egyptian
@@ -645,10 +650,14 @@ ENABLE_STRICT_HR_POSTS_ONLY = _env_bool("ENABLE_STRICT_HR_POSTS_ONLY", True)
 # Egypt location bonus = 8pts. A job needs at least 6pts of tech signals (e.g. 1-2 specific tools)
 # to pass. This prevents "General Security" / no-context jobs from being posted.
 SCORE_THRESHOLD  = 14
-# v79: 10 → 20 topic slots/channel for the 300-jobs/run target. GEO
-# channels (egypt/gulf) stay uncapped. Ordering stays fresh-first + 70/30 LI.
-TARGET_JOBS_PER_CHANNEL = int(os.getenv("TARGET_JOBS_PER_CHANNEL", "20"))
+# v80: every group caps at 10 sends/run — EXCEPT Remote at 15.
+# (v79's uncapped GEO channels are retired: with the strict Arab-only topic
+# rule below, uncapped geo queues re-posted backlog instead of fresh jobs.)
+TARGET_JOBS_PER_CHANNEL = int(os.getenv("TARGET_JOBS_PER_CHANNEL", "10"))
 MAX_JOBS_PER_CHANNEL = int(os.getenv("MAX_JOBS_PER_CHANNEL", str(TARGET_JOBS_PER_CHANNEL)))
+# Remote is the single worldwide-discovery group (all non-Arab jobs land only
+# here), so it gets the larger cap.
+MAX_JOBS_REMOTE_CHANNEL = int(os.getenv("MAX_JOBS_REMOTE_CHANNEL", "15"))
 
 # v72: Hidden Jobs Discovery — hiring signals verified through the official
 # search chain before any card is sent.  Signals that find no application URL

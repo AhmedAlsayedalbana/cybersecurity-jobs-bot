@@ -110,7 +110,9 @@ def test_gulf_soc_routes_gulf_and_soc():
     assert route_job(job) == ["gulf", "soc"]
 
 
-def test_remote_networksec_routes_remote_and_networksec():
+def test_remote_networksec_routes_remote_only_v80():
+    # v80: foreign/remote jobs go to Remote ONLY, never topic channels —
+    # even with a perfect specialty match.
     from telegram_sender import route_job
     job = Job(
         title="Network Security Engineer", company="X", location="Remote",
@@ -120,7 +122,7 @@ def test_remote_networksec_routes_remote_and_networksec():
         content_type="job_listing", is_remote=True,
         posted_date=datetime.now() - timedelta(hours=3),
     )
-    assert route_job(job) == ["remote", "networksec"]
+    assert route_job(job) == ["remote"]
 
 
 # ── Pool: 70% LI cap, focus domains, Egypt-first ─────────────────────────────
@@ -181,6 +183,54 @@ def test_remote_feeds_honest_empty_when_all_answer_blank(monkeypatch):
     monkeypatch.setattr(rf, "_FEEDS", (("a", lambda: []), ("b", lambda: [])))
     result = rf.fetch_remote_feeds()
     assert result.status == "empty"
+
+
+# ── v80: remote-only topics, 10/15 caps, Arab-only topic gate ───────────────
+
+def test_topic_channels_reject_remote_jobs_at_send_gate():
+    from intelligence.geo import validate_location_for_channel
+    job = _job("SOC Analyst", location="Remote", source="greenhouse_expanded",
+               description="SOC analyst SIEM Splunk incident response")
+    job.is_remote = True
+    for topic in ("soc", "pentest", "appsec", "cloudsec", "grc", "seceng",
+                  "networksec", "internships"):
+        assert not validate_location_for_channel(job, topic)[0]
+    assert validate_location_for_channel(job, "remote")[0]
+
+
+def test_arab_jobs_pass_topic_gate():
+    from intelligence.geo import validate_location_for_channel
+    job = _job("SOC Analyst", location="Riyadh, Saudi Arabia", source="linkedin_arab")
+    assert validate_location_for_channel(job, "soc")[0]
+    assert validate_location_for_channel(job, "gulf")[0]
+    assert not validate_location_for_channel(job, "egypt")[0]
+
+
+def test_channel_caps_10_and_remote_15():
+    assert config.MAX_JOBS_PER_CHANNEL == 10
+    assert config.MAX_JOBS_REMOTE_CHANNEL == 15
+    assert config.TELEGRAM_SEND_DELAY == 3
+
+
+def test_70_30_slot_math_per_cap():
+    for cap, li, non in ((10, 7, 3), (15, 11, 4)):
+        assert max(1, int(cap * 0.70 + 0.5)) == li
+        assert cap - max(1, int(cap * 0.70 + 0.5)) == non
+
+
+def test_make_job_never_fakes_now():
+    from sources.egypt_boards import _make_job
+    job = _make_job(title="SOC Analyst", company="X", location="Cairo",
+                    url="https://example.com/x", source="wazzif")
+    assert job is not None
+    assert job.posted_date is None
+
+
+def test_eg_linkedin_companies_lane_registered_as_linkedin():
+    from sources.source_registry import get_source_specs
+    specs = {s.key: s for s in get_source_specs()}
+    assert "eg_linkedin_companies" in specs
+    assert config.source_priority("eg_linkedin_companies") == 12
 
 
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────

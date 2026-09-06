@@ -140,11 +140,14 @@ def validate_location_for_channel(job: Any, channel: str) -> tuple[bool, Deliver
     if channel in {"gulf", "arab"}:  # ``gulf`` remains the legacy channel key.
         return decision.geo == "arab", decision
     if channel == "remote":
-        # v78: Remote channel now accepts global physical jobs as a discovery layer.
+        # Remote is the sole worldwide-discovery group: explicit remote plus
+        # global physical roles land ONLY here, never in topic channels.
         return decision.geo in ("remote", "global"), decision
-    # Specialty channels accept only jobs that have already passed the shared
-    # Egypt/Arab physical or explicit-worldwide-remote policy.
-    return True, decision
+    # v80: specialty topic channels (soc/pentest/appsec/cloudsec/grc/seceng/
+    # networksec/internships) accept Arab-located jobs ONLY. A foreign or
+    # remote job reaching this check is rejected even if routing ever lets
+    # one through — defense in depth behind route_job.
+    return decision.geo in ("egypt", "arab"), decision
 
 
 def classify_geo(job: Any) -> str:
