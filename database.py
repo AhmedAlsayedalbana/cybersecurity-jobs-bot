@@ -22,7 +22,10 @@ log = logging.getLogger(__name__)
 
 DB_PATH     = "jobs_bot.db"
 MEMORY_DAYS = int(os.environ.get("MEMORY_DAYS", "5"))
-DAILY_SEND_HOURS = int(os.environ.get("DAILY_SEND_HOURS", "24"))
+# v77: was 24 — split-brain with config.DAILY_SEND_HOURS=168 caused the same
+# job to be re-eligible per DB internals while config blocked it for 7d (and
+# vice versa). Unified to 168h (7-day no-repeat-per-channel window).
+DAILY_SEND_HOURS = int(os.environ.get("DAILY_SEND_HOURS", "168"))
 
 
 class JobsDB:

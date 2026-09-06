@@ -64,6 +64,11 @@ WEIGHTS = {
     "entry_min":     12,    # v38: raised from 812 � intern jobs need real cyber tech match before getting boost
 
     # Penalties
+    # v77: global_onsite -4 → -2. Globals already lose half their tech points
+    # via tech_global=0.5; the extra -4 double-penalized them and starved the
+    # remote discovery channel to 0 sends. -2 keeps globals ranked below
+    # Egypt/Arab/Remote but lets strong global-cyber roles surface. Cyber
+    # gates (models.py) are untouched — ranking only, accuracy preserved.
     "non_cyber":    -20,
     "clearance":    -15,
     "weak_title":    -8,
@@ -71,7 +76,7 @@ WEIGHTS = {
     "guard_title":   -8,
     "short_title":   -8,
     "no_url":       -10,
-    "global_onsite": -4,
+    "global_onsite": -2,
     "bad_geo":       -4,
 
     # Diversity rerank
@@ -310,7 +315,16 @@ def score_job(job: Job) -> Tuple[int, List[str]]:
         else:
             loc_type = "global"
 
-    is_remote = job.is_remote or phrase_match("remote", title + " " + desc[:80] + " " + tags)
+    # v77: single strict remote definition shared with delivery (geo.py).
+    # Old code counted description prose (first 80 chars) as remote and ignored
+    # the hybrid veto, so hybrid Cairo/Remote roles scored +remote while delivery
+    # treated them as physical — rank/delivery drift. Using is_remote_job()
+    # only *removes* false-remote points; no gate is relaxed, accuracy rises.
+    try:
+        from intelligence.geo import is_remote_job as _strict_is_remote
+        is_remote = bool(_strict_is_remote(job))
+    except Exception:
+        is_remote = bool(job.is_remote) or phrase_match("remote", title + " " + tags)
 
     if loc_type == "egypt":
         score += WEIGHTS["egypt"]

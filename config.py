@@ -110,7 +110,12 @@ TELEGRAM_REVIEWER_IDS = frozenset(
     if value.strip().isdigit()
 )
 
-#  Community Topics 
+#  Community Topics
+# v77 note: per-channel "keywords" below are legacy display/validation metadata
+# only — routing uses intelligence.domain + has_channel_evidence in
+# telegram_sender (stricter, evidence-based). Keywords are kept for
+# KEYWORD_SETS_FOR_VALIDATION but must NOT be re-wired into routing: that
+# would re-introduce keyword-only false positives the evidence gate removed.
 CHANNELS = {
     
     "egypt": {
@@ -541,12 +546,12 @@ def source_priority(source_key: str, default: int = 999) -> int:
 SEEN_JOBS_FILE   = "seen_jobs.json"
 MAX_JOBS_PER_RUN = int(os.getenv("MAX_JOBS_PER_RUN", "260"))
 # MAX_JOB_AGE_DAYS: hard-block threshold for truly stale jobs.
-# v54: raised to 3 days per explicit requirement — jobs older than 72h are
-# NEVER sent to any channel. linkedin, freelance, Egyptian boards, and all
-# other sources respect this gate. send_jobs() reuses this same value
-# (MAX_JOB_AGE_HOURS) for its runtime gate on posted_date, so both layers
-# are always in sync.
-MAX_JOB_AGE_DAYS = int(os.getenv("MAX_JOB_AGE_DAYS", "3"))   # ← v54: hard 3-day stale gate
+# v77: raised 3 → 7 days. The 72h triple-gate was discarding 107 fresh-enough
+# jobs/run (Wiz/Bugcrowd/Tenable with 4-12d dates) and starving remote/gulf
+# channels to 0. Freshness ordering still sends newest first — this only
+# widens the eligibility window so Egypt/Arab/Remote all have supply.
+# send_jobs() reuses MAX_JOB_AGE_HOURS so both layers stay in sync.
+MAX_JOB_AGE_DAYS = int(os.getenv("MAX_JOB_AGE_DAYS", "7"))   # ← v77: 7-day window, fresh-first ordering
 MAX_JOB_AGE_HOURS = int(os.getenv("MAX_JOB_AGE_HOURS", str(MAX_JOB_AGE_DAYS * 24)))
 LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS", "120"))
 # ✅ v47: Raised from 180 → 240s — the full query plan (CORE+GULF+EXPANSION) needs
@@ -570,10 +575,12 @@ OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "18
 # deadline covers its direct attempt and every permitted fallback together.
 # Per-connector ceilings.  LinkedIn has its own separately configured budget
 # and is intentionally not governed by these values.
-# - Fast public HTTP boards: 15 seconds
+# - Fast public HTTP boards: 25 seconds (v77: was 15s — Wuzzuf/Bayt/Tanqeeb/
+#   Akhtaboot/GulfTalent all timed out at 15.0s in production; 25s lets the
+#   Jina fallback complete without starving peers)
 # - Official careers / ATS APIs: 30 seconds
 # - JS-only browser fallback: 40 seconds maximum for the whole source
-DIRECT_SOURCE_TIMEOUT_SECONDS = int(os.getenv("DIRECT_SOURCE_TIMEOUT_SECONDS", "15"))
+DIRECT_SOURCE_TIMEOUT_SECONDS = int(os.getenv("DIRECT_SOURCE_TIMEOUT_SECONDS", "25"))
 CAREERS_API_SOURCE_TIMEOUT_SECONDS = int(os.getenv("CAREERS_API_SOURCE_TIMEOUT_SECONDS", "30"))
 PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS = int(os.getenv("PLAYWRIGHT_SOURCE_TIMEOUT_SECONDS", "40"))
 PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_NAVIGATION_TIMEOUT_MS", "40000"))
@@ -672,17 +679,19 @@ LLM_CLASSIFIER_PROVIDER = os.getenv("LLM_CLASSIFIER_PROVIDER", "auto").strip().l
 LLM_CLASSIFIER_MODEL = os.getenv("LLM_CLASSIFIER_MODEL", "").strip()
 LLM_CLASSIFIER_CACHE_PATH = os.getenv("LLM_CLASSIFIER_CACHE_PATH", "llm_classifier_cache.json")
 ENTRY_LEVEL_TARGET_RATIO = float(os.getenv("ENTRY_LEVEL_TARGET_RATIO", "0.60"))
-# LinkedIn remains first within the fresh-first source ordering.  The normal
-# cap is deliberately generous: when trusted secondary supply is scarce, we
-# should not discard fresh verified LinkedIn vacancies just to manufacture a
-# source mix.
-LINKEDIN_POOL_CAP_RATIO = float(os.getenv("LINKEDIN_POOL_CAP_RATIO", "0.80"))
-# Tiny pools are a different case: with only a handful of jobs, a 50/50 split
-# keeps a single source from hiding every other discovery channel.  This does
-# not affect normal production pools.
+# v77: LinkedIn target is 70% per user requirement — enforced globally here
+# AND per-channel in telegram_sender (LINKEDIN_PER_CHANNEL_TARGET_RATIO).
+# Fresh-first ordering still applies; this cap only shapes the source mix.
+LINKEDIN_POOL_CAP_RATIO = float(os.getenv("LINKEDIN_POOL_CAP_RATIO", "0.70"))
+# Tiny pools keep the same 70% target so a 5-8 job run is not visually
+# monopolized yet still LinkedIn-majority per the per-group contract.
 SMALL_POOL_DIVERSITY_MAX_SIZE = int(os.getenv("SMALL_POOL_DIVERSITY_MAX_SIZE", "10"))
-SMALL_POOL_LINKEDIN_CAP_RATIO = float(os.getenv("SMALL_POOL_LINKEDIN_CAP_RATIO", "0.50"))
-NON_LINKEDIN_POOL_FLOOR_RATIO = float(os.getenv("NON_LINKEDIN_POOL_FLOOR_RATIO", "0.20"))
+SMALL_POOL_LINKEDIN_CAP_RATIO = float(os.getenv("SMALL_POOL_LINKEDIN_CAP_RATIO", "0.70"))
+NON_LINKEDIN_POOL_FLOOR_RATIO = float(os.getenv("NON_LINKEDIN_POOL_FLOOR_RATIO", "0.30"))
+# Per-channel LinkedIn share target (0.70 = 70% of each group's sends).
+# telegram_sender sorts each channel queue LinkedIn-first then interleaves to
+# hit this ratio without ever dropping the non-LI floor.
+LINKEDIN_PER_CHANNEL_TARGET_RATIO = float(os.getenv("LINKEDIN_PER_CHANNEL_TARGET_RATIO", "0.70"))
 
 # Secondary (non-LinkedIn) source_keys allowed to fill the protected minimum
 # and the remaining capacity once the LinkedIn cap is reached.
@@ -704,17 +713,15 @@ TELEGRAM_RETRY_MAX_ATTEMPTS = int(os.getenv("TELEGRAM_RETRY_MAX_ATTEMPTS", "6"))
 TELEGRAM_RETRY_BASE_DELAY_SECONDS = int(os.getenv("TELEGRAM_RETRY_BASE_DELAY_SECONDS", "45"))
 TELEGRAM_RETRY_DRAIN_LIMIT = int(os.getenv("TELEGRAM_RETRY_DRAIN_LIMIT", "25"))
 SOURCE_HEALTH_MIN_SUCCESS = int(os.getenv("SOURCE_HEALTH_MIN_SUCCESS", "1"))
-# ✅ v47: Lowered from 4 → 3 consecutive failures to auto-disable dead sources faster.
-# Sources like MENA Boards, Jobzella, NaukriGulf return 0 jobs consistently — this
-# reduces wasted time waiting on dead endpoints each run.
-SOURCE_AUTO_DISABLE_THRESHOLD = int(os.getenv("SOURCE_AUTO_DISABLE_THRESHOLD", "3"))
-# ✅ v47: Raised quarantine from 180 → 360 min (6h) — aligns with the 4h run schedule
-# so a failed source is retried after the NEXT run completes, not mid-session.
-SOURCE_QUARANTINE_MINUTES = int(os.getenv("SOURCE_QUARANTINE_MINUTES", "360"))
-# A few quarantined public sources are sampled each run for recovery.  This
-# avoids silently losing a site for hours after a transient block or markup
-# deployment, while preserving the circuit breaker for the full source set.
-QUARANTINED_SOURCE_PROBE_LIMIT = int(os.getenv("QUARANTINED_SOURCE_PROBE_LIMIT", "4"))
+# v77: relaxed 3 → 5 failures + 360 → 120min quarantine + 4 → 10 probes.
+# The old values parked 101/102 sources in recovery rotation after 2-3 runs
+# because every endpoint_circuit_open / parse_changed counted as a failure,
+# silently starving Egypt/Arab boards for hours. Transient blocks now recover
+# within one run; truly dead feeds still quarantine via consecutive failures.
+SOURCE_AUTO_DISABLE_THRESHOLD = int(os.getenv("SOURCE_AUTO_DISABLE_THRESHOLD", "5"))
+SOURCE_QUARANTINE_MINUTES = int(os.getenv("SOURCE_QUARANTINE_MINUTES", "120"))
+# More quarantined sources are sampled each run for recovery.
+QUARANTINED_SOURCE_PROBE_LIMIT = int(os.getenv("QUARANTINED_SOURCE_PROBE_LIMIT", "10"))
 ENABLE_SOURCE_PRIORITY_GATING = _env_bool("ENABLE_SOURCE_PRIORITY_GATING", True)
 
 # ── v62 Egyptian priority execution budget ─────────────────────────────

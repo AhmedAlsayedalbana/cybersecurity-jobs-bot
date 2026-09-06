@@ -341,20 +341,20 @@ class TestPoolBuilder(unittest.TestCase):
     def test_linkedin_cap_enforced(self):
         """LinkedIn jobs must not exceed LINKEDIN_POOL_CAP_RATIO of pool.
 
-        v54: li_cap is now a hard cap computed from the target pool size
-        (config.LINKEDIN_POOL_CAP_RATIO, now 0.80), enforced directly in
-        _try_add. Unlike the old self-adjusting formula, it does not rescale
-        itself to an under-supplied realized pool, so this test supplies
-        enough non-LinkedIn (approved-secondary) jobs to actually reach the
-        target pool size while respecting the ratio — a supply-starved edge
-        case (e.g. 100 LinkedIn / 5 other) can legitimately end up more
+        v54: li_cap is now a hard cap computed from the target pool size,
+        enforced directly in _try_add. Unlike the old self-adjusting formula,
+        it does not rescale itself to an under-supplied realized pool, so this
+        test supplies enough non-LinkedIn (approved-secondary) jobs to actually
+        reach the target pool size while respecting the ratio — a supply-starved
+        edge case (e.g. 100 LinkedIn / 5 other) can legitimately end up more
         LinkedIn-heavy than the ratio, since there isn't enough approved
         secondary supply to fill the other side of the split.
+        v77: ratio is now 0.70 (was 0.80), so supply is 175/75 = exactly 70/30.
         """
         import config
         from intelligence.pool_builder import build_final_pool
 
-        jobs = self._make_jobs(n_linkedin=200, n_other=50, n_entry=0)
+        jobs = self._make_jobs(n_linkedin=175, n_other=75, n_entry=0)
         pool = build_final_pool(jobs, self._score)
         li_count = sum(1 for j in pool if "linkedin" in j.source)
         cap = round(len(pool) * config.LINKEDIN_POOL_CAP_RATIO)

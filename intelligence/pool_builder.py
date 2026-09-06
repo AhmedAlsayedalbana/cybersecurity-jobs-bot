@@ -109,15 +109,18 @@ def _score_with_priority(job: Any, score_fn: Callable) -> int:
 
 
 def freshness_sort_key(job: Any, *, now: datetime | None = None) -> tuple[int, float]:
-    """Return ``(freshness bucket, age)``; undated rows always come last.
+    """Return ``(freshness bucket, age)``; undated rows rank after dated rows.
 
     Buckets make the ordering policy auditable: <24h, 24–48h, 48–72h, then
-    any older item still allowed by the configured hard gate.  Source priority
-    is intentionally applied *inside* each bucket by the pool and sender.
+    any older item still allowed by the configured hard gate (v77: 7 days).
+    Undated jobs (common on Egypt/Arab boards + freelance) sit in the last
+    bucket instead of being discarded, so fresh dated jobs always win but
+    undated supply still fills Egypt/Arab/Remote channels when dated supply
+    is scarce. Source priority and geo are applied *inside* each bucket.
     """
     posted = getattr(job, "posted_date", None)
     if not posted:
-        return (1, float("inf"))
+        return (3, 0.0)
     try:
         if getattr(posted, "tzinfo", None) is not None:
             from datetime import timezone
@@ -161,12 +164,18 @@ def build_final_pool(
             c. LINKEDIN_POOL_CAP_RATIO        — prevent LinkedIn dominance
         5. Fill remaining slots from highest-scoring qualified jobs.
     """
-    stale_rows = [job for job in jobs if is_stale(job)]
-    rows = [
-        (job, _score_with_priority(job, score_fn))
-        for job in jobs
-        if job not in stale_rows
-    ]
+    # v77 perf: was O(n²) — `job not in stale_rows` linear scan per job plus
+    # 2× freshness_sort_key + _geo_rank recomputed per comparison. Same order,
+    # keys computed once. No policy change.
+    stale_ids: set[int] = set()
+    stale_rows: list = []
+    fresh_jobs: list = []
+    for job in jobs:
+        if is_stale(job):
+            stale_rows.append(job)
+            stale_ids.add(id(job))
+        else:
+            fresh_jobs.append(job)
     if telemetry is not None:
         rejections = telemetry.setdefault("rejections", {})
         rejections["stale"] = int(rejections.get("stale", 0)) + len(stale_rows)
@@ -175,13 +184,16 @@ def build_final_pool(
     def _origin_priority(job: Any) -> int:
         return int(getattr(job, "origin_priority", 999) or 999)
 
-    rows.sort(key=lambda item: (
-        freshness_sort_key(item[0])[0],  # auditable <24/<48/<72 bucket
-        freshness_sort_key(item[0])[1],  # newer still wins inside that bucket
-        _origin_priority(item[0]),       # LinkedIn breaks comparable-freshness ties
-        _geo_rank(item[0]),
-        -item[1],
-    ))
+    _now = datetime.now()
+    decorated: list[tuple] = []
+    for job in fresh_jobs:
+        _bucket, _age = freshness_sort_key(job, now=_now)
+        decorated.append((
+            _bucket, _age, _geo_rank(job), _origin_priority(job),
+            -_score_with_priority(job, score_fn), job,
+        ))
+    decorated.sort(key=lambda t: (t[0], t[1], t[2], t[3], t[4]))
+    rows = [(t[5], -t[4]) for t in decorated]
 
     qualified = [item for item in rows if item[1] >= config.SCORE_THRESHOLD]
     threshold_rejected = len(rows) - len(qualified)

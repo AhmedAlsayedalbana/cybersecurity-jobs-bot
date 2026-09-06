@@ -41,6 +41,12 @@ from linkedin_url_utils import (
 logger = logging.getLogger(__name__)
 
 
+# v77: strict unknown-age reject applies ONLY to LinkedIn/Google where dates
+# are reliably extractable. Freelance + MENA/Egypt boards (Wuzzuf/Bayt/
+# Forasna/Tanqeeb/Akhtaboot/Mostaql/Upwork/Contra/...) often carry no date —
+# rejecting them as "unknown age" silently killed the entire Egypt/Arab
+# supply. They now pass as unknown-age and are ranked after dated jobs
+# (pool_builder puts undated last) instead of being discarded.
 STRICT_RECENCY_SOURCES = {
     "linkedin",
     "linkedin_unified",
@@ -51,18 +57,6 @@ STRICT_RECENCY_SOURCES = {
     "linkedin_egypt_arabic",
     "google_jobs",
     "google_intel",
-    "freelancer",
-    "mostaql",
-    "khamsat",
-    "fiverr",
-    "upwork",
-    # MENA boards stamp posted_date=now() so this is just a safety net
-    "akhtaboot",
-    "drjobpro",
-    "forasna",
-    "tanqeeb",
-    "mena_boards",
-    "jina_scraper",
 }
 
 
@@ -287,12 +281,14 @@ def _job_source_key(job: "Job") -> str:
 def is_recent_enough(
     job: "Job",
     *,
-    max_age_hours: int = 48,
+    max_age_hours: int = 72,
     strict_sources: set[str] | None = None,
 ) -> tuple[bool, str]:
     """
     True only for jobs strictly fresher than max_age_hours.
-    For strict sources (LinkedIn/Google/Freelance), unknown age is rejected.
+    For strict sources (LinkedIn/Google only, v77), unknown age is rejected.
+    Non-strict sources (Egypt/Arab boards, freelance) pass as unknown-age
+    and are ranked after dated jobs instead of being discarded.
     """
     strict_sources = strict_sources or STRICT_RECENCY_SOURCES
     now = datetime.now()
@@ -631,11 +627,12 @@ def classify_jobs(jobs: list["Job"]) -> tuple[list["Job"], list["Job"]]:
                 setattr(job, "filter_reason", decision.reason_code)
                 rejected.append(job)
                 continue
-            if not getattr(job, "posted_date", None):
-                decision.reason_code = "reject_missing_verified_posted_date"
-                setattr(job, "filter_reason", decision.reason_code)
-                rejected.append(job)
-                continue
+            # v77: missing posted_date no longer hard-rejects here.
+            # is_recent_enough() is the single recency authority: strict
+            # sources (LinkedIn/Google) still reject unknown age there, while
+            # Egypt/Arab boards + freelance pass as unknown-age and rank after
+            # dated jobs. This fixes the double-kill that discarded most
+            # non-LinkedIn supply before recency even ran.
             # Target marketplace sources must show how the public job was
             # extracted.  Legacy sources remain compatible while they migrate.
             public_target_sources = {

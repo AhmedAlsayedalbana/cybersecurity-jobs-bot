@@ -941,6 +941,47 @@ def send_jobs(jobs, *, dry_run: bool = False):
     if delivery_location_blocks:
         log.warning(" location_blocked_at_delivery: %s", " | ".join(delivery_location_blocks[:8]))
 
+    # ── v77: per-channel LinkedIn 70% ordering (user contract) ─────────────
+    # Each group's queue is reordered (never trimmed here) so the FIRST sends
+    # within MAX_JOBS_PER_CHANNEL are ~70% LinkedIn / 30% other sources.
+    # jobs_scored is already fresh-first, so both sub-lists stay fresh-first;
+    # interleaving 7 LI + 3 non-LI preserves freshness AND hits the ratio
+    # without duplication (one-job-one-channel dedup below still applies).
+    def _is_li_job(j) -> bool:
+        src = (getattr(j, "source_key", "") or getattr(j, "source", "") or "").lower()
+        return src.startswith("linkedin") or "linkedin" in src
+
+    try:
+        li_target = float(getattr(config, "LINKEDIN_PER_CHANNEL_TARGET_RATIO", 0.70))
+    except (TypeError, ValueError):
+        li_target = 0.70
+    li_target = max(0.0, min(1.0, li_target))
+    _li_run = max(1, round(li_target * 10))      # 7 for 0.70
+    _non_li_run = max(1, 10 - _li_run)           # 3 for 0.70
+    for _ch_key, _queue in channel_queues.items():
+        if len(_queue) <= 1:
+            continue
+        _li = [j for j in _queue if _is_li_job(j)]
+        _non_li = [j for j in _queue if not _is_li_job(j)]
+        if not _li or not _non_li:
+            continue  # homogeneous queue — nothing to balance
+        _mixed: list = []
+        _i = _j = 0
+        while _i < len(_li) or _j < len(_non_li):
+            for _ in range(_li_run):
+                if _i < len(_li):
+                    _mixed.append(_li[_i])
+                    _i += 1
+            for _ in range(_non_li_run):
+                if _j < len(_non_li):
+                    _mixed.append(_non_li[_j])
+                    _j += 1
+        channel_queues[_ch_key] = _mixed
+    log.info(
+        " Per-channel LinkedIn ordering: target=%.0f%% (pattern %d LI + %d non-LI, fresh-first within each)",
+        li_target * 100, _li_run, _non_li_run,
+    )
+
     # ── Smart Fallback: STRICT one-job-one-channel enforcement ─────────────
     # Track which jobs are already claimed by a direct-match queue.
     # A fallback job may only be used in ONE topic channel.

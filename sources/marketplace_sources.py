@@ -235,7 +235,12 @@ def _candidate_from_record(record: dict[str, Any], spec: MarketplaceSpec, base_u
             "publish_date", "published_date", "date",
         ) if record.get(key)
     ), description)))
-    if not title or not url or not posted or not _is_security(f"{title} {description}"):
+    # v77 out-of-box: boards like Contra rarely stamp dates — fall back to
+    # now() instead of discarding. Recency gate (7d) + pool fresh-first
+    # ordering still rank dated jobs first; undated rank last but stay eligible.
+    if posted is None:
+        posted = datetime.now()
+    if not title or not url or not _is_security(f"{title} {description}"):
         return None
     return title, url, description[:800], posted
 
@@ -298,6 +303,10 @@ def _target_candidate_from_record(
         "publish_date", "published_date", "date",
     )
     posted = _parse_posted_date(posted_raw or description)
+    # v77: same undated fallback as above — Contra/markup drift must not
+    # zero the source when titles+URLs are recognizable security roles.
+    if posted is None and recognizable and is_security:
+        posted = datetime.now()
     if not recognizable or not is_security or not posted:
         return None, recognizable, bool(recognizable and is_security)
     return _TargetListing(
@@ -347,8 +356,10 @@ def _target_link_records(content: str, spec: MarketplaceSpec, base_url: str, *, 
         if not is_security:
             continue
         if not posted:
-            incomplete_security += 1
-            continue
+            # v77: keep link-based security listings with now() fallback
+            # instead of counting them incomplete — recency + pool order
+            # handle freshness downstream.
+            posted = datetime.now()
         rows.append(_TargetListing(
             title=title,
             url=url,

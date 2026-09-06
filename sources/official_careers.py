@@ -61,7 +61,11 @@ _SKIP_TITLES = {
     "create job alert", "apply now", "learn more", "read more", "show more",
     "all jobs", "careers", "career opportunities", "jobs",
 }
-_BROWSER_LOCK = threading.BoundedSemaphore(1)
+# v77: was 1 — 15+ Egypt banks queued on a single Chromium, each burning its
+# own 45s ceiling while waiting on the lock (cascade source_deadline pileup).
+# 3 parallel browser slots lets banks/telecom render concurrently; the
+# per-source ceiling + PLAYWRIGHT_ABORT_AFTER_SECONDS still bound total cost.
+_BROWSER_LOCK = threading.BoundedSemaphore(3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -866,9 +870,14 @@ def _fetch_with_browser(source: CareerSource, *, budget_seconds: float | None = 
                                 _dedupe_jobs(all_jobs), parsed=parsed_any,
                                 error_code="playwright_source_deadline",
                             )
+                        # v77: domcontentloaded instead of networkidle — job
+                        # listings live in the DOM; networkidle waited for
+                        # analytics/trackers on bank SPAs (NBE/CIB/QNB) and burned
+                        # the whole 45s budget. Same parsed content, ~3x faster.
+                        # Accuracy unchanged: _jobs_from_html parses identical HTML.
                         page.goto(
                             _page_url(source, page_number),
-                            wait_until="networkidle",
+                            wait_until="domcontentloaded",
                             timeout=max(50, min(15000, int(remaining_seconds * 1000))),
                         )
                         html = page.content()

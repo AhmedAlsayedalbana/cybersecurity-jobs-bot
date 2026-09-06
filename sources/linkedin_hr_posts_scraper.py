@@ -554,6 +554,36 @@ def _search_via_bing_html(query: str) -> list[tuple[str, str]]:
     return out[:10]
 
 
+def _search_via_duckduckgo_html(query: str) -> list[tuple[str, str]]:
+    """v77: keyless DDG HTML backend — different index/IP pool from Bing/Jina.
+
+    Same strict gates as bing_html (canonical + post_id required); only the
+    retrieval surface is new, so recall rises while verification accuracy is
+    unchanged — downstream hiring/confidence + URL verify still reject noise.
+    """
+    html = get_text(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
+        timeout=8,
+        max_retries=0,
+        use_proxy=False,
+        budget_phase="linkedin_hr",
+    )
+    if not html:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw_url in re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
+        target_url = _unwrap_bing_redirect(unescape(raw_url))
+        canonical = _normalize_candidate_link(target_url)
+        if not canonical or not extract_linkedin_post_id(canonical) or canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append((canonical, "duckduckgo_html"))
+    return out[:10]
+
+
 def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
     """v61: Search engines are FALLBACK only — used after all LinkedIn-native layers."""
     global _SEARCH_BACKEND_WARNING_EMITTED
@@ -563,8 +593,8 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
                 "LinkedIn HR posts: API search credentials are absent; using the bounded public-search fallback."
             )
             _SEARCH_BACKEND_WARNING_EMITTED = True
-    # v78: Google CSE removed.
-    for search_fn in (_search_via_serpapi, _search_via_jina_index, _search_via_bing_html):
+    # v78: Google CSE removed. v77: DDG HTML added (keyless, distinct index).
+    for search_fn in (_search_via_serpapi, _search_via_jina_index, _search_via_bing_html, _search_via_duckduckgo_html):
         backend = search_fn.__name__.removeprefix("_search_via_")
         if not _is_backend_warm(backend):
             continue
@@ -578,7 +608,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         _increment_counter("search_backend_empty", backend)
 
     living = [
-        b for b in ("serpapi", "jina_index", "bing_html")
+        b for b in ("serpapi", "jina_index", "bing_html", "duckduckgo_html")
         if _backend_cooldown_until.get(b, 0.0) > 0.0
     ]
     if living and not any(_is_backend_warm(b) for b in living):
@@ -599,7 +629,7 @@ def _search_urls_fallback(query: str) -> list[tuple[str, str]]:
         )
         _backend_cooldown_until[relaxed] = 0.0
         _backend_empty_cooldown.discard(relaxed)
-        for search_fn in (_search_via_serpapi, _search_via_jina_index, _search_via_bing_html):
+        for search_fn in (_search_via_serpapi, _search_via_jina_index, _search_via_bing_html, _search_via_duckduckgo_html):
             if search_fn.__name__.removeprefix("_search_via_") == relaxed:
                 _increment_counter("search_backend_attempts", relaxed)
                 urls = search_fn(query)
