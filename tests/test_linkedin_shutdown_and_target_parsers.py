@@ -35,7 +35,8 @@ def test_linkedin_timeout_joins_its_task_and_reports_shutdown(monkeypatch):
     assert not linkedin._LINKEDIN_MANAGED_TASKS
 
 
-@pytest.mark.parametrize("spec_key", ("wuzzuf", "tanqeeb", "upwork", "freelancer", "akhtaboot"))
+# v79: upwork spec removed (permanently blocked) — contract now locked on live specs.
+@pytest.mark.parametrize("spec_key", ("wuzzuf", "tanqeeb", "guru", "freelancer", "akhtaboot"))
 def test_target_marketplace_parsers_keep_provider_fields(spec_key):
     from sources.marketplace_sources import SPECS_BY_KEY, _parse
 

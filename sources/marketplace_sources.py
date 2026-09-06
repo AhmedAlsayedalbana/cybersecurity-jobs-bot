@@ -78,11 +78,13 @@ class MarketplaceSpec:
     supports_public_client_feed: bool = True
 
 
+# v79: upwork + mostaql removed — permanently endpoint-blocked storefronts
+# (upwork_blocked / mostaql_blocked on every run, zero yield across the
+# recovery rotation). contra removed — storefront markup yields zero
+# recognizable listings (contra_parser_unrecognized permanently). Replaced by
+# the remote_feeds bundle (keyless JSON/RSS that actually answers).
 PUBLIC_SPECS: tuple[MarketplaceSpec, ...] = (
-    MarketplaceSpec("upwork", "Upwork", ("https://www.upwork.com/nx/search/jobs/?q=cybersecurity",), "client_project", "remote", 20),
     MarketplaceSpec("freelancer", "Freelancer", ("https://www.freelancer.com/jobs/cyber-security/",), "client_project", "remote", 20),
-    MarketplaceSpec("mostaql", "Mostaql", ("https://mostaql.com/projects?category=information-technology&query=cybersecurity",), "client_project", "remote", 20),
-    MarketplaceSpec("contra", "Contra", ("https://contra.com/jobs?search=cybersecurity",), "client_project", "remote", 20),
     MarketplaceSpec("peopleperhour", "PeoplePerHour", ("https://www.peopleperhour.com/freelance-cyber-security-jobs",), "client_project", "remote", 20),
     MarketplaceSpec("guru", "Guru", ("https://www.guru.com/m/find/freelance-jobs/cyber-security/",), "client_project", "remote", 20),
     MarketplaceSpec("workana", "Workana", ("https://www.workana.com/en/jobs?query=cybersecurity",), "client_project", "remote", 20),
@@ -99,8 +101,8 @@ RESTRICTED_SPECS: tuple[MarketplaceSpec, ...] = (
 )
 SPECS_BY_KEY = {spec.key: spec for spec in (*PUBLIC_SPECS, *RESTRICTED_SPECS)}
 _TARGET_PARSER_KEYS = frozenset({
-    "wuzzuf", "tanqeeb", "upwork", "freelancer", "akhtaboot",
-    "mostaql", "gulftalent", "bayt", "contra", "guru",
+    "wuzzuf", "tanqeeb", "freelancer", "akhtaboot",
+    "gulftalent", "bayt", "guru",
 })
 
 

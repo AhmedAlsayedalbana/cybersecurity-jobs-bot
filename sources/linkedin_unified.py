@@ -361,6 +361,21 @@ def _build_specialty_lanes(rotation_slot: int) -> list[QuerySpec]:
         ("Product Security Engineer", "Egypt"),
         ("OT Cybersecurity", "Saudi Arabia"),
         ("Red Team Engineer", "Egypt"),
+        # v79: priority-domain emphasis (SOC / Pentest / Network Security /
+        # GRC) across Egypt + Arab + Remote — these rotate into the 90-lane
+        # plan so every run surfaces fresh supply for the four focus groups.
+        ("SOC Analyst", "Saudi Arabia"),
+        ("SOC Analyst", "UAE"),
+        ("SOC Analyst", "Remote"),
+        ("Penetration Tester", "UAE"),
+        ("Penetration Tester", "Remote"),
+        ("Network Security Engineer", "Egypt"),
+        ("Network Security Engineer", "Saudi Arabia"),
+        ("Network Security Engineer", "Remote"),
+        ("GRC Analyst", "Egypt"),
+        ("GRC Analyst", "UAE"),
+        ("GRC Consultant", "Remote"),
+        ("Incident Response Analyst", "Egypt"),
     ]
     # Rotate: pick a slice based on rotation_slot
     chunk_size = 6

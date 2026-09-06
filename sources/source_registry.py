@@ -31,7 +31,8 @@ from sources.new_sources import _fetch_greenhouse_cybersec
 from sources.tech_boards import fetch_tech_boards
 from sources.recruitment_agencies import fetch_recruitment_agencies
 from sources.arab_careers import fetch_arab_careers
-from sources.marketplace_sources import PUBLIC_SPECS, RESTRICTED_SPECS, fetcher_for
+from sources.marketplace_sources import PUBLIC_SPECS, fetcher_for
+from sources.remote_feeds import fetch_remote_feeds
 from sources.official_careers import OFFICIAL_SOURCES, fetcher_for as official_fetcher_for
 from sources.priority_sources import (
     fetch_google_intelligence,
@@ -132,6 +133,15 @@ def _build_specs() -> list[SourceSpec]:
             allow_empty_runs=True, supports_geo_hint=True,
             enabled=getattr(config, "ENABLE_SOURCE_RECRUITMENT", True)),
 
+        # ── TIER 6b: Keyless remote bundle (v79) ─────────────────────────────
+        # RemoteOK + Remotive + WWR + WorkingNomads + Arbeitnow behind one
+        # spec: five public JSON/RSS surfaces, per-feed isolation, honest
+        # dates only. Foreign remote supply — ranked after Arab boards.
+        SourceSpec("remote_feeds", "Remote Feeds (keyless JSON/RSS bundle)",
+            fetch_remote_feeds, config.source_priority("remote_feeds", 82), "remote", "silver",
+            recency_required=True, allow_empty_runs=True, supports_geo_hint=True,
+            source_timeout_seconds=40),
+
         # ── TIER 7: Community ─────────────────────────────────────────────────
         SourceSpec("telegram_channels", "Telegram Channels",
             fetch_telegram_channels, 50, "community", "silver",
@@ -155,10 +165,13 @@ def _build_specs() -> list[SourceSpec]:
     ]
 
     # v55 public marketplace/board catalog.  Each required platform is
-    # registered exactly once, and carries its own direct -> Reader fallback
-    # plus policy status.  Restricted service marketplaces intentionally return
-    # no_public_client_feed rather than seller advertisements.
-    for market in (*PUBLIC_SPECS, *RESTRICTED_SPECS):
+    # registered exactly once with its own direct -> Reader fallback.
+    # v79: RESTRICTED_SPECS (fiverr/khamsat/toptal) are NOT registered — they
+    # can only ever report no_public_client_feed (seller gigs, not vacancies),
+    # so three permanent-zero specs only consumed health/rotation budget.
+    # v79: upwork/mostaql/contra dropped from PUBLIC_SPECS (permanently
+    # blocked / unparseable storefronts) — replaced by remote_feeds above.
+    for market in PUBLIC_SPECS:
         specs.append(SourceSpec(
             market.key,
             market.name,

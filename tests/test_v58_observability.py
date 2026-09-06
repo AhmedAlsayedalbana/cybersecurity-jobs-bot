@@ -8,12 +8,12 @@ from types import SimpleNamespace
 def test_budget_expansion_keeps_linkedin_ceiling_unchanged():
     import config
 
-    # v61: LinkedIn Jobs budget doubled to 1800s, HR posts to 90s.
-    # Total run budget = 1800 + 90 + 180 + 90 = 2160 (overhead adds to 2400 env default).
+    # v79: LinkedIn Jobs budget 1900s (90-lane plan), HR posts 90s.
+    # Total run budget = 1900 + 90 + 180 + 90 + telegram 600 inside 3000 env default.
     assert config.OTHER_SOURCES_BUDGET_SECONDS == 180
     assert config.FILTERING_BUDGET_SECONDS == 90
     assert config.LINKEDIN_TOTAL_BUDGET_SECONDS == config.LINKEDIN_JOBS_BUDGET_SECONDS + config.LINKEDIN_HR_POSTS_BUDGET_SECONDS
-    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 1800
+    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 1900
     assert config.LINKEDIN_HR_POSTS_BUDGET_SECONDS == 90
 
 

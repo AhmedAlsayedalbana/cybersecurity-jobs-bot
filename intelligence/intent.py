@@ -136,6 +136,30 @@ def has_strong_cyber_anchor(job: Any) -> bool:
     )
 
 
+import re as _re
+
+# v79: Tier-4 body signal — role TYPE only (intern/trainee/graduate/entry-level
+# as the position). Years ranges ("0-2 years") are requirements, not proof the
+# role itself is an internship (see Tier 4 below).
+_TIER4_BODY_RE: _re.Pattern = _re.compile(
+    r"\b(?:intern|internship|trainee|graduate|fresh grad|fresh graduate|"
+    r"new grad|entry[-\s]?level)\b",
+    _re.IGNORECASE,
+)
+
+# v79: rank-explicit title tokens — a posting carrying one of these is never
+# an internship via the loose Tier-4 body path. Matching is word-bounded
+# (see _text.phrase_match), so "lead" never fires on "leader". Tiers 1-3 with
+# explicit intern/junior-in-title keep working: they return before this veto
+# is even reached.
+_TIER4_SENIOR_TITLE_VETO: list[str] = [
+    "senior", "sr", "lead", "principal", "staff",
+    "manager", "head of", "director", "vp", "vice president",
+    "chief", "ciso", "fellow", "distinguished", "expert", "architect",
+    "iii", "iv",
+]
+
+
 def is_true_security_internship(job: Any) -> bool:
     """
     Returns True when a job is a genuine cybersecurity internship or entry-level role.
@@ -176,9 +200,20 @@ def is_true_security_internship(job: Any) -> bool:
             return False
         return count_hits(CYBER_CONTEXT_PATTERNS, full) >= 2
 
-    # Tier 4 — entry signal anywhere in full text + security word in title (conservative)
-    has_entry_in_body = bool(ENTRY_RE.search(full))
-    if has_entry_in_body and has_any(
+    # Tier 4 — POSITION-TYPE signal in body + security word in title.
+    # v79 root fix: the old tier reused ENTRY_RE, whose years-of-experience
+    # ranges ("0-2 years") describe hiring REQUIREMENTS, not position type —
+    # so a senior "Specialist ... Security Planning" role whose description
+    # said "0-2 years experience" was stolen from its true domain (grc) into
+    # internships (domain.py tests internships FIRST). The tier now only
+    # accepts role-type words (intern/trainee/graduate/entry-level as the
+    # position itself), and rank-explicit titles veto outright: a Senior /
+    # Lead / Manager / Architect / Expert posting is never an internship even
+    # when its boilerplate mentions graduate schemes.
+    if has_any(_TIER4_SENIOR_TITLE_VETO, title):
+        return False
+    has_role_type_in_body = bool(_TIER4_BODY_RE.search(full))
+    if has_role_type_in_body and has_any(
         ["security", "cyber", "infosec", "soc", "grc"], title
     ):
         if has_any(COMMERCIAL_HARD_REJECTS, title):

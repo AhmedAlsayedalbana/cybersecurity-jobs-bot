@@ -239,9 +239,10 @@ def test_send_failed_is_retried_once_then_recorded_sent(monkeypatch):
         _remove_db(path)
 
 
+# v79: upwork/mostaql specs removed (permanently blocked) — contract locked on live specs.
 @pytest.mark.parametrize(
     "spec_key",
-    ("wuzzuf", "bayt", "gulftalent", "tanqeeb", "akhtaboot", "upwork", "mostaql", "freelancer"),
+    ("wuzzuf", "bayt", "gulftalent", "tanqeeb", "akhtaboot", "guru", "peopleperhour", "freelancer"),
 )
 def test_important_marketplace_parsers_accept_current_json_field_variants(spec_key):
     from sources.marketplace_sources import SPECS_BY_KEY, _parse

@@ -281,7 +281,7 @@ def _job_source_key(job: "Job") -> str:
 def is_recent_enough(
     job: "Job",
     *,
-    max_age_hours: int = 72,
+    max_age_hours: int = 48,
     strict_sources: set[str] | None = None,
 ) -> tuple[bool, str]:
     """
@@ -636,7 +636,7 @@ def classify_jobs(jobs: list["Job"]) -> tuple[list["Job"], list["Job"]]:
             # Target marketplace sources must show how the public job was
             # extracted.  Legacy sources remain compatible while they migrate.
             public_target_sources = {
-                "upwork", "freelancer", "mostaql", "contra", "peopleperhour",
+                "freelancer", "peopleperhour",
                 "guru", "workana", "wuzzuf", "bayt", "gulftalent", "tanqeeb", "akhtaboot",
             }
             source_key = (getattr(job, "source_key", "") or getattr(job, "source", "")).lower()

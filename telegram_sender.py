@@ -815,14 +815,20 @@ def send_jobs(jobs, *, dry_run: bool = False):
         if jid not in _domain_cache:
             _domain_cache[jid] = classify_intelligence_domain(j)
         return _domain_cache[jid]
+    # v79: focus-domain tilt widened to SOC / Pentest / Network Security /
+    # GRC across Egypt + Arab physical roles (remote roles keep pure
+    # freshness order). Ordering bonus only — no gate relaxed.
     def _soc_pentest_egypt_tilt(job) -> int:
-        if _job_domain(job) not in ("soc", "pentest"):
+        if _job_domain(job) not in ("soc", "pentest", "networksec", "grc"):
             return 0
         location = resolve_delivery_location(job)
         if location.location_type == "remote":
             return 0
-        country = (location.normalized_country or "").lower()
-        return 2 if country == "egypt" else 0
+        if location.geo == "egypt":
+            return 2
+        if location.geo == "arab":
+            return 1
+        return 0
 
     eligibility_reasons: Counter[str] = Counter()
     location_telemetry: Counter[str] = Counter()
@@ -888,8 +894,8 @@ def send_jobs(jobs, *, dry_run: bool = False):
     tilted = sum(1 for j in jobs_scored if _soc_pentest_egypt_tilt(j) > 0)
     if tilted:
         log.info(
-            " 🎯 v71 SOC/PenTest Egypt tilt: %d role(s) re-ordered to surface "
-            "earlier in delivery — gates unchanged.", tilted,
+            " 🎯 v79 focus-domain tilt (soc/pentest/networksec/grc, EG+Arab): "
+            "%d role(s) re-ordered to surface earlier — gates unchanged.", tilted,
         )
     _topic_evidence_cache.clear()
 

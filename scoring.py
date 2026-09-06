@@ -45,9 +45,10 @@ WEIGHTS = {
     "tech_cap":      10,
     "tech_global":   0.5,   # multiplier for global-onsite jobs
 
-    # Freshness � Bayesian decay: 6 * exp(-age_h / 72)
+    # Freshness � Bayesian decay: 6 * exp(-age_h / halflife)
     "fresh_peak":    6,
-    "fresh_halflife": 48,   # v32: tighter decay � 48h halflife (was 72h)
+    "fresh_halflife": 24,   # v79: tighter decay — 24h halflife matches the 48h
+                            # hard gate so <24h jobs clearly outrank 24-48h ones
     "fresh_floor":   -8,    # v32: stronger old-job penalty (was -4)
 
     # Source

@@ -84,7 +84,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # TELEGRAM_CHAT_ID — rather than forcing a rename, both are read here and
 # TELEGRAM_CHAT_ID wins if both happen to be set.
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_GROUP_ID", "")
-TELEGRAM_SEND_DELAY = 3  # seconds between messages
+# v79: 3 → 1s between messages (Telegram allows ~30 msg/s; 1s keeps a wide
+# safety margin while making 300 sends feasible inside the telegram budget).
+TELEGRAM_SEND_DELAY = 1  # seconds between messages
 HEALTH_REPORT_CHAT_ID = os.getenv("HEALTH_REPORT_CHAT_ID", "") or TELEGRAM_CHAT_ID
 
 # Telegram topic thread IDs - None means the topic is not configured.
@@ -529,6 +531,9 @@ SOURCE_PRIORITY_BY_KEY = {
     "indeed": 75, "greenhouse_cybersec": 80,
     "greenhouse_expanded": 80, "greenhouse": 80, "lever": 80,
     "lever_expanded": 80,
+    # v79: public remote-feeds bundle (RemoteOK/Remotive/WWR/WorkingNomads/
+    # Arbeitnow — keyless JSON/RSS, foreign remote supply after Arab boards).
+    "remote_feeds": 82,
     # Freelance platforms
     "upwork": 160, "freelancer": 170, "mostaql": 180, "khamsat": 190,
     "contra": 200, "peopleperhour": 210, "guru": 220, "workana": 230,
@@ -549,14 +554,16 @@ def source_priority(source_key: str, default: int = 999) -> int:
 
 #  Misc 
 SEEN_JOBS_FILE   = "seen_jobs.json"
-MAX_JOBS_PER_RUN = int(os.getenv("MAX_JOBS_PER_RUN", "260"))
+# v79: pool ceiling raised for the 300-jobs/run target (supply-bound: the
+# run sends what qualified fresh supply exists, up to this ceiling).
+MAX_JOBS_PER_RUN = int(os.getenv("MAX_JOBS_PER_RUN", "300"))
 # MAX_JOB_AGE_DAYS: hard-block threshold for truly stale jobs.
-# v77: raised 3 → 7 days. The 72h triple-gate was discarding 107 fresh-enough
-# jobs/run (Wiz/Bugcrowd/Tenable with 4-12d dates) and starving remote/gulf
-# channels to 0. Freshness ordering still sends newest first — this only
-# widens the eligibility window so Egypt/Arab/Remote all have supply.
+# v79: 7 → 2 days per explicit requirement — nothing older than 48h is ever
+# sent. Freshness ordering (newest first) is unchanged; the tighter window is
+# compensated by the scaled LinkedIn plan (90 lanes) and the remote-feeds
+# source so Egypt/Arab/Remote channels keep supply.
 # send_jobs() reuses MAX_JOB_AGE_HOURS so both layers stay in sync.
-MAX_JOB_AGE_DAYS = int(os.getenv("MAX_JOB_AGE_DAYS", "7"))   # ← v77: 7-day window, fresh-first ordering
+MAX_JOB_AGE_DAYS = int(os.getenv("MAX_JOB_AGE_DAYS", "2"))   # ← v79: 48h hard gate
 MAX_JOB_AGE_HOURS = int(os.getenv("MAX_JOB_AGE_HOURS", str(MAX_JOB_AGE_DAYS * 24)))
 LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS", "120"))
 # ✅ v47: Raised from 180 → 240s — the full query plan (CORE+GULF+EXPANSION) needs
@@ -572,7 +579,10 @@ LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS",
 # still hits the hard timeout before finishing the plan. Total run time was
 # only ~15 of the 55 minutes GitHub Actions allows, so there's headroom to
 # push further.
-TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "2400"))
+# v79: 2400 → 3000s (50min) to host the 90-lane LinkedIn plan + up to 300
+# telegram sends inside the 55min GitHub Actions timeout (with setup+pytest
+# the job lands ≈54min worst case).
+TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "3000"))
 # These are overlapping ceilings controlled by the single run deadline.  They
 # must not be added together when estimating end-to-end runtime.
 OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "180"))
@@ -595,23 +605,20 @@ PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_NAVIGATION_TIMEOUT_
 SOURCE_FETCH_MAX_WORKERS = int(os.getenv("SOURCE_FETCH_MAX_WORKERS", "80"))
 FALLBACK_BUDGET_SECONDS = int(os.getenv("FALLBACK_BUDGET_SECONDS", "30"))
 FILTERING_BUDGET_SECONDS = int(os.getenv("FILTERING_BUDGET_SECONDS", "90"))
-# A small delivery extension lets a healthy, already-qualified queue finish
-# fairly. It changes no cyber filter, channel cap, or dedup rule.
-TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "180"))
-# v61: 2x LinkedIn capacity — budget raised to ~1800s for jobs, 90s for HR.
-# Query lanes: ~70-75 with curated high-yield combinations.
-# Page/detail caps scaled proportionally to budget.
-LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "1800"))
+# v79: 180 → 600s for up to ~300 sends at 1s spacing (see TELEGRAM_SEND_DELAY).
+# It changes no cyber filter, channel cap, or dedup rule.
+TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "600"))
+# v79: 90-lane LinkedIn plan (was 75): the rotating pool (specialty/company/
+# arabic/skills/remote + new SOC-Pentest-Network-GRC lanes) finally gets
+# real slots instead of 1/run. Budget/pages/details scaled with it.
+LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "1900"))
 LINKEDIN_HR_POSTS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_HR_POSTS_BUDGET_SECONDS", "90"))
 LINKEDIN_TOTAL_BUDGET_SECONDS = LINKEDIN_JOBS_BUDGET_SECONDS + LINKEDIN_HR_POSTS_BUDGET_SECONDS
-# v61: 72 query lanes (up from 36).  Budget doubled so more lanes can complete.
-LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "75"))
+LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "90"))
 # Pages per query kept at 9 for high-priority, 4-6 for rotating lanes.
 LINKEDIN_MAX_PAGES_PER_QUERY = int(os.getenv("LINKEDIN_MAX_PAGES_PER_QUERY", "9"))
-# v61: 600 pages/run (2x old cap) to match doubled budget.
-LINKEDIN_MAX_PAGES_PER_RUN = int(os.getenv("LINKEDIN_MAX_PAGES_PER_RUN", "600"))
-# v61: 1200 details/run (2x old cap).
-LINKEDIN_MAX_DETAILS_PER_RUN = int(os.getenv("LINKEDIN_MAX_DETAILS_PER_RUN", "1200"))
+LINKEDIN_MAX_PAGES_PER_RUN = int(os.getenv("LINKEDIN_MAX_PAGES_PER_RUN", "750"))
+LINKEDIN_MAX_DETAILS_PER_RUN = int(os.getenv("LINKEDIN_MAX_DETAILS_PER_RUN", "1600"))
 # Rate kept safe — we run more queries in parallel but actual RPS is unchanged.
 LINKEDIN_RATE_MAX_RPS = float(os.getenv("LINKEDIN_RATE_MAX_RPS", "0.65"))
 # v61: 10 concurrent detail fetchers (was 8) for better throughput within RPS.
@@ -638,7 +645,9 @@ ENABLE_STRICT_HR_POSTS_ONLY = _env_bool("ENABLE_STRICT_HR_POSTS_ONLY", True)
 # Egypt location bonus = 8pts. A job needs at least 6pts of tech signals (e.g. 1-2 specific tools)
 # to pass. This prevents "General Security" / no-context jobs from being posted.
 SCORE_THRESHOLD  = 14
-TARGET_JOBS_PER_CHANNEL = int(os.getenv("TARGET_JOBS_PER_CHANNEL", "10"))   # ✅ v46: raised from 5 → 10
+# v79: 10 → 20 topic slots/channel for the 300-jobs/run target. GEO
+# channels (egypt/gulf) stay uncapped. Ordering stays fresh-first + 70/30 LI.
+TARGET_JOBS_PER_CHANNEL = int(os.getenv("TARGET_JOBS_PER_CHANNEL", "20"))
 MAX_JOBS_PER_CHANNEL = int(os.getenv("MAX_JOBS_PER_CHANNEL", str(TARGET_JOBS_PER_CHANNEL)))
 
 # v72: Hidden Jobs Discovery — hiring signals verified through the official
@@ -704,14 +713,17 @@ LINKEDIN_PER_CHANNEL_TARGET_RATIO = float(os.getenv("LINKEDIN_PER_CHANNEL_TARGET
 # JSearch, MENA/Gulf boards, etc.) is treated as low-priority filler only —
 # it is used to top up the pool if, and only if, LinkedIn + approved
 # secondary sources can't reach MIN_POOL_SIZE on their own.
+# v79: upwork/mostaql/contra removed alongside their specs (blocked/dead).
+# remote_feeds added — the keyless bundle counts toward the protected floor.
 APPROVED_SECONDARY_SOURCE_KEYS = {
     "wuzzuf", "bayt", "akhtaboot", "gulftalent", "tanqeeb", "egytech_fyi",
-    "upwork", "freelancer", "mostaql", "contra", "peopleperhour", "guru", "workana",
+    "freelancer", "peopleperhour", "guru", "workana",
     # v56: registered alongside the other sources during the merge, but was
     # missing from this set — meaning it was being treated as low-priority
-    # filler (Phase 4) instead of counting toward the protected ~20%
-    # non-LinkedIn floor (Phase 1) like the rest of the Egyptian boards.
+    # filler (Phase 4) instead of counting toward the protected non-LinkedIn
+    # floor (Phase 1) like the rest of the Egyptian boards.
     "wazzif",
+    "remote_feeds",
 }
 LINKEDIN_ASYNC_MAX_CONCURRENCY = int(os.getenv("LINKEDIN_ASYNC_MAX_CONCURRENCY", "14"))
 TELEGRAM_RETRY_MAX_ATTEMPTS = int(os.getenv("TELEGRAM_RETRY_MAX_ATTEMPTS", "6"))

@@ -77,6 +77,20 @@ def _geo_rank(job: Any) -> int:
     return _GEO_RANK.get(classify_delivery_geo(job), 4)
 
 
+# v79: focus domains (SOC / Pentest / Network Security / GRC) outrank other
+# specialties inside the same freshness+geo bucket. Ordering only — no gate
+# is relaxed and no job is displaced across a freshness boundary.
+_FOCUS_DOMAINS: frozenset = frozenset({"soc", "pentest", "networksec", "grc"})
+
+
+def _domain_rank(job: Any) -> int:
+    try:
+        from intelligence.domain import classify_domain
+        return 0 if classify_domain(job) in _FOCUS_DOMAINS else 1
+    except Exception:
+        return 1
+
+
 def _is_linkedin(job: Any) -> bool:
     source = (getattr(job, "source_key", "") or getattr(job, "source", "") or "").lower()
     return source.startswith("linkedin") or "linkedin" in source
@@ -111,8 +125,7 @@ def _score_with_priority(job: Any, score_fn: Callable) -> int:
 def freshness_sort_key(job: Any, *, now: datetime | None = None) -> tuple[int, float]:
     """Return ``(freshness bucket, age)``; undated rows rank after dated rows.
 
-    Buckets make the ordering policy auditable: <24h, 24–48h, 48–72h, then
-    any older item still allowed by the configured hard gate (v77: 7 days).
+    Buckets mirror the hard gate (v79: MAX_JOB_AGE_DAYS=2 → <24h, 24–48h).
     Undated jobs (common on Egypt/Arab boards + freelance) sit in the last
     bucket instead of being discarded, so fresh dated jobs always win but
     undated supply still fills Egypt/Arab/Remote channels when dated supply
@@ -128,10 +141,10 @@ def freshness_sort_key(job: Any, *, now: datetime | None = None) -> tuple[int, f
         reference = now or datetime.now()
         age_seconds = max(0.0, (reference - posted).total_seconds())
         age_hours = age_seconds / 3600
-        bucket = 0 if age_hours < 24 else 1 if age_hours < 48 else 2 if age_hours < 72 else 3
+        bucket = 0 if age_hours < 24 else 1 if age_hours < 48 else 3
         return (bucket, float(int(age_seconds // 60)))
     except (TypeError, ValueError, OverflowError):
-        return (1, float("inf"))
+        return (3, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +202,12 @@ def build_final_pool(
     for job in fresh_jobs:
         _bucket, _age = freshness_sort_key(job, now=_now)
         decorated.append((
-            _bucket, _age, _geo_rank(job), _origin_priority(job),
+            _bucket, _age, _geo_rank(job), _domain_rank(job),
+            _origin_priority(job),
             -_score_with_priority(job, score_fn), job,
         ))
-    decorated.sort(key=lambda t: (t[0], t[1], t[2], t[3], t[4]))
-    rows = [(t[5], -t[4]) for t in decorated]
+    decorated.sort(key=lambda t: (t[0], t[1], t[2], t[3], t[4], t[5]))
+    rows = [(t[6], -t[5]) for t in decorated]
 
     qualified = [item for item in rows if item[1] >= config.SCORE_THRESHOLD]
     threshold_rejected = len(rows) - len(qualified)
