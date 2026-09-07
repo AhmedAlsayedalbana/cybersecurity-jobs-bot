@@ -421,6 +421,18 @@ def _build_company_lanes(rotation_slot: int) -> list[QuerySpec]:
         ("STC", "cybersecurity"),
         ("e&", "security engineer"),
         ("FABMISR", "GRC analyst"),
+        # v82: regional cyber arms, Gulf fintech, MENA telcos & vendors —
+        # plain display-name keyword lanes (no slug guessing), rotating.
+        ("Sirar by stc", "cybersecurity"),
+        ("Help AG", "security engineer"),
+        ("Tamara", "cybersecurity"),
+        ("Tabby", "security engineer"),
+        ("Zain", "cybersecurity"),
+        ("Mobily", "security engineer"),
+        ("Trend Micro", "security engineer"),
+        ("Sophos", "security engineer"),
+        ("Kaspersky", "security researcher"),
+        ("Booz Allen Hamilton", "cybersecurity"),
     ]
     _company_queries_cyber = [
         ("CrowdStrike", "security engineer"),

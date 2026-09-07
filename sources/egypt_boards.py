@@ -271,14 +271,24 @@ def fetch_wazzif() -> list[Job] | SourceResult:
 
     reader_used = False
     if not jobs and failed_urls:
+        from sources.http_utils import get_text_cffi as _cffi_get
         for url in failed_urls[:2]:
+            # v82: TLS-fingerprint rescue first (cheap, Chrome handshake),
+            # public reader second. Whichever answers clean HTML gets parsed
+            # by the identical pipeline below.
+            html = ""
             try:
-                html = _reader_get(
-                    f"https://r.jina.ai/{url}", headers=_H,
-                    timeout=12, max_retries=0,
-                ) or ""
+                html = _cffi_get(url, headers=_H, timeout=8) or ""
             except Exception:
-                continue
+                html = ""
+            if not html or _wazzif_blocked_page(html):
+                try:
+                    html = _reader_get(
+                        f"https://r.jina.ai/{url}", headers=_H,
+                        timeout=12, max_retries=0,
+                    ) or ""
+                except Exception:
+                    continue
             if not html or _wazzif_blocked_page(html):
                 continue
             reader_used = True
@@ -536,15 +546,22 @@ def fetch_linkedin_egypt_companies_direct() -> list[Job]:
         except Exception as exc:
             log.debug("LinkedIn company %s: %s", company_name, exc)
         if not html:
-            # v80: guest 403/999 on company pages — the reader pool often
-            # answers the same page; one cheap attempt per company.
+            # v80: guest 403/999 on company pages — rescue pools often answer
+            # the same page; one cheap attempt per company each.
+            # v82: TLS-fingerprint first, reader second.
             try:
-                html = _reader_get(
-                    f"https://r.jina.ai/{url}", headers=headers,
-                    timeout=8, max_retries=0,
-                ) or ""
+                from sources.http_utils import get_text_cffi as _cffi_get
+                html = _cffi_get(url, headers=headers, timeout=8) or ""
             except Exception:
                 html = ""
+            if not html:
+                try:
+                    html = _reader_get(
+                        f"https://r.jina.ai/{url}", headers=headers,
+                        timeout=8, max_retries=0,
+                    ) or ""
+                except Exception:
+                    html = ""
             if not html:
                 continue
 

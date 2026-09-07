@@ -552,12 +552,22 @@ def fetch_marketplace(spec_key: str) -> SourceResult:
         # v78: 15 → 10s single attempt so direct(10s)+Jina(12s) fits the 25s
         # source ceiling.
         direct = get_text_result(url, timeout=10, max_retries=0)
-        if direct.text:
-            if spec.key in _TARGET_PARSER_KEYS and _target_content_is_blocked(direct.text):
+        # v82: TLS-fingerprint rescue — when direct answers with a challenge
+        # page (Cloudflare), one Chrome-impersonated attempt runs BEFORE the
+        # reader fallback. Only on challenge content, never on plain empties,
+        # so healthy boards pay zero extra cost.
+        direct_text = direct.text or ""
+        if direct_text and _target_content_is_blocked(direct_text):
+            from sources.http_utils import get_text_cffi as _cffi_get
+            rescued = _cffi_get(url, timeout=8)
+            if rescued and not _target_content_is_blocked(rescued):
+                direct_text = rescued
+        if direct_text:
+            if spec.key in _TARGET_PARSER_KEYS and _target_content_is_blocked(direct_text):
                 target_blocked = True
             elif spec.key in _TARGET_PARSER_KEYS:
                 parsed_any = True
-                outcome = _parse_target(direct.text, spec, url, "direct")
+                outcome = _parse_target(direct_text, spec, url, "direct")
                 target_recognizable += outcome.recognizable_listings
                 target_incomplete_security += outcome.incomplete_security_listings
                 target_explicit_empty = target_explicit_empty or outcome.explicit_empty
@@ -565,7 +575,7 @@ def fetch_marketplace(spec_key: str) -> SourceResult:
                     return SourceResult(outcome.jobs, "success", "direct", attempted_urls=tuple(attempted))
             else:
                 parsed_any = True
-                jobs = _parse(direct.text, spec, url, "direct")
+                jobs = _parse(direct_text, spec, url, "direct")
                 if jobs:
                     return SourceResult(jobs, "success", "direct", attempted_urls=tuple(attempted))
         jina = _fetch_via_jina(url)

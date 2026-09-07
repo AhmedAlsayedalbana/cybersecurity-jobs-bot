@@ -7,3 +7,6 @@ scipy>=1.11.0
 python-dotenv>=1.0.0
 pytest>=8.0.0
 playwright>=1.54.0
+# v82: TLS-fingerprint (Cloudflare) rescue transport — optional at runtime
+# (code guards ImportError), required in CI where the network is fast.
+curl-cffi>=0.11.0

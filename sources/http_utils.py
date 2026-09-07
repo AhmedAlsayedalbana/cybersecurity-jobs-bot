@@ -601,3 +601,47 @@ def get_http_metrics() -> dict[str, int]:
         metrics["proxy_provider_open"] = int(_proxy_provider_open)
         metrics["endpoint_circuits"] = len(_endpoint_circuits)
     return metrics
+
+
+# ── curl_cffi TLS-fingerprint rescue (v82, optional) ─────────────────────────
+# Cloudflare-class walls fingerprint the TLS handshake, not just the
+# User-Agent — plain ``requests`` fails where a real browser passes. curl_cffi
+# replays a genuine Chrome handshake without launching a browser. The import
+# is lazy and guarded: when the wheel is absent (or the fetch fails) this
+# returns None and callers fall through to their next rescue step unchanged.
+
+_CFFI_MISSING_LOGGED = False
+
+
+def get_text_cffi(
+    url: str,
+    headers: dict[str, str] | None = None,
+    timeout: int = 8,
+) -> str | None:
+    """Fetch one page through a Chrome-impersonated TLS handshake.
+
+    Returns the body text on HTTP 200, else None. Single attempt, bounded
+    timeout — callers own the budget, this never retries internally.
+    """
+    global _CFFI_MISSING_LOGGED
+    try:
+        from curl_cffi import requests as _cffi_requests
+    except ImportError:
+        if not _CFFI_MISSING_LOGGED:
+            log.debug("curl_cffi unavailable — TLS-fingerprint rescue disabled")
+            _CFFI_MISSING_LOGGED = True
+        return None
+    try:
+        merged = dict(_DEFAULT_HEADERS)
+        merged.update(headers or {})
+        resp = _cffi_requests.get(
+            url, headers=merged, impersonate="chrome120", timeout=timeout,
+        )
+        if resp.status_code != 200 or not resp.text:
+            return None
+        with _metrics_lock:
+            _metrics["cffi_rescue"] = _metrics.get("cffi_rescue", 0) + 1
+        return resp.text
+    except Exception as exc:
+        log.debug("cffi fetch failed for %s: %s", urlparse(url).netloc, exc)
+        return None

@@ -23,9 +23,17 @@ log = logging.getLogger(__name__)
 _FETCH_BUDGET_SECONDS = 38.0
 
 
-def _reader_html(url: str) -> str:
-    """v80: public-reader rescue for Cloudflare-challenged boards (Wuzzuf /
-    Bayt return 403 to direct GETs but often answer the reader's IP pool)."""
+def _rescue_html(url: str) -> str:
+    """v82 rescue ladder for challenged boards: Chrome TLS-fingerprint first,
+    public-reader pool second. Wuzzuf/Bayt 403 direct GETs; one of the two
+    pools usually answers the same static page."""
+    try:
+        from sources.http_utils import get_text_cffi as _cffi_get
+        html = _cffi_get(url, headers=_H, timeout=8) or ""
+        if html:
+            return html
+    except Exception:
+        pass
     try:
         return get_text(
             f"https://r.jina.ai/{url}",
@@ -34,6 +42,11 @@ def _reader_html(url: str) -> str:
         ) or ""
     except Exception:
         return ""
+
+
+def _reader_html(url: str) -> str:
+    """Backward-compat alias (v80 name) for the v82 rescue ladder."""
+    return _rescue_html(url)
 
 _H = {
     "User-Agent": "Mozilla/5.0 (compatible; cybersec-jobbot/51.0)",

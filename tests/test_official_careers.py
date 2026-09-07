@@ -245,9 +245,9 @@ def test_fallback_sources_exist_and_have_correct_backends():
 
 
 def test_egypt_employer_registry_expanded():
-    """Verify the expanded Egypt employer registry has 37 entries."""
+    """Verify the expanded Egypt employer registry has 39 entries (37 + v82 Paymob/Fawry fintech)."""
     from sources.egypt_employer_registry import EGYPT_EMPLOYERS
-    assert len(EGYPT_EMPLOYERS) == 37
+    assert len(EGYPT_EMPLOYERS) == 39
 
 
 def test_egypt_employer_registry_no_duplicates():

@@ -74,6 +74,12 @@ EGYPT_EMPLOYERS: tuple[EgyptEmployer, ...] = (
     EgyptEmployer("kpmg_egypt", "KPMG Egypt", "consulting", "kpmg-egypt", "https://www.kpmg.com.eg/careers", "kpmg_egypt", 45),
     # ── Pharma / Healthcare ─────────────────────────────────────────────────
     EgyptEmployer("pharco", "Pharco", "pharma", "pharco", "https://www.pharco.com/careers", "pharco", 46),
+    # ── Fintech / AppSec (v82: careers pages verified live 2026-09-07) ──────
+    # LinkedIn route activates immediately via employer_queries; the official
+    # careers connector can adopt careers_source_key once a backend adapter
+    # is confirmed for these portals (key is metadata-only until then).
+    EgyptEmployer("paymob", "Paymob", "fintech", "paymob", "https://paymob.com/en/careers", "paymob", 33),
+    EgyptEmployer("fawry", "Fawry", "fintech", "fawry", "https://www.fawry.com/careers/", "fawry", 34),
 )
 
 

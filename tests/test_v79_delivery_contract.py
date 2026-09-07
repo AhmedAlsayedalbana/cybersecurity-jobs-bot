@@ -310,6 +310,63 @@ def test_greenhouse_v80_slugs_present():
     assert {"snyk", "redcanary", "expel", "blumira", "drata", "cobalt"} <= slugs
 
 
+# ── v82: TLS-fingerprint rescue + employer coverage ─────────────────────────
+
+def test_cffi_helper_returns_none_without_lib(monkeypatch):
+    import sys
+    import sources.http_utils as hu
+    monkeypatch.setitem(sys.modules, "curl_cffi", None)
+    # Force the lazy import to fail even if the wheel exists on this box.
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "curl_cffi" or name.startswith("curl_cffi."):
+            raise ImportError("blocked for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(hu, "_CFFI_MISSING_LOGGED", True)
+    assert hu.get_text_cffi("https://example.com/") is None
+
+
+def test_cffi_helper_parses_200_body(monkeypatch):
+    import sys
+    import sources.http_utils as hu
+
+    class Resp:
+        status_code = 200
+        text = "<html>jobs</html>"
+
+    class FakeRequests:
+        @staticmethod
+        def get(url, **kwargs):
+            assert kwargs.get("impersonate") == "chrome120"
+            return Resp()
+
+    monkeypatch.setitem(sys.modules, "curl_cffi", type(sys)("curl_cffi"))
+    sys.modules["curl_cffi"].requests = FakeRequests
+    assert hu.get_text_cffi("https://example.com/") == "<html>jobs</html>"
+
+
+def test_paymob_fawry_in_employer_registry():
+    from sources.egypt_employer_registry import EGYPT_EMPLOYERS, linkedin_employer_queries
+    keys = {e.key for e in EGYPT_EMPLOYERS}
+    assert {"paymob", "fawry"} <= keys
+    queries = linkedin_employer_queries()
+    assert len(queries) == len(EGYPT_EMPLOYERS)
+    assert any("Paymob" in q for q, _, _ in queries)
+
+
+def test_arab_company_lanes_cover_regional_cyber_arms():
+    from sources.linkedin_unified import _build_company_lanes
+    text = " ".join(
+        l.keywords for slot in range(6) for l in _build_company_lanes(slot)
+    )
+    for name in ("Sirar", "Help AG", "Tamara", "Zain", "Trend Micro"):
+        assert name in text
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
