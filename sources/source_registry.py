@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 import config
-from sources.egypt_boards import fetch_linkedin_egypt_companies_direct, fetch_wazzif
+from sources.egypt_boards import fetch_drjobpro_egypt, fetch_linkedin_egypt_companies_direct, fetch_wazzif
+from sources.egypt_direct import fetch_bayt_egypt, fetch_wuzzuf_rss
 
 
 def _fetch_eg_linkedin_companies() -> list:
@@ -38,7 +39,6 @@ def _fetch_eg_linkedin_companies() -> list:
         row.content_type = "job_listing"
         row.origin_priority = 12
     return rows
-from sources.egypt_direct import fetch_careers_egypt
 from sources.expanded_sources import fetch_expanded_sources
 from sources.greenhouse_expanded import fetch_greenhouse_expanded
 from sources.jsearch_enhanced import fetch_jsearch_enhanced
@@ -104,8 +104,19 @@ def _build_specs() -> list[SourceSpec]:
             "egypt", "silver", recency_required=True, allow_empty_runs=True,
             supports_geo_hint=True, source_timeout_seconds=40),
 
-        SourceSpec("egytech_fyi", "EgyTech.fyi",
-            fetch_careers_egypt, config.source_priority("company_careers", 20), "egypt", "silver",
+        # v80: EgyTech.fyi API is dead (HTTP 404) — spec removed. Replaced by
+        # three live Egyptian surfaces: Wuzzuf RSS (RSS+reader rescue),
+        # Bayt Egypt JSON-LD (direct+reader rescue), DrJobPro JSON-LD.
+        SourceSpec("wuzzuf_rss", "Wuzzuf RSS",
+            fetch_wuzzuf_rss, config.source_priority("wuzzuf_rss", 42), "egypt", "silver",
+            recency_required=True, allow_empty_runs=True, supports_geo_hint=True,
+            source_timeout_seconds=config.CAREERS_API_SOURCE_TIMEOUT_SECONDS),
+        SourceSpec("bayt_egypt", "Bayt Egypt",
+            fetch_bayt_egypt, config.source_priority("bayt_egypt", 56), "egypt", "silver",
+            recency_required=True, allow_empty_runs=True, supports_geo_hint=True,
+            source_timeout_seconds=config.CAREERS_API_SOURCE_TIMEOUT_SECONDS),
+        SourceSpec("drjobpro", "DrJobPro Egypt",
+            fetch_drjobpro_egypt, config.source_priority("drjobpro", 54), "egypt", "silver",
             recency_required=True, allow_empty_runs=True, supports_geo_hint=True,
             source_timeout_seconds=config.CAREERS_API_SOURCE_TIMEOUT_SECONDS),
         SourceSpec("indeed", "Indeed",

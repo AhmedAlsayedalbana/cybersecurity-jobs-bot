@@ -89,8 +89,8 @@ WEIGHTS = {
 # SOURCE TIERS
 # =========================================================
 _SOURCE_LOCAL = {
-    "wuzzuf", "wuzzuf_rss", "bayt_egypt", "egytech_fyi",
-    "forasna", "drjobpro", "akhtaboot", "bayt", "naukrigulf",
+    "wuzzuf", "wuzzuf_rss", "bayt_egypt", "drjobpro",
+    "forasna", "akhtaboot", "bayt", "naukrigulf",
     "gulftalent", "jobzella", "tanqeeb", "arab_boards",
     "stc_ksa", "tdra_uae", "etisalat_uae",
     "iti", "depi", "nti", "linkedin_egypt_companies", "linkedin_gulf_companies",

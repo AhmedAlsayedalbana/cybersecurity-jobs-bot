@@ -106,6 +106,14 @@ _GREENHOUSE_CYBERSEC: list[BoardEntry] = [
     BoardEntry("cymulate",          "Cymulate"),
     BoardEntry("cybereason",        "Cybereason"),
     # Note: zscaler removed - was timing out in logs
+    # ── v80 additions (SOC/Pentest/GRC-heavy vendors; a 404 self-reports in
+    # logs and costs one fast call — remove on confirmed drift) ──────────
+    BoardEntry("snyk",              "Snyk"),               # AppSec
+    BoardEntry("redcanary",         "Red Canary"),         # SOC/MDR
+    BoardEntry("expel",             "Expel"),              # SOC automation
+    BoardEntry("blumira",           "Blumira"),            # SOC/SIEM
+    BoardEntry("drata",             "Drata"),              # GRC automation
+    BoardEntry("cobalt",            "Cobalt"),             # Pentest/PtaaS
 ]
 
 

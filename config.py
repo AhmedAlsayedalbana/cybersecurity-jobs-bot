@@ -526,9 +526,9 @@ SOURCE_PRIORITY_BY_KEY = {
     # foreign aggregators/ATS. Within one freshness+geo bucket the Egyptian
     # site always wins; accuracy gates are untouched, only tie-break order.
     "company_careers": 20,
-    # Egyptian boards
-    "wuzzuf": 42, "forasna": 44, "wazzif": 46, "jobzella": 48,
-    "shaghalni": 50, "egytech_fyi": 52, "drjobpro": 54,
+    # Egyptian boards (v80: +RSS/JSON-LD surfaces, -dead EgyTech API)
+    "wuzzuf": 42, "wuzzuf_rss": 42, "forasna": 44, "wazzif": 46, "jobzella": 48,
+    "shaghalni": 50, "bayt_egypt": 56, "drjobpro": 54,
     # Arab / regional boards
     "bayt": 56, "gulftalent": 58, "naukrigulf": 60, "akhtaboot": 62,
     "tanqeeb": 64, "qureos": 66,
@@ -725,7 +725,8 @@ LINKEDIN_PER_CHANNEL_TARGET_RATIO = float(os.getenv("LINKEDIN_PER_CHANNEL_TARGET
 # v79: upwork/mostaql/contra removed alongside their specs (blocked/dead).
 # remote_feeds added — the keyless bundle counts toward the protected floor.
 APPROVED_SECONDARY_SOURCE_KEYS = {
-    "wuzzuf", "bayt", "akhtaboot", "gulftalent", "tanqeeb", "egytech_fyi",
+    "wuzzuf", "wuzzuf_rss", "bayt", "bayt_egypt", "akhtaboot", "gulftalent",
+    "tanqeeb", "drjobpro",
     "freelancer", "peopleperhour", "guru", "workana",
     # v56: registered alongside the other sources during the merge, but was
     # missing from this set — meaning it was being treated as low-priority
@@ -825,6 +826,7 @@ SOURCE_DISPLAY.update({
     "wuzzuf":         "Wuzzuf",
     "wuzzuf_rss":     "Wuzzuf RSS",
     "bayt_egypt":     "Bayt Egypt",
+    "drjobpro":       "DrJobPro Egypt",
     "egytech_fyi":    "EgyTech.fyi",
     "forasna":        "Forasna",
     "bayt":           "Bayt.com",

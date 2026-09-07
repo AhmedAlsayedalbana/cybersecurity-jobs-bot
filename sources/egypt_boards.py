@@ -169,9 +169,8 @@ def _wazzif_structured_jobs(html: str, seen: set[str]) -> tuple[list[Job], int, 
             if not _is_sec(f"{title} {description}"):
                 continue
             posted = _wazzif_posted_date(_wazzif_text(item, "datePosted", "publishedAt", "createdAt", "postedAt", "posted_at", "date"))
-            if not posted:
-                incomplete_security += 1
-                continue
+            # v80: dateless stays dateless (honest-undated, neutral score,
+            # ranked last) — dropping it is what zeroed PPH/Guru-style boards.
             if full_url in seen:
                 continue
             seen.add(full_url)
@@ -191,8 +190,47 @@ def _wazzif_structured_jobs(html: str, seen: set[str]) -> tuple[list[Job], int, 
     return jobs, recognizable, incomplete_security
 
 
+def _process_wazzif_html(html: str, seen: set[str]) -> tuple[list[Job], int, int]:
+    """Run both Wazzif parsers over one page body (shared direct+reader path)."""
+    jobs: list[Job] = []
+    recognizable_records = 0
+    incomplete_security_records = 0
+    structured_jobs, structured_recognizable, structured_incomplete = _wazzif_structured_jobs(html, seen)
+    jobs.extend(structured_jobs)
+    recognizable_records += structured_recognizable
+    incomplete_security_records += structured_incomplete
+    for match in re.finditer(
+        r'<a[^>]+href=["\']([^"\']*/(?:jobs?|vacancy)/[^"\']+)["\'][^>]*>(.*?)</a>', html,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        href, title_raw = match.groups()
+        context = html[max(0, match.start() - 280): match.end() + 520]
+        title = _clean(title_raw)
+        recognizable_records += 1
+        if not title or not _is_sec(f"{title} {context}"):
+            continue
+        full_url = urllib.parse.urljoin("https://wazzif.com", href)
+        if full_url in seen:
+            continue
+        posted = _wazzif_posted_date(context)  # v80: None stays None (honest-undated)
+        seen.add(full_url)
+        job = _make_job(
+            title=title, company="Wazzif Employer", location="Egypt", url=full_url,
+            source="wazzif", description=context, priority=23, posted_date=posted,
+        )
+        if job:
+            jobs.append(job)
+    return jobs, recognizable_records, incomplete_security_records
+
+
 def fetch_wazzif() -> list[Job] | SourceResult:
-    """Fetch public Wazzif listings and distinguish a block from parser drift."""
+    """Fetch public Wazzif listings and distinguish a block from parser drift.
+
+    v80: public-reader rescue — direct GETs 403 (Cloudflare) while the reader
+    pool often answers the same search pages. At most 2 reader rescues keep
+    the source inside its ceiling.
+    """
+    from sources.http_utils import get_text as _reader_get
     jobs: list[Job] = []
     seen: set[str] = set()
     successful_pages = 0
@@ -200,6 +238,7 @@ def fetch_wazzif() -> list[Job] | SourceResult:
     recognizable_records = 0
     incomplete_security_records = 0
     attempted_urls: list[str] = []
+    failed_urls: list[str] = []
     queries = [
         "cybersecurity", "security analyst", "information security",
         "penetration testing", "SOC analyst", "GRC", "network security",
@@ -212,53 +251,49 @@ def fetch_wazzif() -> list[Job] | SourceResult:
         try:
             resp = requests.get(url, headers=_H, timeout=12)
             if resp.status_code != 200:
+                failed_urls.append(url)
                 continue
             html = resp.text
             successful_pages += 1
         except Exception as exc:
             log.debug("Wazzif search %s: %s", q, exc)
+            failed_urls.append(url)
             continue
         if _wazzif_blocked_page(html):
             blocked_pages += 1
+            failed_urls.append(url)
             continue
-
-        structured_jobs, structured_recognizable, structured_incomplete = _wazzif_structured_jobs(html, seen)
-        jobs.extend(structured_jobs)
-        recognizable_records += structured_recognizable
-        incomplete_security_records += structured_incomplete
-
-        for match in re.finditer(
-            r'<a[^>]+href=["\']([^"\']*/(?:jobs?|vacancy)/[^"\']+)["\'][^>]*>(.*?)</a>', html,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            href, title_raw = match.groups()
-            context = html[max(0, match.start() - 280): match.end() + 520]
-            title = _clean(title_raw)
-            recognizable_records += 1
-            if not title or not _is_sec(f"{title} {context}"):
-                continue
-            full_url = urllib.parse.urljoin("https://wazzif.com", href)
-            if full_url in seen:
-                continue
-            posted = _wazzif_posted_date(context)
-            if not posted:
-                incomplete_security_records += 1
-                continue
-            seen.add(full_url)
-            job = _make_job(
-                title=title, company="Wazzif Employer", location="Egypt", url=full_url,
-                source="wazzif", description=context, priority=23, posted_date=posted,
-            )
-            if job:
-                jobs.append(job)
+        page_jobs, page_rec, page_inc = _process_wazzif_html(html, seen)
+        jobs.extend(page_jobs)
+        recognizable_records += page_rec
+        incomplete_security_records += page_inc
         time.sleep(0.4)
 
+    reader_used = False
+    if not jobs and failed_urls:
+        for url in failed_urls[:2]:
+            try:
+                html = _reader_get(
+                    f"https://r.jina.ai/{url}", headers=_H,
+                    timeout=12, max_retries=0,
+                ) or ""
+            except Exception:
+                continue
+            if not html or _wazzif_blocked_page(html):
+                continue
+            reader_used = True
+            page_jobs, page_rec, page_inc = _process_wazzif_html(html, seen)
+            jobs.extend(page_jobs)
+            recognizable_records += page_rec
+            incomplete_security_records += page_inc
+
     log.info("Wazzif: %d jobs", len(jobs))
+    transport = "jina" if reader_used and jobs else "direct"
     if jobs:
-        return SourceResult(jobs=jobs, status="success", transport="direct", attempted_urls=tuple(attempted_urls))
-    if not successful_pages:
+        return SourceResult(jobs=jobs, status="success", transport=transport, attempted_urls=tuple(attempted_urls))
+    if not successful_pages and not reader_used:
         return SourceResult(status="blocked", transport="direct", error_code="wazzif_unavailable", attempted_urls=tuple(attempted_urls))
-    if blocked_pages == successful_pages:
+    if blocked_pages == successful_pages and not reader_used:
         return SourceResult(status="blocked", transport="direct", error_code="wazzif_blocked", attempted_urls=tuple(attempted_urls))
     if incomplete_security_records:
         return SourceResult(status="parse_changed", transport="direct", error_code="wazzif_missing_posted_date", attempted_urls=tuple(attempted_urls))
@@ -487,19 +522,31 @@ def fetch_linkedin_egypt_companies_direct() -> list[Job]:
     # v80: internal guard — 20 sequential guest reads must never exceed the
     # spec ceiling, or partial company results would be discarded by the kill.
     _deadline = time.time() + 30
+    from sources.http_utils import get_text as _reader_get
     for company_name, slug in EGYPT_CYBER_COMPANIES:
         if time.time() >= _deadline:
             log.debug("LinkedIn Egypt Companies: internal budget reached, returning %d partial", len(jobs))
             break
         url = f"https://www.linkedin.com/company/{slug}/jobs/"
+        html = ""
         try:
             resp = requests.get(url, headers=headers, timeout=6)
-            if resp.status_code not in (200, 301, 302):
-                continue
-            html = resp.text
+            if resp.status_code in (200, 301, 302):
+                html = resp.text
         except Exception as exc:
             log.debug("LinkedIn company %s: %s", company_name, exc)
-            continue
+        if not html:
+            # v80: guest 403/999 on company pages — the reader pool often
+            # answers the same page; one cheap attempt per company.
+            try:
+                html = _reader_get(
+                    f"https://r.jina.ai/{url}", headers=headers,
+                    timeout=8, max_retries=0,
+                ) or ""
+            except Exception:
+                html = ""
+            if not html:
+                continue
 
         # Extract job IDs from the company page
         job_ids = re.findall(r'data-entity-urn="urn:li:jobPosting:(\d+)"', html)

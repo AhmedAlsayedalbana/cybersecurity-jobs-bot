@@ -14,9 +14,26 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 
 from models import Job
-from sources.http_utils import get_json
+from sources.http_utils import get_json, get_text
 
 log = logging.getLogger(__name__)
+
+# v80: shared wall-clock guard — sequential board reads must never exceed the
+# orchestrator ceiling, or already-found candidates die with the thread.
+_FETCH_BUDGET_SECONDS = 38.0
+
+
+def _reader_html(url: str) -> str:
+    """v80: public-reader rescue for Cloudflare-challenged boards (Wuzzuf /
+    Bayt return 403 to direct GETs but often answer the reader's IP pool)."""
+    try:
+        return get_text(
+            f"https://r.jina.ai/{url}",
+            headers={"Accept": "text/html", "X-Respond-With": "markdown"},
+            timeout=12, max_retries=0,
+        ) or ""
+    except Exception:
+        return ""
 
 _H = {
     "User-Agent": "Mozilla/5.0 (compatible; cybersec-jobbot/51.0)",
@@ -29,15 +46,18 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()
 
 
-def _parse_dt(raw: str) -> datetime:
+def _parse_dt(raw: str) -> datetime | None:
+    # v80: honest None on failure — the old utcnow() fallback faked freshness
+    # (+6) for every dateless board row, outranking genuinely fresh LinkedIn
+    # postings and breaking the 70% LI contract.
     if not raw:
-        return datetime.utcnow()
+        return None
     for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%d"):
         try:
             return datetime.strptime(raw[:31], fmt)
         except ValueError:
             continue
-    return datetime.utcnow()
+    return None
 
 
 def _job(
@@ -55,6 +75,7 @@ def _job(
     url = (url or "").strip()
     if not title or not url:
         return None
+    # v80: dateless stays None (see _parse_dt) — neutral score, ranked last.
     return Job(
         title=title,
         company=_clean(company) or "Egypt Employer",
@@ -63,7 +84,7 @@ def _job(
         source=source,
         source_key=source,
         description=_clean(description)[:500],
-        posted_date=posted_date or datetime.utcnow(),
+        posted_date=posted_date,
         geo_hint="egypt",
         origin_priority=priority,
         tags=[source, "egypt_direct"],
@@ -81,37 +102,55 @@ def _retag(jobs: list[Job], source: str, priority: int, tag: str) -> list[Job]:
     return jobs
 
 
+def _parse_rss_items(xml_text: str, *, source: str, priority: int) -> list[Job]:
+    """Parse an RSS/Atom feed body into jobs (shared direct+reader path)."""
+    jobs: list[Job] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return jobs
+    seen: set[str] = set()
+    for item in root.findall(".//item"):
+        link = _clean(item.findtext("link", ""))
+        if not link or link in seen:
+            continue
+        seen.add(link)
+        job = _job(
+            title=item.findtext("title", ""),
+            company="Wuzzuf Employer",
+            location="Egypt",
+            url=link,
+            source=source,
+            description=item.findtext("description", ""),
+            posted_date=_parse_dt(item.findtext("pubDate", "")),
+            priority=priority,
+        )
+        if job:
+            jobs.append(job)
+    return jobs
+
+
 def fetch_wuzzuf_rss() -> list[Job]:
-    """Wuzzuf direct Egypt source; uses HTML fallback when RSS is unavailable."""
+    """Wuzzuf Egypt: RSS feed direct, public-reader rescue on 403 (v80).
+
+    The /search/jobs/feed/ endpoint 403s direct GETs (Cloudflare) but is a
+    static feed, so the reader pool usually answers it.
+    """
+    import time as _time
     queries = ["cybersecurity", "information security", "امن معلومات"]
     jobs: list[Job] = []
-    seen: set[str] = set()
+    _deadline = _time.monotonic() + _FETCH_BUDGET_SECONDS
     for q in queries:
+        if _time.monotonic() >= _deadline:
+            break
         url = "https://wuzzuf.net/search/jobs/feed/?" + urllib.parse.urlencode({"q": q, "l": "Egypt"})
-        try:
-            resp = requests.get(url, timeout=15, headers=_H)
-            resp.raise_for_status()
-            root = ET.fromstring(resp.text)
-        except Exception as exc:
-            log.debug("Wuzzuf RSS %s unavailable: %s", q, exc)
+        xml_text = get_text(url, headers=_H, timeout=10, max_retries=0)
+        if not xml_text:
+            xml_text = _reader_html(url)
+        if not xml_text:
+            log.debug("Wuzzuf RSS %s unavailable (direct+reader)", q)
             continue
-        for item in root.findall(".//item"):
-            link = _clean(item.findtext("link", ""))
-            if not link or link in seen:
-                continue
-            seen.add(link)
-            job = _job(
-                title=item.findtext("title", ""),
-                company="Wuzzuf Employer",
-                location="Egypt",
-                url=link,
-                source="wuzzuf_rss",
-                description=item.findtext("description", ""),
-                posted_date=_parse_dt(item.findtext("pubDate", "")),
-                priority=16,
-            )
-            if job:
-                jobs.append(job)
+        jobs.extend(_parse_rss_items(xml_text, source="wuzzuf_rss", priority=16))
     if not jobs:
         try:
             from sources.regional_boards import _fetch_wuzzuf_html
@@ -123,21 +162,24 @@ def fetch_wuzzuf_rss() -> list[Job]:
 
 
 def fetch_bayt_egypt() -> list[Job]:
-    """Bayt Egypt pages, parsed from JSON-LD JobPosting blocks."""
+    """Bayt Egypt pages, parsed from JSON-LD JobPosting blocks (v80: direct +
+    public-reader rescue — Bayt 403s direct GETs)."""
+    import time as _time
     jobs: list[Job] = []
     seen: set[str] = set()
     queries = ["cyber-security", "information-security", "network-security", "soc-analyst"]
+    _deadline = _time.monotonic() + _FETCH_BUDGET_SECONDS
     for q in queries:
+        if _time.monotonic() >= _deadline:
+            break
         url = f"https://www.bayt.com/en/egypt/jobs/{q}-jobs/"
-        try:
-            resp = requests.get(url, timeout=15, headers=_H)
-            if resp.status_code != 200:
-                log.debug("Bayt Egypt %s: HTTP %s", q, resp.status_code)
-                continue
-        except Exception as exc:
-            log.debug("Bayt Egypt %s unavailable: %s", q, exc)
+        html = get_text(url, headers=_H, timeout=10, max_retries=0)
+        if not html:
+            html = _reader_html(url)
+        if not html:
+            log.debug("Bayt Egypt %s unavailable (direct+reader)", q)
             continue
-        for blob in re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', resp.text, re.S | re.I):
+        for blob in re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html, re.S | re.I):
             try:
                 data = json.loads(blob.strip())
             except Exception:

@@ -279,6 +279,37 @@ def test_marketplace_skips_linkedin_mirror_urls(monkeypatch):
     assert all("linkedin.com" not in u.lower() for u in seen)
 
 
+# ── v80: Egyptian-Arab package ─────────────────────────────────────────────
+
+def test_egypt_boards_specs_registered_and_egytech_gone():
+    from sources.source_registry import get_source_specs
+    keys = {s.key for s in get_source_specs()}
+    assert {"wuzzuf_rss", "bayt_egypt", "drjobpro"} <= keys
+    assert "egytech_fyi" not in keys
+
+
+def test_wazzif_reader_rescue_path(monkeypatch):
+    import sources.egypt_boards as boards
+    html = ('<a href="/jobs/soc-1">SOC Analyst</a> context SIEM incident '
+            'response posted 3 hours ago ' + 'x' * 600)
+
+    class Resp:
+        status_code = 403
+        text = ""
+    monkeypatch.setattr(boards.requests, "get", lambda *_a, **_k: Resp())
+    import sources.http_utils as hu
+    monkeypatch.setattr(hu, "get_text", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("net")))
+    result = boards.fetch_wazzif()
+    assert result.status == "blocked"
+    assert result.error_code in ("wazzif_unavailable", "wazzif_blocked")
+
+
+def test_greenhouse_v80_slugs_present():
+    from sources.greenhouse_expanded import _GREENHOUSE_CYBERSEC
+    slugs = {e.slug for e in _GREENHOUSE_CYBERSEC}
+    assert {"snyk", "redcanary", "expel", "blumira", "drata", "cobalt"} <= slugs
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
