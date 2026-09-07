@@ -584,15 +584,15 @@ LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS",
 # still hits the hard timeout before finishing the plan. Total run time was
 # only ~15 of the 55 minutes GitHub Actions allows, so there's headroom to
 # push further.
-# v83: 3000 → 2900s. Worst-case phases (2100+90+150+90+500=2930) are
-# time-sliced by this ceiling; with setup+pytest the job lands ≈53min inside
+# v84: 2900 → 3000s. Worst-case phases (2200+60+140+90+500=2990) are
+# time-sliced by this ceiling; with setup+pytest the job lands ≈54min inside
 # the 55min GitHub Actions timeout.
-TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "2900"))
+TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "3000"))
 # These are overlapping ceilings controlled by the single run deadline.  They
 # must not be added together when estimating end-to-end runtime.
-# v83: 180 → 150s (100 parallel sources finish well inside; frees room for
-# the 120-lane LinkedIn plan under the 55min job timeout).
-OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "150"))
+# v83: 180 → 150s. v84: 150 → 140s (100 parallel sources finish well
+# inside; frees room for the internships lanes under the 55min timeout).
+OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "140"))
 # A single non-LinkedIn connector may not consume the shared 180s phase.  The
 # deadline covers its direct attempt and every permitted fallback together.
 # Per-connector ceilings.  LinkedIn has its own separately configured budget
@@ -618,8 +618,10 @@ TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "500"))
 # v83: 120-lane LinkedIn plan (was 90): 35 new employer lanes with DISTINCT
 # result sets per company (keyword lanes overlap — 731 dups proved it).
 # Budget/pages/details scaled; company chunk 14, company-first rotation.
-LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "2100"))
-LINKEDIN_HR_POSTS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_HR_POSTS_BUDGET_SECONDS", "90"))
+# v84: 10 always-on internships lanes (entry-level titles are their own
+# result set); HR 90 → 60s (fail-fast caps real use near ~30s anyway).
+LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "2200"))
+LINKEDIN_HR_POSTS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_HR_POSTS_BUDGET_SECONDS", "60"))
 LINKEDIN_TOTAL_BUDGET_SECONDS = LINKEDIN_JOBS_BUDGET_SECONDS + LINKEDIN_HR_POSTS_BUDGET_SECONDS
 LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "120"))
 # Pages per query kept at 9 for high-priority, 4-6 for rotating lanes.

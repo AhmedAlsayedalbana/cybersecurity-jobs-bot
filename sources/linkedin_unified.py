@@ -395,6 +395,43 @@ def _build_specialty_lanes(rotation_slot: int) -> list[QuerySpec]:
     return lanes
 
 
+def _build_internships_lanes() -> list[QuerySpec]:
+    """INTERNSHIPS lanes: always-on early-career cyber discovery (v84).
+
+    Every community specialty gets an intern/trainee/graduate lane across
+    Egypt + Arab + Remote — the internships group starved because no lane
+    ever searched entry-level titles directly (specialty only rotates 5
+    junior combos). One page each: niche queries return few pages, so ten
+    lanes cost a fraction of a broad keyword lane.
+    """
+    lanes: list[QuerySpec] = []
+    p = 70
+    _intern_combos = [
+        ("Cybersecurity Intern", "Egypt"),
+        ("SOC Analyst Intern", "Egypt"),
+        ("Penetration Testing Intern", "Egypt"),
+        ("GRC Trainee", "Egypt"),
+        ("Network Security Intern", "Egypt"),
+        ("Information Security Trainee", "UAE"),
+        ("Cybersecurity Graduate Program", "Egypt"),
+        ("Security Intern", "Remote"),
+        ("SOC Analyst Intern", "Remote"),
+        ("Application Security Intern", "Remote"),
+    ]
+    for kw, loc in _intern_combos:
+        remote = loc == "Remote"
+        lanes.append(QuerySpec(
+            kw, "" if remote else loc,
+            pages=(0,),
+            priority=p,
+            remote=remote,
+            source_key="linkedin_remote" if remote else "linkedin_jobs",
+            lane_type="internships",
+        ))
+        p += 1
+    return lanes
+
+
 def _build_company_lanes(rotation_slot: int) -> list[QuerySpec]:
     """COMPANY lanes: search by company name + cyber keywords. Rotating by priority."""
     lanes: list[QuerySpec] = []
@@ -758,8 +795,13 @@ def _build_query_plan(rotation_slot: int) -> list[QuerySpec]:
     skills = _build_skills_lanes(rotation_slot)
     remote = _build_remote_lanes(rotation_slot)
 
-    # Always-on: core + arab_focus + half high_value + employer
-    always_on = core[:4] + arab_focus + core[4:] + high_value_fixed + employer_queries
+    # 5. INTERNSHIPS: always-on (v84) — entry-level titles are a distinct
+    # result set (no overlap with senior keyword lanes) and the internships
+    # group otherwise starves every run.
+    internships = _build_internships_lanes()
+
+    # Always-on: core + arab_focus + half high_value + employer + internships
+    always_on = core[:4] + arab_focus + core[4:] + high_value_fixed + employer_queries + internships
 
     # Rotating pool: skills, remote, arabic first (guaranteed diversity),
     # then COMPANY (distinct sets per employer — highest marginal yield),

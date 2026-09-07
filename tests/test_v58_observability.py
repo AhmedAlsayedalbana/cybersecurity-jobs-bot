@@ -8,13 +8,13 @@ from types import SimpleNamespace
 def test_budget_expansion_keeps_linkedin_ceiling_unchanged():
     import config
 
-    # v83: LinkedIn Jobs budget 2100s (120-lane plan), HR posts 90s.
-    # Total run budget = 2100 + 90 + 150 + 90 + telegram 500 inside 2900 env default.
-    assert config.OTHER_SOURCES_BUDGET_SECONDS == 150
+    # v84: LinkedIn Jobs budget 2200s (120-lane plan + internships), HR 60s.
+    # Total run budget = 2200 + 60 + 140 + 90 + telegram 500 inside 3000 env default.
+    assert config.OTHER_SOURCES_BUDGET_SECONDS == 140
     assert config.FILTERING_BUDGET_SECONDS == 90
     assert config.LINKEDIN_TOTAL_BUDGET_SECONDS == config.LINKEDIN_JOBS_BUDGET_SECONDS + config.LINKEDIN_HR_POSTS_BUDGET_SECONDS
-    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 2100
-    assert config.LINKEDIN_HR_POSTS_BUDGET_SECONDS == 90
+    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 2200
+    assert config.LINKEDIN_HR_POSTS_BUDGET_SECONDS == 60
 
 
 def test_jsearch_without_a_key_reports_not_configured(monkeypatch):

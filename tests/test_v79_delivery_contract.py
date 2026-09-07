@@ -185,6 +185,22 @@ def test_remote_feeds_honest_empty_when_all_answer_blank(monkeypatch):
     assert result.status == "empty"
 
 
+# ── v84: always-on internships lanes (all specialties, esp. internships) ────
+
+def test_internships_lanes_cover_all_specialties():
+    from sources.linkedin_unified import _build_internships_lanes, _build_query_plan
+    lanes = _build_internships_lanes()
+    assert len(lanes) == 10
+    text = " ".join(l.keywords for l in lanes)
+    for kw in ("Cybersecurity Intern", "SOC Analyst Intern",
+               "Penetration Testing Intern", "GRC Trainee",
+               "Network Security Intern", "Graduate Program"):
+        assert kw in text
+    for slot in range(3):
+        plan = _build_query_plan(slot)
+        assert sum(1 for q in plan if q.lane_type == "internships") == 10
+
+
 # ── v83: employer-lane scale (distinct sets, not 3x keywords) ───────────────
 
 def test_company_chunk_and_plan_scale():
