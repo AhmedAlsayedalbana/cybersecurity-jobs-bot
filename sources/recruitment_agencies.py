@@ -86,7 +86,7 @@ def fetch_recruitment_agencies() -> list[Job]:
             markdown = get_text(
                 jina_url,
                 headers={"Accept": "text/markdown"},
-                timeout=10,
+                timeout=8,
                 max_retries=0,
                 budget_phase="other_sources",
             )

@@ -320,7 +320,9 @@ def test_wazzif_reader_rescue_path(monkeypatch):
 def test_greenhouse_v80_slugs_present():
     from sources.greenhouse_expanded import _GREENHOUSE_CYBERSEC
     slugs = {e.slug for e in _GREENHOUSE_CYBERSEC}
-    assert {"snyk", "redcanary", "expel", "blumira", "drata", "cobalt"} <= slugs
+    # v84: confirmed-404 slugs removed, working ones kept.
+    assert {"expel", "blumira"} <= slugs
+    assert not {"snyk", "redcanary", "drata", "cobalt"} & slugs
 
 
 # ── v82: TLS-fingerprint rescue + employer coverage ─────────────────────────

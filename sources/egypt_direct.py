@@ -159,9 +159,17 @@ def fetch_wuzzuf_rss() -> list[Job]:
         url = "https://wuzzuf.net/search/jobs/feed/?" + urllib.parse.urlencode({"q": q, "l": "Egypt"})
         xml_text = get_text(url, headers=_H, timeout=10, max_retries=0)
         if not xml_text:
-            xml_text = _reader_html(url)
+            # v84: the Jina reader converts RSS/XML to markdown (structure
+            # lost — ET parse always fails), so the rescue here is the
+            # Chrome-TLS path ONLY, which preserves raw XML through
+            # Cloudflare. No reader attempt for feeds.
+            try:
+                from sources.http_utils import get_text_cffi as _cffi_get
+                xml_text = _cffi_get(url, headers=_H, timeout=10) or ""
+            except Exception:
+                xml_text = ""
         if not xml_text:
-            log.debug("Wuzzuf RSS %s unavailable (direct+reader)", q)
+            log.debug("Wuzzuf RSS %s unavailable (direct+cffi)", q)
             continue
         jobs.extend(_parse_rss_items(xml_text, source="wuzzuf_rss", priority=16))
     if not jobs:

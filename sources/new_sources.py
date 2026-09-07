@@ -115,9 +115,16 @@ def _extract_jsonld_jobs(html: str, fallback_url: str, source: str,
 
 #  1. Greenhouse Cybersec 
 def _fetch_greenhouse_cybersec() -> list:
-    """Greenhouse boards � cybersecurity companies confirmed working."""
+    """Greenhouse boards — cybersecurity companies confirmed working.
+
+    v84: 24s internal guard + 8s per-board cap. One slow slug (abnormal
+    timed out 12s twice) used to push the loop past the 30s spec ceiling,
+    discarding ~290 found jobs with a timeout verdict.
+    """
+    import time as _time
     jobs = []
     seen = set()
+    _deadline = _time.monotonic() + 24
     BOARDS = [
         ("Huntress",          "huntress"),
         ("Axonius",           "axonius"),
@@ -144,7 +151,10 @@ def _fetch_greenhouse_cybersec() -> list:
     ]
     base = "https://api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
     for company, slug in BOARDS:
-        data = get_json(base.format(slug=slug), headers=_H)
+        if _time.monotonic() >= _deadline:
+            log.debug("Greenhouse Cybersec: internal budget reached, returning %d partial", len(jobs))
+            break
+        data = get_json(base.format(slug=slug), headers=_H, timeout=8, max_retries=0)
         if not data or "jobs" not in data:
             continue
         for item in data["jobs"]:

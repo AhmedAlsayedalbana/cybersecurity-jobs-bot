@@ -129,7 +129,8 @@ def fetch_arab_careers() -> list[Job]:
             markdown = get_text(
                 jina_url,
                 headers={"Accept": "text/markdown", "X-Respond-With": "markdown"},
-                timeout=12,
+                timeout=8,
+                max_retries=0,
                 budget_phase="other_sources",
             )
             if not markdown or len(markdown) < 100:
