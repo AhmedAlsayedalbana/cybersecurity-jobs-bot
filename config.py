@@ -584,13 +584,15 @@ LINKEDIN_SOURCE_BUDGET_SECONDS = int(os.getenv("LINKEDIN_SOURCE_BUDGET_SECONDS",
 # still hits the hard timeout before finishing the plan. Total run time was
 # only ~15 of the 55 minutes GitHub Actions allows, so there's headroom to
 # push further.
-# v79: 2400 → 3000s (50min) to host the 90-lane LinkedIn plan + up to 300
-# telegram sends inside the 55min GitHub Actions timeout (with setup+pytest
-# the job lands ≈54min worst case).
-TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "3000"))
+# v83: 3000 → 2900s. Worst-case phases (2100+90+150+90+500=2930) are
+# time-sliced by this ceiling; with setup+pytest the job lands ≈53min inside
+# the 55min GitHub Actions timeout.
+TOTAL_RUN_BUDGET_SECONDS = int(os.getenv("TOTAL_RUN_BUDGET_SECONDS", "2900"))
 # These are overlapping ceilings controlled by the single run deadline.  They
 # must not be added together when estimating end-to-end runtime.
-OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "180"))
+# v83: 180 → 150s (100 parallel sources finish well inside; frees room for
+# the 120-lane LinkedIn plan under the 55min job timeout).
+OTHER_SOURCES_BUDGET_SECONDS = int(os.getenv("OTHER_SOURCES_BUDGET_SECONDS", "150"))
 # A single non-LinkedIn connector may not consume the shared 180s phase.  The
 # deadline covers its direct attempt and every permitted fallback together.
 # Per-connector ceilings.  LinkedIn has its own separately configured budget
@@ -610,20 +612,20 @@ PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_NAVIGATION_TIMEOUT_
 SOURCE_FETCH_MAX_WORKERS = int(os.getenv("SOURCE_FETCH_MAX_WORKERS", "80"))
 FALLBACK_BUDGET_SECONDS = int(os.getenv("FALLBACK_BUDGET_SECONDS", "30"))
 FILTERING_BUDGET_SECONDS = int(os.getenv("FILTERING_BUDGET_SECONDS", "90"))
-# v79: 180 → 600s for up to ~300 sends at 1s spacing (see TELEGRAM_SEND_DELAY).
-# It changes no cyber filter, channel cap, or dedup rule.
-TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "600"))
-# v79: 90-lane LinkedIn plan (was 75): the rotating pool (specialty/company/
-# arabic/skills/remote + new SOC-Pentest-Network-GRC lanes) finally gets
-# real slots instead of 1/run. Budget/pages/details scaled with it.
-LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "1900"))
+# v83: 600 → 500s. Caps are 10/channel (15 remote) ≈ 115 sends × ~4s, and
+# 429 flood-waits also draw from here. It changes no filter, cap, or rule.
+TELEGRAM_BUDGET_SECONDS = int(os.getenv("TELEGRAM_BUDGET_SECONDS", "500"))
+# v83: 120-lane LinkedIn plan (was 90): 35 new employer lanes with DISTINCT
+# result sets per company (keyword lanes overlap — 731 dups proved it).
+# Budget/pages/details scaled; company chunk 14, company-first rotation.
+LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "2100"))
 LINKEDIN_HR_POSTS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_HR_POSTS_BUDGET_SECONDS", "90"))
 LINKEDIN_TOTAL_BUDGET_SECONDS = LINKEDIN_JOBS_BUDGET_SECONDS + LINKEDIN_HR_POSTS_BUDGET_SECONDS
-LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "90"))
+LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "120"))
 # Pages per query kept at 9 for high-priority, 4-6 for rotating lanes.
 LINKEDIN_MAX_PAGES_PER_QUERY = int(os.getenv("LINKEDIN_MAX_PAGES_PER_QUERY", "9"))
-LINKEDIN_MAX_PAGES_PER_RUN = int(os.getenv("LINKEDIN_MAX_PAGES_PER_RUN", "750"))
-LINKEDIN_MAX_DETAILS_PER_RUN = int(os.getenv("LINKEDIN_MAX_DETAILS_PER_RUN", "1600"))
+LINKEDIN_MAX_PAGES_PER_RUN = int(os.getenv("LINKEDIN_MAX_PAGES_PER_RUN", "850"))
+LINKEDIN_MAX_DETAILS_PER_RUN = int(os.getenv("LINKEDIN_MAX_DETAILS_PER_RUN", "2000"))
 # Rate kept safe — we run more queries in parallel but actual RPS is unchanged.
 LINKEDIN_RATE_MAX_RPS = float(os.getenv("LINKEDIN_RATE_MAX_RPS", "0.65"))
 # v61: 10 concurrent detail fetchers (was 8) for better throughput within RPS.

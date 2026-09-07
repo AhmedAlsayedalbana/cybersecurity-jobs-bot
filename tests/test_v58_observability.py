@@ -8,12 +8,12 @@ from types import SimpleNamespace
 def test_budget_expansion_keeps_linkedin_ceiling_unchanged():
     import config
 
-    # v79: LinkedIn Jobs budget 1900s (90-lane plan), HR posts 90s.
-    # Total run budget = 1900 + 90 + 180 + 90 + telegram 600 inside 3000 env default.
-    assert config.OTHER_SOURCES_BUDGET_SECONDS == 180
+    # v83: LinkedIn Jobs budget 2100s (120-lane plan), HR posts 90s.
+    # Total run budget = 2100 + 90 + 150 + 90 + telegram 500 inside 2900 env default.
+    assert config.OTHER_SOURCES_BUDGET_SECONDS == 150
     assert config.FILTERING_BUDGET_SECONDS == 90
     assert config.LINKEDIN_TOTAL_BUDGET_SECONDS == config.LINKEDIN_JOBS_BUDGET_SECONDS + config.LINKEDIN_HR_POSTS_BUDGET_SECONDS
-    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 1900
+    assert config.LINKEDIN_JOBS_BUDGET_SECONDS == 2100
     assert config.LINKEDIN_HR_POSTS_BUDGET_SECONDS == 90
 
 

@@ -185,6 +185,19 @@ def test_remote_feeds_honest_empty_when_all_answer_blank(monkeypatch):
     assert result.status == "empty"
 
 
+# ── v83: employer-lane scale (distinct sets, not 3x keywords) ───────────────
+
+def test_company_chunk_and_plan_scale():
+    from sources.linkedin_unified import _build_company_lanes, _build_query_plan
+    lanes = _build_company_lanes(0)
+    assert len(lanes) == 14
+    plan = _build_query_plan(0)
+    assert len(plan) <= config.LINKEDIN_MAX_QUERIES_PER_RUN
+    assert len(plan) >= 100
+    company = sum(1 for q in plan if q.lane_type == "company")
+    assert company >= 40  # employer lanes dominate the plan
+
+
 # ── v80: remote-only topics, 10/15 caps, Arab-only topic gate ───────────────
 
 def test_topic_channels_reject_remote_jobs_at_send_gate():

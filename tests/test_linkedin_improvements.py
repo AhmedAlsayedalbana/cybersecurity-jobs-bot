@@ -140,11 +140,11 @@ class HrConfidenceTests(unittest.TestCase):
         self.assertTrue(any("penetration tester" in q.lower() for q in first))
 
     def test_linkedin_budget_reserves_hr_post_finalization_window(self):
-        # v79: budget is now 1900 + 90 = 1990 (90-lane plan)
-        self.assertEqual(hr_scraper.config.LINKEDIN_TOTAL_BUDGET_SECONDS, 1990)
+        # v83: budget is now 2100 + 90 = 2190 (120-lane plan)
+        self.assertEqual(hr_scraper.config.LINKEDIN_TOTAL_BUDGET_SECONDS, 2190)
         from sources.linkedin_unified import _jobs_budget_seconds
 
-        self.assertEqual(_jobs_budget_seconds(), 1895)
+        self.assertEqual(_jobs_budget_seconds(), 2095)
 
     def test_hr_card_links_to_the_original_post_not_the_embedded_apply_link(self):
         from telegram_sender import format_hr_post_message

@@ -413,6 +413,16 @@ def _build_company_lanes(rotation_slot: int) -> list[QuerySpec]:
         ("Cisco", "cybersecurity"),
         ("Microsoft", "security engineer"),
         ("Oracle", "cloud security"),
+        # v83: Egypt fintech/SOC/MSP employers (display names only — distinct
+        # result sets per employer, unlike overlapping keyword lanes).
+        ("Paymob", "cybersecurity"),
+        ("Fawry", "security engineer"),
+        ("Giza Systems", "security engineer"),
+        ("Cequens", "application security"),
+        ("VOIS", "SOC analyst"),
+        ("Raya IT", "security engineer"),
+        ("Banque Misr", "SOC analyst"),
+        ("CIB", "SOC analyst"),
     ]
     _company_queries_arab = [
         ("Emirates NBD", "cybersecurity"),
@@ -433,6 +443,16 @@ def _build_company_lanes(rotation_slot: int) -> list[QuerySpec]:
         ("Sophos", "security engineer"),
         ("Kaspersky", "security researcher"),
         ("Booz Allen Hamilton", "cybersecurity"),
+        # v83: Gulf cyber arms, banks, telcos (distinct sets per employer).
+        ("SITE", "cybersecurity"),
+        ("CPX", "security engineer"),
+        ("SNB", "security analyst"),
+        ("Al Rajhi Bank", "cybersecurity"),
+        ("FAB", "security engineer"),
+        ("Ooredoo", "security engineer"),
+        ("du", "cybersecurity"),
+        ("Batelco", "security analyst"),
+        ("Help AG", "SOC analyst"),
     ]
     _company_queries_cyber = [
         ("CrowdStrike", "security engineer"),
@@ -447,9 +467,31 @@ def _build_company_lanes(rotation_slot: int) -> list[QuerySpec]:
         ("CyberArk", "PAM engineer"),
         ("Mandiant", "incident response"),
         ("HackerOne", "penetration tester"),
+        # v83: global vendors with MENA/remote hiring (distinct sets).
+        ("SentinelOne", "security engineer"),
+        ("Darktrace", "threat analyst"),
+        ("Armis", "security engineer"),
+        ("Dragos", "OT security"),
+        ("Nozomi Networks", "OT security"),
+        ("Recorded Future", "threat intelligence"),
+        ("Qualys", "vulnerability management"),
+        ("Varonis", "data security"),
+        ("BeyondTrust", "PAM engineer"),
+        ("Delinea", "PAM engineer"),
+        ("Ping Identity", "IAM engineer"),
+        ("F5", "application security"),
+        ("Trellix", "security engineer"),
+        ("Forcepoint", "data loss prevention"),
+        ("Mimecast", "email security"),
+        ("KnowBe4", "security awareness"),
+        ("Proofpoint", "email security"),
+        ("Claroty", "OT security"),
     ]
     all_company_queries = _company_queries_egypt + _company_queries_arab + _company_queries_cyber
-    chunk_size = 8
+    # v83: 8 → 14 per rotation — employer lanes carry DISTINCT result sets
+    # (unlike overlapping keyword lanes), so widening this chunk is the
+    # highest-yield way to grow unique LinkedIn supply.
+    chunk_size = 14
     start = (rotation_slot * chunk_size) % len(all_company_queries)
     rotated = all_company_queries[start:] + all_company_queries[:start]
     for company, role in rotated[:chunk_size]:
@@ -719,8 +761,12 @@ def _build_query_plan(rotation_slot: int) -> list[QuerySpec]:
     # Always-on: core + arab_focus + half high_value + employer
     always_on = core[:4] + arab_focus + core[4:] + high_value_fixed + employer_queries
 
-    # Rotating pool: skills, remote, arabic first (guaranteed), then others
-    rotating_pool = skills + remote + arabic + high_value_rotating + specialty + company
+    # Rotating pool: skills, remote, arabic first (guaranteed diversity),
+    # then COMPANY (distinct sets per employer — highest marginal yield),
+    # then the rest. v83 moved company ahead of high_value/specialty so the
+    # 35 new employer lanes actually surface instead of starving behind
+    # overlapping keyword lanes.
+    rotating_pool = skills + remote + arabic + company + high_value_rotating + specialty
 
     max_queries = max(1, config.LINKEDIN_MAX_QUERIES_PER_RUN)
     if len(always_on) >= max_queries:
