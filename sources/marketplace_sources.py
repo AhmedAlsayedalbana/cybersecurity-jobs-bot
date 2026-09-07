@@ -473,7 +473,11 @@ def _to_jobs(rows: Iterable[tuple[str, str, str, datetime] | _TargetListing], sp
         if canonical in seen:
             continue
         seen.add(canonical)
-        digest = hashlib.sha256(f"{title}|{canonical}|{posted.isoformat()}".encode("utf-8")).hexdigest()[:20]
+        # v80: posted may be None (honest-undated) — the v80 dateless change
+        # crashed 4 fetchers here. Empty string keeps the digest stable.
+        digest = hashlib.sha256(
+            f"{title}|{canonical}|{posted.isoformat() if posted else ''}".encode("utf-8")
+        ).hexdigest()[:20]
         job = Job(
             title=title,
             company=company,

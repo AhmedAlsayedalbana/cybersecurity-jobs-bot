@@ -557,6 +557,30 @@ def _compute_retry_delay(attempts: int, retry_after: int | None = None) -> int:
     return min(900, base * (2 ** max(0, attempts)))
 
 
+def _sleep_flood_window(retry_after: int | None) -> None:
+    """v80: pause out the server's flood window after a 429.
+
+    Telegram lifts the ban after ``retry_after`` seconds; firing the next
+    message sooner just extends it (the run-wide cascade: 28 queued, 0
+    sent). Bounded by remaining telegram budget and capped at 90s — the row
+    is already safely queued, so skipping the sleep on low budget loses
+    nothing but time already spent.
+    """
+    try:
+        wait = min(90.0, max(0.0, float(retry_after or 0) + 2.0))
+    except (TypeError, ValueError):
+        wait = 0.0
+    if wait <= 0:
+        return
+    try:
+        budget_left = _telegram_budget_remaining()
+    except Exception:
+        budget_left = 0.0
+    if budget_left <= 0:
+        return
+    time.sleep(min(wait, budget_left))
+
+
 # v71: per-channel failure registry — a Telegram channel can fail for two
 # very different reasons.  A ``429`` rate-limit is TEMPORARY and recovers
 # on its own; a ``403 chat not found`` / ``400 deactivated chat`` is
@@ -655,7 +679,10 @@ def _drain_retry_queue(db: JobsDB) -> int:
             if ch_key and dk.startswith(ch_key + ":"):
                 dk = dk[len(ch_key) + 1:]
             _drain_sent_pairs.add((ch_key, dk))
-            time.sleep(0.7)
+            # v80: same proven-safe pacing as the main loop (was a fixed
+            # 0.7s — a 25-row backlog burst tripped flood control and 429'd
+            # the entire run). Honors the telegram budget like all sleeps.
+            time.sleep(min(TELEGRAM_SEND_DELAY, max(0.0, _telegram_budget_remaining())))
             continue
         failure_kind = _classify_channel_failure(status)
         if failure_kind == "terminal":
@@ -675,6 +702,11 @@ def _drain_retry_queue(db: JobsDB) -> int:
                 error=f"status={status} {err}".strip(),
                 delay_seconds=_compute_retry_delay(row.get("attempts", 0), retry_after=retry_after),
             )
+            # v80: honor the flood window BEFORE the next attempt — hammering
+            # through retry_after produced the run-wide 429 cascade (28
+            # queued, 0 sent). Bounded by remaining budget; the row stays
+            # queued regardless, so an exhausted budget loses nothing.
+            _sleep_flood_window(retry_after)
         else:
             db.mark_telegram_delivery(
                 row["delivery_key"], status="send_failed",
@@ -1097,6 +1129,10 @@ def send_jobs(jobs, *, dry_run: bool = False):
     }
     channel_li_sent: dict[str, int] = {k: 0 for k in send_order}
     channel_nonli_sent: dict[str, int] = {k: 0 for k in send_order}
+    # v80: drain (backlog) sends have no job payload, so they cannot be
+    # LI-classified — the share display below counts NEW sends only, keeping
+    # the ratio honest instead of mixing unknowable drain rows into it.
+    channel_new_total: dict[str, int] = {k: 0 for k in send_order}
     sent_records = []
     db = get_db()
     # v67: pending-FIRST delivery — queued senders from earlier runs
@@ -1299,6 +1335,7 @@ def send_jobs(jobs, *, dry_run: bool = False):
                     continue
 
                 channel_summary[ch_key] += 1
+                channel_new_total[ch_key] += 1
                 if _is_li_job(job):
                     channel_li_sent[ch_key] += 1
                 else:
@@ -1389,8 +1426,11 @@ def send_jobs(jobs, *, dry_run: bool = False):
     for k, v in channel_summary.items():
         ch_name = CHANNELS.get(k, {}).get("name", k)
         bar = "✅" if v > 0 else "⚪"
+        # v80: share over NEW sends only (drain backlog has no LI payload to
+        # classify — mixing it in fabricated the ratio).
+        _new_n = channel_new_total.get(k, 0)
         _li_n = channel_li_sent.get(k, 0)
-        _share = f" (LI {_li_n}/{v}={_li_n * 100 // v}%)" if v else ""
+        _share = f" (new LI {_li_n}/{_new_n}={_li_n * 100 // _new_n}%)" if _new_n else ""
         log.info(f"   {bar} {ch_name}: {v} jobs{_share}")
     log.info("=" * 40)
     pending_after = 0 if dry_run else db.count_pending_delivery_rows()
@@ -2224,6 +2264,9 @@ def _send_to_topic(message, thread_id=None, db: JobsDB | None = None, channel_ke
             log.warning("Queued known-safe Telegram 429 retry for [%s]", channel_key)
             if lifecycle is not None:
                 lifecycle["failed"] += 1
+            # v80: same flood-window honor as the drain path — the send loop
+            # would otherwise fire the next message straight into the ban.
+            _sleep_flood_window(retry_after)
             return False
 
         # A SEND_FAILED row gets exactly one in-process retry.  The outbox

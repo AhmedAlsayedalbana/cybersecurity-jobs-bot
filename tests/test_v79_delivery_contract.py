@@ -233,6 +233,52 @@ def test_eg_linkedin_companies_lane_registered_as_linkedin():
     assert config.source_priority("eg_linkedin_companies") == 12
 
 
+# ── v80: 429 hardening + honest dateless + mirror skip ───────────────────────
+
+def test_sleep_flood_window_respects_budget_and_cap(monkeypatch):
+    import telegram_sender as ts
+    calls = []
+    monkeypatch.setattr(ts.time, "sleep", lambda s: calls.append(s))
+    monkeypatch.setattr(ts, "_telegram_budget_remaining", lambda: 10.0)
+    ts._sleep_flood_window(37)
+    assert calls == [10.0]  # capped by budget, not 39
+    calls.clear()
+    monkeypatch.setattr(ts, "_telegram_budget_remaining", lambda: 600.0)
+    ts._sleep_flood_window(37)
+    assert calls == [39.0]
+    calls.clear()
+    ts._sleep_flood_window(None)
+    assert calls == [2.0]  # floor courtesy pause on bare 429s
+
+
+def test_dateless_marketplace_job_does_not_crash_digest():
+    from sources.marketplace_sources import _to_jobs, MarketplaceSpec
+    spec = MarketplaceSpec("guru", "Guru", ("https://example.com/",),
+                           "client_project", "remote", 20)
+    rows = [("SOC Analyst", "https://example.com/j/1", "SOC SIEM role", None)]
+    jobs = _to_jobs(rows, spec, "jina")
+    assert len(jobs) == 1
+    assert jobs[0].posted_date is None
+    assert jobs[0].provenance_hash
+
+
+def test_marketplace_skips_linkedin_mirror_urls(monkeypatch):
+    import sources.marketplace_sources as ms
+    seen = []
+
+    class R:
+        text = ""
+        error_code = "empty"
+    monkeypatch.setattr(
+        ms, "get_text_result",
+        lambda url, **kw: (seen.append(url), R())[1],
+    )
+    monkeypatch.setattr(ms, "_fetch_via_jina", lambda url: None)
+    ms.fetch_marketplace("wuzzuf")
+    assert seen
+    assert all("linkedin.com" not in u.lower() for u in seen)
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
