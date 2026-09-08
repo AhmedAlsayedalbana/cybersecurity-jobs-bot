@@ -127,11 +127,14 @@ def _jsearch_page(query: str, page: int, remote_only: bool) -> list[dict]:
     if not api_key:
         return []
 
+    # v87: NO date_posted filter — the pipeline's own 48h recency gate is
+    # authoritative (posted timestamps preserved per item). Prefiltering to
+    # "today" discarded fresh-undated rows, hid timezone-edge jobs, and was a
+    # needless 404 suspect on free-tier plans. Broader net, same gates.
     params: dict[str, str] = {
         "query":       query,
         "page":        str(page),
         "num_pages":   "1",
-        "date_posted": "today",
     }
     if remote_only:
         params["remote_jobs_only"] = "true"

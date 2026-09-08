@@ -413,6 +413,23 @@ def test_egypt_direct_guard_fits_spec_ceiling():
     assert ed._FETCH_BUDGET_SECONDS < config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
 
 
+# ── v87b: Greenhouse cybersec-only + unfiltered JSearch ──────────────────────
+
+def test_greenhouse_expanded_runs_cybersec_batch_only():
+    import sources.greenhouse_expanded as gh
+    import inspect
+    src = inspect.getsource(gh.fetch_greenhouse_expanded)
+    assert '("BigTech"' not in src and '("SaaS"' not in src
+    assert "_GREENHOUSE_CYBERSEC" in src
+
+
+def test_jsearch_sends_no_date_posted_filter():
+    import inspect
+    import sources.jsearch_enhanced as je
+    # dict-key form (comments may discuss the removed filter freely)
+    assert '"date_posted"' not in inspect.getsource(je._jsearch_page)
+
+
 # ── v87: JSearch error visibility + Bayt fallback removal ────────────────────
 
 def test_jsearch_logs_first_transport_error(monkeypatch):

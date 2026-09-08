@@ -132,7 +132,10 @@ def _fetch_greenhouse_board(entry: BoardEntry) -> list[Job]:
     if source_remaining() <= 0:
         return []
     try:
-        data = get_json(url, headers=_H, timeout=cap_source_timeout(12))
+        # v87: 12 → 6s. Healthy boards answer in <1s; a hang is a dead board,
+        # and two 12s hangs were exactly what pushed the batch past the spec
+        # ceiling (whole-batch loss).
+        data = get_json(url, headers=_H, timeout=cap_source_timeout(6))
         status = data.get("_greenhouse_status") if isinstance(data, dict) else None
         if status == 404:
             log.warning("Greenhouse slug returned 404: %s (%s)", entry.slug, entry.name)
@@ -192,17 +195,22 @@ def _run_batch(boards: list[BoardEntry], label: str, *, budget_sec: float = 90.0
 
 
 def fetch_greenhouse_expanded() -> list[Job]:
-    """Fetch Greenhouse boards.
-    v53: Cybersec vendors first (always full), then BigTech+SaaS with 60s budgets each.
+    """Fetch Greenhouse boards — cybersec vendors ONLY (v87).
+
+    BigTech+SaaS batches removed: 8 of their boards duplicate tech_boards.py
+    and expanded_sources.py coverage (same slugs → same jobs → dedup waste),
+    and the SaaS list is mostly non-cyber noise. The trimmed cybersec batch
+    fits the 30s spec ceiling with margin instead of dying at it (0 jobs
+    lost 2026-09-08 run). Per-board cap 12 → 6s: the public API answers in
+    <1s healthy; a 12s hang is already a dead board.
     """
     _start = time.time()
     all_jobs: list[Job] = []
 
-    # Run order: Cybersec (highest priority, always full) → BigTech → SaaS
+    # Run order: Cybersec only (see docstring — BigTech/SaaS dropped as
+    # duplicate/noise). Single batch fits the spec ceiling with margin.
     batches = [
-        ("Cybersec", _GREENHOUSE_CYBERSEC, 120.0),  # dedicated cybersec vendors — always full
-        ("BigTech",  _GREENHOUSE_BIG_TECH,  60.0),  # only security-heavy tech companies now
-        ("SaaS",     _GREENHOUSE_SAAS,      60.0),  # limited SaaS companies
+        ("Cybersec", _GREENHOUSE_CYBERSEC, 25.0),
     ]
 
     for label, boards, budget in batches:
