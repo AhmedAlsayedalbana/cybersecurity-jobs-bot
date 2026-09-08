@@ -413,6 +413,32 @@ def test_egypt_direct_guard_fits_spec_ceiling():
     assert ed._FETCH_BUDGET_SECONDS < config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
 
 
+# ── v87: JSearch error visibility + Bayt fallback removal ────────────────────
+
+def test_jsearch_logs_first_transport_error(monkeypatch):
+    import config as cfg
+    import sources.jsearch_enhanced as je
+    from sources.http_utils import HttpTextResult
+    monkeypatch.setattr(cfg, "RAPIDAPI_KEY", "dummy", raising=False)
+    monkeypatch.setattr(je, "_JSEARCH_FIRST_ERROR_LOGGED", False)
+    # NOTE: _jsearch_page imports get_text_result lazily from http_utils,
+    # so the patch target is http_utils, not jsearch_enhanced.
+    monkeypatch.setattr(
+        "sources.http_utils.get_text_result",
+        lambda *a, **k: HttpTextResult(None, 403, "http_403"),
+    )
+    assert je._jsearch_page("soc egypt", 1, False) == []
+    assert je._JSEARCH_FIRST_ERROR_LOGGED is True
+
+
+def test_bayt_egypt_has_no_legacy_reader_fallback():
+    import pathlib
+    src = pathlib.Path(ROOT, "sources", "egypt_direct.py").read_text(encoding="utf-8")
+    # the per-query reader rescue stays; the 20s legacy _parse_board pass is gone
+    assert "from sources.jina_scraper import" not in src
+    assert "_parse_board" not in src
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():

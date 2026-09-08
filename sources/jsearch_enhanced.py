@@ -27,7 +27,6 @@ from typing import NamedTuple
 
 import config
 from models import Job
-from sources.http_utils import get_json
 from sources.marketplace_sources import SourceResult
 from linkedin_url_utils import canonicalize_job_url
 
@@ -107,8 +106,23 @@ _PUBLISHER_MAP: dict[str, str] = {
 # Low-level fetcher
 # ---------------------------------------------------------------------------
 
+_JSEARCH_FIRST_ERROR_LOGGED = False
+
+
 def _jsearch_page(query: str, page: int, remote_only: bool) -> list[dict]:
-    """Fetch one page from the JSearch API."""
+    """Fetch one page from the JSearch API.
+
+    v87: transport errors are no longer swallowed — the FIRST failure per run
+    logs its HTTP status once (403 = subscribed to the WRONG JSearch variant
+    — the bot needs host jsearch.p.rapidapi.com, i.e. the plain "JSearch" API;
+    429/402 = free quota exhausted; other = transport). Without this, a valid
+    key on the wrong product read as "0 jobs" forever.
+    """
+    global _JSEARCH_FIRST_ERROR_LOGGED
+    import json as _json
+
+    from sources.http_utils import get_text_result
+
     api_key = getattr(config, "RAPIDAPI_KEY", "")
     if not api_key:
         return []
@@ -122,7 +136,7 @@ def _jsearch_page(query: str, page: int, remote_only: bool) -> list[dict]:
     if remote_only:
         params["remote_jobs_only"] = "true"
 
-    data = get_json(
+    result = get_text_result(
         f"https://{JSEARCH_HOST}/search",
         params=params,
         headers={
@@ -130,6 +144,20 @@ def _jsearch_page(query: str, page: int, remote_only: bool) -> list[dict]:
             "X-RapidAPI-Host": JSEARCH_HOST,
         },
     )
+    if not result.text:
+        if not _JSEARCH_FIRST_ERROR_LOGGED:
+            _JSEARCH_FIRST_ERROR_LOGGED = True
+            log.warning(
+                "jsearch_enhanced: first page failed (status=%s err=%s) — "
+                "403 usually means the key is subscribed to a DIFFERENT "
+                "JSearch variant, not jsearch.p.rapidapi.com.",
+                result.status_code, result.error_code,
+            )
+        return []
+    try:
+        data = _json.loads(result.text)
+    except (TypeError, ValueError):
+        return []
     if not data or "data" not in data:
         return []
     return data["data"]

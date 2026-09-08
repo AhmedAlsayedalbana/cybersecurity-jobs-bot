@@ -228,18 +228,11 @@ def fetch_bayt_egypt() -> list[Job]:
                 )
                 if job:
                     jobs.append(job)
-    if not jobs:
-        try:
-            from sources.jina_scraper import _BoardSpec, _parse_board
-            fallback = _parse_board(_BoardSpec(
-                "https://www.bayt.com/en/egypt/jobs/cyber-security-jobs/",
-                "Bayt Egypt",
-                "egypt",
-                20,
-            ))
-            jobs = _retag(fallback, "bayt_egypt", 17, "jina_fallback")
-        except Exception as exc:
-            log.debug("Bayt Egypt Jina fallback unavailable: %s", exc)
+    # v87: the legacy jina_scraper fallback is REMOVED — every query above
+    # already attempted the public reader, and this second 20s reader pass is
+    # what pushed the fetcher past its 30s spec ceiling (killing partial
+    # results: Bayt Egypt timeout, 0 jobs). Reader coverage is preserved per
+    # query above; nothing is lost.
     log.info("Bayt Egypt: %d jobs", len(jobs))
     return jobs
 
