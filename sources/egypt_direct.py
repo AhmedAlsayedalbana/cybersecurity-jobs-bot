@@ -18,9 +18,10 @@ from sources.http_utils import get_json, get_text
 
 log = logging.getLogger(__name__)
 
-# v80: shared wall-clock guard — sequential board reads must never exceed the
-# orchestrator ceiling, or already-found candidates die with the thread.
-_FETCH_BUDGET_SECONDS = 38.0
+# v80 guard, v87 tuned: 38 → 24s. The bayt_egypt spec ceiling is 30s
+# (CAREERS_API); a 38s guard let the thread die at 30s WITH partial results
+# in hand (Bayt Egypt timeout, 0 jobs). 24s returns partials with margin.
+_FETCH_BUDGET_SECONDS = 24.0
 
 
 def _rescue_html(url: str) -> str:

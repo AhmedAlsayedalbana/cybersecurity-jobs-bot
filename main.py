@@ -1630,11 +1630,20 @@ def main():
                         _g = classify_delivery_geo(job)
                         return "egypt" if _g == egypt_funnel.EGYPT_GEO else (
                             "arab" if _g == egypt_funnel.ARAB_GEO else "")
-                    _v75_by_geo: dict[str, int] = {"egypt": 0, "arab": 0}
+                    # v87: routed/sent count UNIQUE jobs per geo (a job in
+                    # gulf+grc is one Arab job, not two) — earlier stages
+                    # are unique-job counts, so pair-counting here tripped
+                    # the funnel INCONSISTENT warning every run.
+                    _v75_by_geo: dict[str, set] = {"egypt": set(), "arab": set()}
                     for _job, _lane, _ch in sent_records:
                         _g = _geo_for_send(_job)
                         if _g:
-                            _v75_by_geo[_g] += 1
+                            _v75_by_geo[_g].add(
+                                getattr(_job, "dedup_key", "") or
+                                getattr(_job, "url_id", "") or
+                                getattr(_job, "url", "") or str(id(_job))
+                            )
+                    _v75_by_geo = {k: len(v) for k, v in _v75_by_geo.items()}
                     _v75_pool_by_geo = egypt_funnel.stage_keys(_funnel_pool)
                     for _funnel_geo in ("egypt", "arab"):
                         _f = _egypt_funnel.funnel_for(_funnel_geo)

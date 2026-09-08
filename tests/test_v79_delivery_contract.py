@@ -398,6 +398,21 @@ def test_arab_company_lanes_cover_regional_cyber_arms():
         assert name in text
 
 
+# ── v87: funnel counts unique jobs, Egypt guard fits its ceiling ─────────────
+
+def test_funnel_routed_sent_use_unique_job_units():
+    import re
+    import pathlib
+    src = pathlib.Path(ROOT, "main.py").read_text(encoding="utf-8")
+    assert "_v75_by_geo[_g].add(" in src  # pair→unique fix present
+
+
+def test_egypt_direct_guard_fits_spec_ceiling():
+    import config
+    import sources.egypt_direct as ed
+    assert ed._FETCH_BUDGET_SECONDS < config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
