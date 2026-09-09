@@ -18,10 +18,11 @@ from sources.http_utils import get_json, get_text
 
 log = logging.getLogger(__name__)
 
-# v80 guard, v87 tuned: 38 → 24s. The bayt_egypt spec ceiling is 30s
-# (CAREERS_API); a 38s guard let the thread die at 30s WITH partial results
-# in hand (Bayt Egypt timeout, 0 jobs). 24s returns partials with margin.
-_FETCH_BUDGET_SECONDS = 24.0
+# v80 guard, v87 tuned, v90 start-gate: per-query worst case is 16s
+# (8s direct + 8s rescue), so no query may START after 12s elapsed
+# (12+16=28 < 30s ceiling). A hanging call begun near the deadline
+# otherwise kills partials with it — the exact Bayt Egypt timeout pattern.
+_FETCH_START_GATE_SECONDS = 12.0
 
 
 def _rescue_html(url: str) -> str:
@@ -39,7 +40,7 @@ def _rescue_html(url: str) -> str:
         return get_text(
             f"https://r.jina.ai/{url}",
             headers={"Accept": "text/html", "X-Respond-With": "markdown"},
-            timeout=12, max_retries=0,
+            timeout=8, max_retries=0,
         ) or ""
     except Exception:
         return ""
@@ -153,12 +154,13 @@ def fetch_wuzzuf_rss() -> list[Job]:
     import time as _time
     queries = ["cybersecurity", "information security", "امن معلومات"]
     jobs: list[Job] = []
-    _deadline = _time.monotonic() + _FETCH_BUDGET_SECONDS
+    _start = _time.monotonic()
     for q in queries:
-        if _time.monotonic() >= _deadline:
+        if _time.monotonic() - _start >= _FETCH_START_GATE_SECONDS:
+            log.debug("Wuzzuf RSS: start-gate reached, returning %d partial", len(jobs))
             break
         url = "https://wuzzuf.net/search/jobs/feed/?" + urllib.parse.urlencode({"q": q, "l": "Egypt"})
-        xml_text = get_text(url, headers=_H, timeout=10, max_retries=0)
+        xml_text = get_text(url, headers=_H, timeout=8, max_retries=0)
         if not xml_text:
             # v84: the Jina reader converts RSS/XML to markdown (structure
             # lost — ET parse always fails), so the rescue here is the
@@ -166,7 +168,7 @@ def fetch_wuzzuf_rss() -> list[Job]:
             # Cloudflare. No reader attempt for feeds.
             try:
                 from sources.http_utils import get_text_cffi as _cffi_get
-                xml_text = _cffi_get(url, headers=_H, timeout=10) or ""
+                xml_text = _cffi_get(url, headers=_H, timeout=8) or ""
             except Exception:
                 xml_text = ""
         if not xml_text:
@@ -190,12 +192,13 @@ def fetch_bayt_egypt() -> list[Job]:
     jobs: list[Job] = []
     seen: set[str] = set()
     queries = ["cyber-security", "information-security", "network-security", "soc-analyst"]
-    _deadline = _time.monotonic() + _FETCH_BUDGET_SECONDS
+    _start = _time.monotonic()
     for q in queries:
-        if _time.monotonic() >= _deadline:
+        if _time.monotonic() - _start >= _FETCH_START_GATE_SECONDS:
+            log.debug("Bayt Egypt: start-gate reached, returning %d partial", len(jobs))
             break
         url = f"https://www.bayt.com/en/egypt/jobs/{q}-jobs/"
-        html = get_text(url, headers=_H, timeout=10, max_retries=0)
+        html = get_text(url, headers=_H, timeout=8, max_retries=0)
         if not html:
             html = _reader_html(url)
         if not html:

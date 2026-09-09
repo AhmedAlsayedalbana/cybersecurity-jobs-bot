@@ -408,9 +408,11 @@ def test_funnel_routed_sent_use_unique_job_units():
 
 
 def test_egypt_direct_guard_fits_spec_ceiling():
+    # v90 start-gate: worst single query (8s direct + 8s rescue) started at
+    # the gate must still land inside the 30s spec ceiling.
     import config
     import sources.egypt_direct as ed
-    assert ed._FETCH_BUDGET_SECONDS < config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
+    assert ed._FETCH_START_GATE_SECONDS + 16 < config.CAREERS_API_SOURCE_TIMEOUT_SECONDS
 
 
 # ── v87b: Greenhouse cybersec-only + unfiltered JSearch ──────────────────────
@@ -454,6 +456,56 @@ def test_bayt_egypt_has_no_legacy_reader_fallback():
     # the per-query reader rescue stays; the 20s legacy _parse_board pass is gone
     assert "from sources.jina_scraper import" not in src
     assert "_parse_board" not in src
+
+
+# ── v90: start-gates never begin calls past the ceiling ───────────────────────
+
+def test_arab_careers_rotates_daily_order(monkeypatch):
+    import datetime as _dtmod
+    import sources.arab_careers as ac
+    real_datetime = _dtmod.datetime
+    first_urls = []
+    for yday in (10, 11):
+        called = []
+        fake_day = real_datetime(2026, 1, 1) + _dtmod.timedelta(days=yday - 1)
+
+        class _FakeDT(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fake_day
+
+        monkeypatch.setattr(_dtmod, "datetime", _FakeDT)
+        monkeypatch.setattr(
+            ac, "get_text",
+            lambda url, **k: (called.append(url), "")[1],
+        )
+        ac.fetch_arab_careers()
+        first_urls.append(called[0] if called else None)
+    assert first_urls[0] and first_urls[1]
+    assert first_urls[0] != first_urls[1]  # rotation moves the head company
+    assert len(ac._ARAB_COMPANY_SPECS) == 13
+
+
+def test_egypt_direct_empty_fast(monkeypatch):
+    import sources.egypt_direct as ed
+    monkeypatch.setattr(ed, "get_text", lambda *a, **k: "")
+    monkeypatch.setattr("sources.http_utils.get_text_cffi", lambda *a, **k: "")
+    import sources.regional_boards as rb
+    monkeypatch.setattr(rb, "_fetch_wuzzuf_html", lambda: [])
+    assert ed.fetch_wuzzuf_rss() == []
+    assert ed.fetch_bayt_egypt() == []
+
+
+def test_new_sources_and_tech_boards_empty_fast(monkeypatch):
+    import sources.new_sources as ns
+    import sources.tech_boards as tb
+    import sources.recruitment_agencies as ra
+    monkeypatch.setattr(ns, "get_json", lambda *a, **k: None)
+    monkeypatch.setattr(tb, "get_json", lambda *a, **k: None)
+    monkeypatch.setattr(ra, "get_text", lambda *a, **k: "")
+    assert ns._fetch_greenhouse_cybersec() == []
+    assert tb._fetch_big_tech_greenhouse() == []
+    assert ra.fetch_recruitment_agencies() == []
 
 
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────

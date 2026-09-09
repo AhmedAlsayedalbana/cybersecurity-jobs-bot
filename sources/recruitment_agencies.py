@@ -76,10 +76,12 @@ def fetch_recruitment_agencies() -> list[Job]:
     """
     import time as _time
     jobs = []
-    _deadline = _time.monotonic() + 19
+    _start = _time.monotonic()
     for spec in _AGENCY_SPECS:
-        if _time.monotonic() >= _deadline:
-            log.debug(" Recruitment agencies: internal budget reached, returning %d partial", len(jobs))
+        # v90 start-gate: never begin a call that cannot finish before the
+        # 25s ceiling (a hanging 8s call started at 19s kills partials).
+        if _time.monotonic() - _start >= 16:
+            log.debug(" Recruitment agencies: start-gate reached, returning %d partial", len(jobs))
             break
         try:
             jina_url = f"https://r.jina.ai/{spec['url']}"

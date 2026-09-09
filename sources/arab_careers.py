@@ -113,16 +113,23 @@ def _maybe_add_job(job: dict, jobs: list) -> None:
 def fetch_arab_careers() -> list[Job]:
     """Fetch cybersecurity jobs from Arab company career pages.
 
-    v80: internal 19s guard — 13 sequential Jina reads can exceed the 25s
-    orchestrator ceiling, which used to kill the thread and DISCARD already
-    found candidates (e.g. SABIC's 5). Now partial results always survive.
+    v80: internal guard returns partials instead of dying with them.
+    v90: TWO guards — (1) stop STARTING new companies once elapsed exceeds
+    16s, because a single 8s Jina call begun at 19s still dies at the 25s
+    ceiling with everything in hand; (2) daily rotation of the company order
+    so tail companies (Batelco/Omantel/Jordan/Morocco) are reached every
+    other day instead of never.
     """
     import time as _time
+    from datetime import datetime as _dt
     jobs: list[Job] = []
-    _deadline = _time.monotonic() + 19
-    for spec in _ARAB_COMPANY_SPECS:
-        if _time.monotonic() >= _deadline:
-            log.debug(" Arab careers: internal budget reached, returning %d partial", len(jobs))
+    _start = _time.monotonic()
+    _specs = list(_ARAB_COMPANY_SPECS)
+    _rot = _dt.now().timetuple().tm_yday % max(1, len(_specs))
+    _specs = _specs[_rot:] + _specs[:_rot]
+    for spec in _specs:
+        if _time.monotonic() - _start >= 16:
+            log.debug(" Arab careers: start-gate reached, returning %d partial", len(jobs))
             break
         try:
             jina_url = f"https://r.jina.ai/{spec['url']}"
