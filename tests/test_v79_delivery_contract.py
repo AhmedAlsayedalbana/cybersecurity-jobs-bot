@@ -508,6 +508,30 @@ def test_new_sources_and_tech_boards_empty_fast(monkeypatch):
     assert ra.fetch_recruitment_agencies() == []
 
 
+# ── v91: bounded Jina quota wait ─────────────────────────────────────────────
+
+def test_jina_limiter_bounded_wait_returns_false():
+    import time as _t
+    from sources.marketplace_sources import _JinaLimiter
+    lim = _JinaLimiter(limit=1, window_seconds=60.0)
+    assert lim.acquire(timeout=5.0) is True
+    start = _t.monotonic()
+    assert lim.acquire(timeout=2.0) is False
+    assert _t.monotonic() - start < 20  # never sleeps the full window
+
+
+def test_jina_limiter_unbounded_still_works():
+    import threading
+    from sources.marketplace_sources import _JinaLimiter
+    lim = _JinaLimiter(limit=1, window_seconds=0.05)
+    assert lim.acquire() is True
+    done = []
+    th = threading.Thread(target=lambda: done.append(lim.acquire()))
+    th.start()
+    th.join(timeout=10)
+    assert done == [True]
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():

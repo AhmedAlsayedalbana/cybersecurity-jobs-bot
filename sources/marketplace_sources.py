@@ -140,7 +140,16 @@ class _JinaLimiter:
         self._times: deque[float] = deque()
         self._lock = threading.Lock()
 
-    def acquire(self) -> None:
+    def acquire(self, timeout: float | None = None) -> bool:
+        """Take a quota slot, waiting at most ``timeout`` seconds.
+
+        v91: was unbounded — with ~10 parallel Jina consumers the 12 slots
+        exhaust and threads sleep entire 60s windows, pushing fetches past
+        their spec ceiling (guru + arab_careers died at 25.00-25.01s WITH
+        results in hand). False (slot unavailable) lets the caller skip the
+        reader and keep its direct results instead of dying with them.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         while True:
             with self._lock:
                 now = time.monotonic()
@@ -148,9 +157,11 @@ class _JinaLimiter:
                     self._times.popleft()
                 if len(self._times) < self.limit:
                     self._times.append(now)
-                    return
+                    return True
                 wait = self.window_seconds - (now - self._times[0])
-            time.sleep(max(0.01, wait))
+            if deadline is not None and time.monotonic() + min(wait, 1.0) > deadline:
+                return False
+            time.sleep(max(0.01, min(wait, 1.0)))
 
 
 _jina_limiter = _JinaLimiter()
@@ -515,7 +526,11 @@ def _fetch_via_jina(url: str) -> str | None:
     # Jina(12s, 1 attempt) = 22s fits the 25s ceiling. The old 2-attempt
     # pattern (20s+24s) guaranteed the orchestrator kill at 25.0s — the real
     # cause of the Bayt/Tanqeeb/Wuzzuf/Akhtaboot timeout streak, not speed.
-    _jina_limiter.acquire()
+    # v91: bounded slot wait (5s) — an exhausted quota must SKIP the reader
+    # (keeping direct results), never sleep a full window past the ceiling.
+    if not _jina_limiter.acquire(timeout=5.0):
+        log.debug("jina quota saturated — skipping reader for %s", url[:80])
+        return None
     result = get_text_result(
         f"https://r.jina.ai/{url}",
         headers={
