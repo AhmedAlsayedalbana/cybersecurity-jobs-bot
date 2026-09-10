@@ -532,6 +532,29 @@ def test_jina_limiter_unbounded_still_works():
     assert done == [True]
 
 
+# ── v92: dead-weight cuts (HR lane off, amazon fittable, no browser hangs) ───
+
+def test_hr_posts_lane_disabled_by_default():
+    import config
+    assert config.ENABLE_SOURCE_LINKEDIN_HR_POSTS is False
+
+
+def test_amazon_fetch_fits_spec_ceiling():
+    import inspect
+    import sources.official_careers as oc
+    src = inspect.getsource(oc._fetch_amazon)
+    assert "timeout=8" in src
+    assert "while page <= 3" in src
+
+
+def test_itida_adib_have_no_browser_fallback():
+    from sources.official_careers import OFFICIAL_SOURCES
+    by_key = {s.key: s for s in OFFICIAL_SOURCES}
+    assert by_key["itida"].browser_fallback is False
+    assert by_key["adib_egypt"].browser_fallback is False
+    assert by_key["itida"].public_fallback is True
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():

@@ -808,7 +808,11 @@ ENABLE_SOURCE_LINKEDIN_EGYPT_ARABIC = _env_bool("ENABLE_SOURCE_LINKEDIN_EGYPT_AR
 ENABLE_SOURCE_EGYPT_COMPANIES = _env_bool("ENABLE_SOURCE_EGYPT_COMPANIES", False)
 ENABLE_SOURCE_LINKEDIN_HR_HUNTER = _env_bool("ENABLE_SOURCE_LINKEDIN_HR_HUNTER", True)
 ENABLE_SOURCE_LINKEDIN_POSTS = _env_bool("ENABLE_SOURCE_LINKEDIN_POSTS", True)
-ENABLE_SOURCE_LINKEDIN_HR_POSTS = _env_bool("ENABLE_SOURCE_LINKEDIN_HR_POSTS", True)
+# v92: default True → False (matches README's documented intent). 0 accepted
+# posts across ALL production runs: guest post-page fetches fail verification,
+# and SerpAPI's free 100 searches/month covers ~1.5 days of 3-hourly runs
+# before quota death. Saves ~25-60s/run. Re-enable with a paid SerpAPI key.
+ENABLE_SOURCE_LINKEDIN_HR_POSTS = _env_bool("ENABLE_SOURCE_LINKEDIN_HR_POSTS", False)
 ENABLE_SOURCE_REMOTIVE = _env_bool("ENABLE_SOURCE_REMOTIVE", False)
 ENABLE_SOURCE_ARBEITNOW = _env_bool("ENABLE_SOURCE_ARBEITNOW", False)
 ENABLE_SOURCE_WWR = _env_bool("ENABLE_SOURCE_WWR", False)

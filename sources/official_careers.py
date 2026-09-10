@@ -131,7 +131,10 @@ OFFICIAL_SOURCES: tuple[CareerSource, ...] = (
     CareerSource("aaib", "AAIB Careers", "Arab African International Bank", "egypt", "html", "https://aaib.com.eg/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     CareerSource("credit_agricole_egypt", "Crédit Agricole Egypt Careers", "Crédit Agricole Egypt", "egypt", "html", "https://www.ca-egypt.com/en/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     CareerSource("hsbc_egypt", "HSBC Egypt Careers", "HSBC Egypt", "egypt", "html", "https://www.hsbc.com/careers", "egypt", page_param="page", public_fallback=True),
-    CareerSource("adib_egypt", "ADIB Egypt Careers", "Abu Dhabi Islamic Bank Egypt", "egypt", "html", "https://www.adib.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
+    # v92: browser_fallback removed — Playwright hangs 40-45s on this portal
+    # every run (TimeoutError) for 0 jobs; direct + public-reader + LinkedIn
+    # mirror already cover it honestly at a fraction of the cost.
+    CareerSource("adib_egypt", "ADIB Egypt Careers", "Abu Dhabi Islamic Bank Egypt", "egypt", "html", "https://www.adib.com.eg/careers", "egypt", page_param="page", browser_fallback=False, public_fallback=True),
     CareerSource("fabmisr", "FABMISR Careers", "FABMISR", "egypt", "html", "https://www.fabmisr.com.eg/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     CareerSource("hdb", "HDB Careers", "Housing and Development Bank", "egypt", "html", "https://www.hdb-egypt.com/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
     CareerSource("emirates_nbd_egypt", "Emirates NBD Egypt Careers", "Emirates NBD Egypt", "egypt", "html", "https://www.emiratesnbd.com/egypt/careers", "egypt", page_param="page", browser_fallback=True, public_fallback=True),
@@ -145,7 +148,9 @@ OFFICIAL_SOURCES: tuple[CareerSource, ...] = (
     CareerSource("vois", "VOIS Careers", "VOIS (Vodafone Intelligent Solutions)", "egypt", "html", "https://vois.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
     CareerSource("etisalat_egypt", "e& Egypt Careers", "e& Egypt", "egypt", "html", "https://careers.etisalat.com.eg", "egypt", page_param="page", browser_fallback=True),
     # ── Egypt IT / software / cloud ─────────────────────────────────────────
-    CareerSource("itida", "ITIDA Careers", "ITIDA", "egypt", "html", "https://www.itida.gov.eg/careers", "egypt", page_param="page", browser_fallback=True),
+    # v92: browser_fallback removed (same 30-35s TimeoutError-for-zero pattern
+    # as ADIB); public reader enabled instead so the ladder still rescues it.
+    CareerSource("itida", "ITIDA Careers", "ITIDA", "egypt", "html", "https://www.itida.gov.eg/careers", "egypt", page_param="page", browser_fallback=False, public_fallback=True),
     CareerSource("smart_village", "Smart Village Careers", "Smart Village", "egypt", "html", "https://www.smart-village.com/careers", "egypt", page_param="page", browser_fallback=True),
     # ── Egypt cybersecurity ─────────────────────────────────────────────────
     CareerSource("cybershield", "CyberShield Careers", "CyberShield", "egypt", "html", "https://www.cybershield.com.eg/careers", "egypt", page_param="page", browser_fallback=True),
@@ -728,14 +733,18 @@ def _fetch_ashby(source: CareerSource) -> _Outcome:
 
 
 def _fetch_amazon(source: CareerSource) -> _Outcome:
+    # v92: timeout 60 → 8s + 3-page cap. A 60s page timeout inside a 30s spec
+    # ceiling meant this source could NEVER finish — perpetual timeout, 0 jobs
+    # forever, 30s burned every run. amazon.jobs answers healthy in <2s.
     page = 1
     all_jobs: list[Job] = []
     parsed_any = False
-    while True:
+    while page <= 3:
         data = get_json(
             source.url,
             params={"base_query": source.query, "loc_query": "", "result_limit": 100, "page": page, "sort": "recent"},
-            timeout=60,
+            timeout=8,
+            max_retries=0,
         )
         if not isinstance(data, dict):
             return _Outcome(_dedupe_jobs(all_jobs), parsed=parsed_any, error_code="amazon_unavailable")
