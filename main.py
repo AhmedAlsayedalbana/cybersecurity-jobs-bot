@@ -1245,10 +1245,41 @@ def _migrate_seen_file_to_db(db: JobsDB, seen_file: str) -> None:
         log.warning("Legacy seen migration could not rename file: %s", exc)
 
 
+def code_version() -> str:
+    """Short code version stamped on every run (v93).
+
+    GitHub Actions exports GITHUB_SHA, so CI runs self-identify their exact
+    commit. Local runs fall back to "local-dev" plus the newest contract
+    marker present in the tree, which still distinguishes stale checkouts:
+    any run NOT printing a v93+ marker predates this file.
+    """
+    sha = (os.getenv("GITHUB_SHA", "") or "").strip()
+    if sha:
+        return sha[:7]
+    # Local run: fingerprint the tree itself so two local checkouts of
+    # different vintages never print the same version. Never breaks startup.
+    try:
+        import hashlib as _hl
+        import os as _os
+        _root = _os.path.dirname(_os.path.abspath(__file__))
+        _h = _hl.sha256()
+        for _fn in ("main.py", "config.py", "telegram_sender.py",
+                    "sources/source_registry.py", "models.py"):
+            try:
+                with open(_os.path.join(_root, _fn), "rb") as _fh:
+                    _h.update(_fh.read())
+            except OSError:
+                continue
+        return "local-" + _h.hexdigest()[:7]
+    except Exception:
+        return "local-dev"
+
+
 def main():
     start_time = time.time()
     log.info("=" * 60)
     log.info("🚀 Bot Started at " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    log.info("🔖 Code version: %s (expect the latest pushed commit)", code_version())
     log.info("=" * 60)
     config.run_startup_validations()
     start_run(config.TOTAL_RUN_BUDGET_SECONDS)

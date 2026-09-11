@@ -555,6 +555,15 @@ def test_itida_adib_have_no_browser_fallback():
     assert by_key["itida"].public_fallback is True
 
 
+# ── v93: startup code version ─────────────────────────────────────────────────
+
+def test_code_version_is_stable_and_format():
+    import main as bot_main
+    v1, v2 = bot_main.code_version(), bot_main.code_version()
+    assert v1 and v1 == v2
+    assert v1.startswith("local-") or len(v1) == 7
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
