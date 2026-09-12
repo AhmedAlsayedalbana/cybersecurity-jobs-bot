@@ -803,21 +803,28 @@ def _build_query_plan(rotation_slot: int) -> list[QuerySpec]:
     # Always-on: core + arab_focus + half high_value + employer + internships
     always_on = core[:4] + arab_focus + core[4:] + high_value_fixed + employer_queries + internships
 
-    # Rotating pool: skills, remote, arabic first (guaranteed diversity),
-    # then COMPANY (distinct sets per employer — highest marginal yield),
-    # then the rest. v83 moved company ahead of high_value/specialty so the
-    # 35 new employer lanes actually surface instead of starving behind
-    # overlapping keyword lanes.
-    rotating_pool = skills + remote + arabic + company + high_value_rotating + specialty
+    # Rotating pool: COMPANY first (distinct sets per employer — highest
+    # marginal yield), then the rest. v83 moved company ahead of
+    # high_value/specialty so the 35 new employer lanes actually surface
+    # instead of starving behind overlapping keyword lanes.
+    rotating_pool = company + high_value_rotating + specialty
+
+    # v93: the diversity trio (skills+remote+arabic) is PINNED, not rotated.
+    # Rotation sliced the pool positionally, so on some slots the "guaranteed"
+    # lanes were the ones cut (skills 4→2, arabic 4→1 in production logs) —
+    # exactly the Arab/skill coverage the trio exists to protect.
+    guaranteed = skills + remote + arabic
 
     max_queries = max(1, config.LINKEDIN_MAX_QUERIES_PER_RUN)
     if len(always_on) >= max_queries:
         plan = always_on[:max_queries]
     else:
-        remaining = max_queries - len(always_on)
-        rotation = rotation_slot % max(1, len(rotating_pool))
-        rotated_pool = rotating_pool[rotation:] + rotating_pool[:rotation]
-        plan = always_on + rotated_pool[:remaining]
+        plan = list(always_on) + list(guaranteed)
+        remaining = max_queries - len(plan)
+        if remaining > 0 and rotating_pool:
+            rotation = rotation_slot % len(rotating_pool)
+            rotated_pool = rotating_pool[rotation:] + rotating_pool[:rotation]
+            plan = plan + rotated_pool[:remaining]
 
     # v62: Apply yield-based reordering
     plan = _sort_plan_by_yield(plan, yield_history)

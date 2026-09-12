@@ -564,6 +564,22 @@ def test_code_version_is_stable_and_format():
     assert v1.startswith("local-") or len(v1) == 7
 
 
+# ── v93: pinned diversity trio survives every rotation slot ───────────────────
+
+def test_diversity_trio_pinned_across_slots():
+    from collections import Counter
+    from sources.linkedin_unified import _build_query_plan
+    import config
+    for slot in range(6):
+        plan = _build_query_plan(slot)
+        counts = Counter(q.lane_type for q in plan)
+        assert len(plan) <= config.LINKEDIN_MAX_QUERIES_PER_RUN
+        assert counts["skills"] == 4
+        assert counts["remote"] == 4
+        assert counts["arabic"] == 4
+        assert sum(1 for q in plan if q.lane_type == "internships") == 10
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
