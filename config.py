@@ -624,8 +624,11 @@ LINKEDIN_JOBS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_JOBS_BUDGET_SECONDS", "22
 LINKEDIN_HR_POSTS_BUDGET_SECONDS = int(os.getenv("LINKEDIN_HR_POSTS_BUDGET_SECONDS", "60"))
 LINKEDIN_TOTAL_BUDGET_SECONDS = LINKEDIN_JOBS_BUDGET_SECONDS + LINKEDIN_HR_POSTS_BUDGET_SECONDS
 LINKEDIN_MAX_QUERIES_PER_RUN = int(os.getenv("LINKEDIN_MAX_QUERIES_PER_RUN", "120"))
-# Pages per query kept at 9 for high-priority, 4-6 for rotating lanes.
-LINKEDIN_MAX_PAGES_PER_QUERY = int(os.getenv("LINKEDIN_MAX_PAGES_PER_QUERY", "9"))
+# v95: 9 → 5 pages/query. Deep guest-search pages are dup farms (820-1766
+# duplicate jobs/run prove page offsets past ~100 recycle the same postings),
+# while the 850-page run cap starved late lanes entirely (queries=120 but the
+# tail never ran). 120 lanes × 5 starts all complete; breadth beats depth.
+LINKEDIN_MAX_PAGES_PER_QUERY = int(os.getenv("LINKEDIN_MAX_PAGES_PER_QUERY", "5"))
 LINKEDIN_MAX_PAGES_PER_RUN = int(os.getenv("LINKEDIN_MAX_PAGES_PER_RUN", "850"))
 LINKEDIN_MAX_DETAILS_PER_RUN = int(os.getenv("LINKEDIN_MAX_DETAILS_PER_RUN", "2000"))
 # Rate kept safe — we run more queries in parallel but actual RPS is unchanged.

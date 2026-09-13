@@ -580,6 +580,16 @@ def test_diversity_trio_pinned_across_slots():
         assert sum(1 for q in plan if q.lane_type == "internships") == 10
 
 
+# ── v95: shallow-wide pagination (breadth beats depth) ─────────────────────────
+
+def test_pages_per_query_capped_at_five():
+    import config
+    from sources.linkedin_unified import _expanded_pages, QuerySpec
+    assert config.LINKEDIN_MAX_PAGES_PER_QUERY == 5
+    assert len(_expanded_pages(QuerySpec("SOC", pages=(0,)))) <= 5
+    assert _expanded_pages(QuerySpec("SOC", pages=(0,)))[:1] == (0,)
+
+
 # ── Registry hygiene: dead specs gone, bundle present ────────────────────────
 
 def test_dead_specs_removed_and_bundle_registered():
